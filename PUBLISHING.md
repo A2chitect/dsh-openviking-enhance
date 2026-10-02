@@ -149,6 +149,32 @@ CI 上不需要任何参数——那里本来就没有 OpenViking，走的正是
 **不是空转**：故意把 `private` 设回 true、删掉 `files` 里的 LICENSE、把 schemastery 放回
 `dependencies` 之后，三条都如实报红；恢复后全绿。
 
+### 11. 组件真的渲染过（SSR 渲染测试）☑
+
+配置页是我这一路上**从来没亲眼见过渲染结果**的一块。用 `react-dom/server` 把真实组件渲染成
+markup 来验（`test/component-render.test.mjs`，5 个用例）——加载的是真实 `lib/client.js`，
+走的是和 shell 一样的 `window.__ModuleLoader__` 交接，没有任何 mock-up：
+
+- 5 个座位全部注册，并且**每一个都能渲染不抛异常**（配置表单、召回 tab、胶囊、Studio 面板）
+- 配置表单在英文下渲染出全部 7 个字段标签 + 自己的 Save 控件 + `overridden` 标记
+- 同一表单切到中文：7 个中文标签 + 「保存」+「已覆盖」，且**没有任何一处退回英文**
+- `writable: false` 时说明只读；`status: 'unavailable'` 时提示去 `cordis.patch.yml` 配
+- `view: 'summary'` 时给出当前地址那一行
+
+顺带把表单的写入语义抽成 `src/client/config-ops.ts` 并单测（6 个用例）：**清空 = `unset`
+（恢复继承）而不是写空串**、数字字段按数字提交、非法数字在发请求前就被拒并指出是哪个字段、
+未知键被忽略而不是猜一个路径去写。
+
+### 12. 截图：仍然只有你能拍 ⊘
+
+我试过两条路都不通：
+- **无头 Chrome**：本机沙箱里不稳（同一套参数上一次出过图，这次连 `--dump-dom` 都挂死）。
+- **真机**：GUI 页面是 401（DSH 的鉴权握在 Electron 窗口里），而插件路由虽然免鉴权，
+  页面本身进不去；另外 `/probe` 现在返回 401，说明**运行中的应用还是我加 probe 之前那次重启**。
+
+所以截图仍卡在：① 你重启一次 DSH 应用（`/probe`、volatile 配置字段、配置页都才生效）；
+② 一个能进 GUI 的浏览器会话。在那之前我不会拿静态重建图冒充真机截图。
+
 ## 三、待办
 
 | # | 工作 | 说明 |
@@ -204,4 +230,6 @@ CI 上不需要任何参数——那里本来就没有 OpenViking，走的正是
 | 真实安装 + 组合树 | 见上面第 8 条的三条命令（`DSH_HOME` 指向临时目录） |
 | 没有 OpenViking 时的降级 | `SMOKE_ENDPOINT=http://127.0.0.1:9 node scripts/smoke-host.mjs` |
 | 发布要求全部成立 | `node scripts/check-package.mjs`（也是 `pnpm test` 的一环） |
+| 组件真的能渲染 | `node --test test/component-render.test.mjs` |
+| 配置表单的写入语义 | `node --test test/config-ops.test.mjs` |
 | 全量回归 | `pnpm test` |
