@@ -391,21 +391,26 @@ pnpm publish                # prepack 自动重建 lib/；private 已移除；re
 
 **路线 B：GitHub Release 挂 tarball（不发 npm 时）**
 
+**优先用钉住 tag 的写法**——列表里最新两条条目都是这么写的，它 URL 自带版本、发下一个版本不会让
+旧链接悄悄失效：
+
 ```bash
 pnpm pack --pack-destination /tmp
-cp /tmp/dsh-openviking-enhance-0.2.0.tgz /tmp/dsh-openviking-enhance.tgz   # ← 去掉版本号
-gh release create v0.2.0 /tmp/dsh-openviking-enhance.tgz \
+gh release create v0.2.0 /tmp/dsh-openviking-enhance-0.2.0.tgz \
   --title "v0.2.0" --notes-from-tag
 ```
 
-`cp` 那一步是规范专门警告的坑：`latest/download/` 只在请求时解析 `latest`，**文件名是照字面取的**。
-资产名若带版本号，链接提交当天有效、下一次发版就 404，而且没人会发现。去掉版本号后条目写：
-
 ```yaml
-tarball: https://github.com/A2chitect/dsh-openviking-enhance/releases/latest/download/dsh-openviking-enhance.tgz
+tarball: https://github.com/A2chitect/dsh-openviking-enhance/releases/download/v0.2.0/dsh-openviking-enhance-0.2.0.tgz
 ```
 
-（也可以钉住 tag、文件名带版本号：`.../releases/download/v0.2.0/dsh-openviking-enhance-0.2.0.tgz`。）
+另一种是 `latest/download/`，**那时文件名必须去掉版本号**：`latest` 只在请求时解析，
+文件名是照字面取的，带版本号的话链接提交当天有效、下一次发版就 404，而且没人会发现。
+
+```bash
+cp /tmp/dsh-openviking-enhance-0.2.0.tgz /tmp/dsh-openviking-enhance.tgz   # 去掉版本号
+gh release create v0.2.0 /tmp/dsh-openviking-enhance.tgz --title "v0.2.0" --notes-from-tag
+```
 
 ### 19. 投稿文件已过他们的真校验器 ☑
 
@@ -478,6 +483,24 @@ PR 说明里补了一段主动说明差异（评审第 4 条正是看这个）�
 > memory capability and writes nothing. It is the visibility surface — the server's own Studio inside
 > the left sidebar, a per-session commit pill with its timeline of what each commit changed, and a
 > right-sidebar tab showing which memories the current session retrieves.
+
+### 22. 字段完整性与功能面撞车（各有硬证据）☑
+
+**字段**：把 4412 条条目全扫了一遍，用到的顶层字段只有四个——`url`、`name`、`description`、
+`category`，另有 346 条带可选的 `tarball`。**没有别的字段**（没有 `added` 日期、没有 `npm`、
+没有截图键），所以我的条目是完整的，不需要等维护者补任何东西。
+
+**功能面**：按功能而不是按 OpenViking 再扫一遍——谁还占了"右侧边栏 + 记忆"、"输入框下方的记忆/提交
+状态"、"把某个本地服务自己的 UI 嵌进 DSH"：
+- 右侧边栏 + 记忆：只有 `dsh-quick-open`、`dsh-minimal-UI-panels` 两个通用面板顺带提到记忆；
+- 提交/状态胶囊：命中的四条都是引用消息、移动端、附加组件之类，与记忆提交无关；
+- 嵌入第三方 UI：只有 `Copree--dsh-copree`（把 Copree 以侧边栏形式嵌入），是另一种产品。
+
+结论：**我那三个界面在列表里没有对应物**，与另外三个 OpenViking 条目的重叠只在"配置连接"这一小块。
+
+**顺带纠正我文档里的一个推荐**：最新两条条目用的是**钉住 tag** 的 tarball 写法
+（`releases/download/v0.2.0/pkg-0.2.0.tgz`），它比 `latest/download/` + 去掉版本号文件名更省事也更稳
+（URL 自带版本，发下一个版本不会让旧链接悄悄失效）。下面第 3 节已按这个顺序改写。
 
 ## 四、需要你拍板
 
