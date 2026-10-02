@@ -88,9 +88,22 @@ import("dsh-openviking-enhance")
 也就是说：**宿主半部分在完全没有依赖的树里也能加载**（这正是第 3 条把它做成自包含的意义），
 而 `@deepseek-ai/dsh` 这个 peer 在 pnpm 下只是提示、不会被拉进来（profile 里也确实没有它）。
 
-仍未验证的是**源码安装**（`dsh plugin add <github-url>`）：clone 出来没有 `lib/`，且没有
-`prepare` 脚本，所以按现状是装不起来一个能用的插件的——这也是为什么要把"发 npm / 挂 tarball"
-作为主路径。等你定了仓库名，再用一个干净 profile 把这条走完。
+### 6. 源码安装：实测过，四种形态 ☑
+
+规范说"如果你的仓库根本无法从源码安装，tarball 这一项是必需的"。用本地 git 依赖实测了四种形态
+（`pnpm add git+file:///tmp/clone-probe`，每次都是全新 clone）：
+
+| 仓库形态 | `dsh plugin add <github-url>` 的结果 |
+| --- | --- |
+| **现状**：`lib/` 未跟踪、无 `prepare` | 安装**成功**，但包里没有 `lib/` —— 插件是坏的，而且**没有任何报错**（最糟） |
+| 加 `prepare` | 安装**直接失败**：`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`，提示把包加进 `allowBuilds` |
+| 加 `prepack` | 同上，失败并提示 `allowBuilds` |
+| 把 `lib/` 提交进仓库 | 装成功且可用（无构建步骤）——⊘ 见下 |
+
+结论：**主路径必须是 npm 包或 Release tarball**（规范也正是这么推荐的："预构建安装免
+`allowBuilds` 构建授权"）。已加 `prepack: node build.mjs`：删掉 `lib/` 后 `pnpm pack` 会自动重建，
+所以**发布产物不可能缺构建结果**（实测：删掉 lib → pack → tarball 里 4 个 lib 条目）。
+副作用是 raw git 安装从"静默装坏"变成"响亮报错"，这比让用户装上一个坏插件好。
 
 ## 三、待办
 
@@ -110,7 +123,7 @@ import("dsh-openviking-enhance")
 | 1 | 分类 `memory` 还是 `ui` | 只影响列表归类，选错维护者会改 |
 | 2 | GitHub owner / 仓库名 | `url` 必须与仓库完全一致；也是 `repository` 字段的值 |
 | 3 | npm 包名 | `dsh-openviking-enhance` 在 registry 上 404（未被占用）；是否加 scope |
-| 4 | 分发方式 | npm + tarball 双保险 / 只 npm / 再试 `prepare` 源码安装 |
+| 4 | 分发方式 | **推荐 npm + GitHub Release tarball**（第 6 条已实测：源码安装要么静默装坏、要么被 `allowBuilds` 拦住）。另一个选项是**把 `lib/` 提交进仓库**——raw git 安装就能直接可用，代价是每次改 src 都要重新提交构建产物（可以用 CI 校验 `lib/` 是否与 `src/` 同步来兜底）。这条会改变仓库的跟踪内容，所以留给你定 |
 | 5 | LICENSE 署名 | 现在写的是 `dsh-openviking-enhance contributors` |
 | 6 | i18n 范围 | 界面中英双语，还是先只做英文 README |
 
@@ -123,4 +136,6 @@ import("dsh-openviking-enhance")
 | 配置页座位已注册 | `node scripts/smoke-client.mjs`（`plugins.row.config` 那两条） |
 | probe 只认 loopback | `node --test test/host-units.test.mjs`（`parseLoopbackEndpoint` 那条） |
 | tarball 装得上且零依赖可加载 | 见上面第 5 条的三条命令 |
+| 源码安装的四种形态 | 见上面第 6 条；重跑：`pnpm add git+file:///<clone>` |
+| 发布产物不会缺 lib/ | `rm -rf lib && pnpm pack --pack-destination /tmp && tar tzf /tmp/*.tgz \| grep lib/` |
 | 全量回归 | `pnpm test` |
