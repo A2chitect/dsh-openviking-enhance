@@ -80,6 +80,10 @@
     "dsh": ">=0.2.0-rc.2"
   },
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/A2chitect/dsh-openviking-enhance.git"
+  },
   "keywords": [
     "dsh",
     "dsh-plugin",

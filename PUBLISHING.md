@@ -14,11 +14,11 @@
 | 有真实可用代码 | 46 单测 + 客户端产物断言 + 真机冒烟 | ☑ |
 | 官方 `@deepseek-ai/*` 用 peerDependencies，不用 dependencies | 已无运行时 dependencies；peer 为 `@deepseek-ai/dsh` + `react` | ☑ |
 | peer 范围带显式预发布分支（否则静默排除所有 rc 构建） | `@deepseek-ai/dsh: ^0.2.0-rc.1`（0.2.0 元组上带预发布标签，可匹配 rc.2） | ☑ |
-| 仓库创建满 1 天（CI 自动查） | **仓库今天才建，且还没有 GitHub 远端** | ☐ |
-| 加 `dsh-plugin` topic | 需要先有远端 | ☐ |
+| 仓库创建满 1 天（CI 自动查） | 仓库建于 2026-10-02 14:46 (+0800)，**2026-10-03 14:46 之后可提 PR** | ◐ |
+| 加 `dsh-plugin` topic | 已加（连同 `openviking`、`deepseek-harness`） | ☑ |
 | 描述属实、无营销词、可被对着代码核 | 待写 | ☐ |
 | 分类选最贴切的 | 建议 `memory`（备选 `ui`） | ⊘ |
-| npm 包 `repository` 字段指回本仓库 | 需要仓库 URL | ⊘ |
+| npm 包 `repository` 字段指回本仓库 | 已填 `git+https://github.com/A2chitect/dsh-openviking-enhance.git` | ☑ |
 | 推荐：发 npm（预构建安装免 `allowBuilds` 授权） | `private` 已移除，`pnpm pack` 产物完整 | ◐ |
 | 推荐/必要时：GitHub Release tarball | 未做 | ☐ |
 | 可选：`screenshots.json`（1–8 张） | 未做 | ☐ |
@@ -242,6 +242,20 @@ CI 的五步我现在都在本地逐条复现过（checkout → node 22 → pnpm
 
 六个全部存在。另外 `pnpm publish --dry-run` 会先跑 `prepack`——发布路径上一定会重建 `lib/`。
 
+### 17. GitHub 仓库已建并推送 ☑
+
+- 账号 `A2chitect`（`gh auth status` 确认 token 带 `repo` scope），仓库
+  **https://github.com/A2chitect/dsh-openviking-enhance**，公开，描述用的就是 `package.json`
+  那句；topic 已加 `dsh-plugin`（收录要求）、`openviking`、`deepseek-harness`。
+- `main` 分支与 `v0.1.0` 标签都已推送。
+- **推送触发的 CI 首次运行就通过了**（20 秒，node 22 + pnpm 12 + `pnpm install --frozen-lockfile`
+  + `pnpm test`）。上一轮修掉的"build script 未决定导致装不上"如果没修，这一次就是红的。
+- 推送前做了一次隐私扫查：跟踪文件里没有 `/Users/a2chitect` 之类个人路径、没有 token/key
+  （命中的只是包名 `dsh-llm-deepseek-api-key` 与测试夹具 `192.168.1.10`）；`docs/`（我的工作笔记）、
+  `.backup/`（profile 清单备份）、`.scratch/` 都在 `.gitignore` 里，不会被推上去。
+- **1 天门槛**：仓库 createdAt 为 `2026-10-02T06:46:47Z`，即本地时间 14:46:47，
+  所以 **2026-10-03 14:46 之后**才可以提收录 PR。
+
 ## 三点五、仓库建好之后（照抄即可）
 
 名字定下来后，除了建仓库/加 topic，剩下的都是填空。
@@ -253,15 +267,18 @@ CI 的五步我现在都在本地逐条复现过（checkout → node 22 → pnpm
 ```
 
 **2. 投稿文件**：往 awesome-dsh-plugin 提交**一个**文件
-`data/plugins/<owner>__<repo>.yml`：
+`data/plugins/A2chitect__dsh-openviking-enhance.yml`（内容已备好，可直接用）：
 
 ```yaml
-url: https://github.com/<owner>/<repo>
-name: <owner>/<repo>
+url: https://github.com/A2chitect/dsh-openviking-enhance
+name: A2chitect/dsh-openviking-enhance
 category: memory          # 备选 ui；规范说选得不准维护者会直接改，不会打回
 description:
   en: 'OpenViking in the DSH web GUI: a Studio panel, a per-session memory-commit status pill with its commit timeline, and a right-sidebar tab showing what the current session retrieves.'
 ```
+
+若最后选择发 npm 而不是挂 tarball，条目里**不要**写 `npm:` 字段——规范明确说会被校验拒绝，
+映射由 registry 自动采集（前提是 `repository` 指回本仓库，已填）。
 
 描述就是 `package.json` 里那一句，已按规范核对过：只说功能、无营销词、提到的每一个东西
 （Studio 面板 / commit 胶囊 + 时间线 / 右侧召回 tab）都能在代码里指出来。
