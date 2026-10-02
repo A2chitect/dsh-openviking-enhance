@@ -16,7 +16,7 @@
 import type { ClientContext } from './slot-service.ts'
 import { installStyles } from './styles.ts'
 import { StudioIcon, StudioPanel } from './studio-panel.tsx'
-import { CommitStatusPill } from './commit-status.tsx'
+import { CommitStatusPill, DockSpacer } from './commit-status.tsx'
 
 /** Client services this half waits for before `apply` runs. */
 export const inject = ['slots']
@@ -61,19 +61,30 @@ export function apply(context: ClientContext): void {
     )
 
     // Session footer status pill. The inject factory receives the session id
-    // because the slot is session-scoped.
+    // because the slot is session-scoped. `order: 1` puts it after the shell's
+    // stats pills and the context meter; its `margin-left:auto` pins it to the
+    // right edge, and the spacer below keeps the default pills centred while it
+    // does so (see styles.ts for why the two go together).
     disposers.push(
-      slots.inject('conversation.composer.dock', () =>
-        slots.register(
+      slots.inject('conversation.composer.dock', () => {
+        const spacer = slots.register(
+          { name: 'conversation.composer.dock', id: 'openviking-commit-spacer', order: -1 },
+          DockSpacer as never,
+        )
+        const pill = slots.register(
           {
             name: 'conversation.composer.dock',
             id: 'openviking-commit',
-            order: 0,
+            order: 1,
             inject: (sessionId: string) => ({ sessionId }),
           },
           CommitStatusPill as never,
-        ),
-      ),
+        )
+        return () => {
+          pill()
+          spacer()
+        }
+      }),
     )
   } catch (error) {
     report(context, error)

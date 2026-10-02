@@ -7,7 +7,10 @@ inside the Web GUI:
    server's own Studio SPA in the centre column.
 2. **Per-session commit status** — a pill under the composer shows how close the
    current session is to an OpenViking commit, and clicking it lists the
-   memories that each commit actually added, updated or deleted.
+   memories that each commit actually added, updated or deleted. It sits pinned
+   to the right of that row and is styled from the shell's own stats pills
+   (same font metrics, colour tokens, capsule shape, icon size and tabular
+   figures), so the row reads as one family.
 
 Status: **scaffold + verified data path**. Both halves build, typecheck and pass
 their smoke tests against a live OpenViking 0.4.22 server; see
@@ -62,7 +65,7 @@ Full reasoning, evidence and rejected alternatives: [`docs/`](docs/).
 | `src/host/config.ts` | Connection resolution from env / `~/.openviking` |
 | `src/client/index.tsx` | Client entry: three slot registrations |
 | `src/client/studio-panel.tsx` | Sidebar icon + Studio iframe page |
-| `src/client/commit-status.tsx` | Status pill + affected-memory popover |
+| `src/client/commit-status.tsx` | Status pill + spacer + affected-memory popover |
 | `src/shared/protocol.ts` | Wire contract shared by both halves |
 | `build.mjs` | esbuild build for both faces |
 | `scripts/smoke-*.mjs` | Verification harnesses (see below) |

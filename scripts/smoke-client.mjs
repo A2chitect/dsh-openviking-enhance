@@ -83,11 +83,20 @@ try {
 check(threw === null, `apply() does not throw${threw ? `: ${threw.message}` : ''}`)
 
 const byName = new Map(registrations.map((entry) => [entry.name, entry]))
+const dock = registrations.filter((entry) => entry.name === 'conversation.composer.dock')
 check(byName.has('sidebar.panellist'), 'registers the left-sidebar row (sidebar.panellist)')
 check(byName.has('main'), 'registers the matching centre panel (main)')
-check(byName.has('conversation.composer.dock'), 'registers the session status pill (conversation.composer.dock)')
 check(byName.get('sidebar.panellist')?.id === byName.get('main')?.key, 'panel row id and main key agree')
-check(typeof byName.get('conversation.composer.dock')?.inject === 'function', 'status pill declares a session inject face')
+
+// The dock gets two entries on purpose: `order: -1` spacer + `order: 1` pill.
+// Their auto margins are what keep the default pills centred while the pill is
+// pinned right, so both the order and the pairing are load-bearing.
+check(dock.length === 2, `registers two dock entries (saw ${dock.length})`)
+const spacer = dock.find((entry) => entry.id === 'openviking-commit-spacer')
+const pill = dock.find((entry) => entry.id === 'openviking-commit')
+check(spacer?.order === -1, 'dock spacer renders first (order -1)')
+check(pill?.order === 1, 'status pill renders last (order 1)')
+check(typeof pill?.inject === 'function', 'status pill declares a session inject face')
 check(injectedKeys.length === 3, `all three slots are injected (saw ${injectedKeys.join(', ')})`)
 
 if (failures.length > 0) {

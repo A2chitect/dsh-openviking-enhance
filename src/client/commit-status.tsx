@@ -2,8 +2,8 @@
  * Per-session OpenViking commit status.
  *
  * Mounted into `conversation.composer.dock` (list, session scope) — the flex row
- * directly under the composer, next to the context meter — so it is scoped to
- * the session the user is looking at.
+ * directly under the composer, next to the shell's own stats pills — so it is
+ * scoped to the session the user is looking at.
  *
  * What it shows, and where each fact comes from:
  *   pending tokens / threshold  → `GET /api/v1/sessions/dsh-<id>`
@@ -14,6 +14,13 @@
  * The plugin never learns about a commit from DSH: the memory plugin discards
  * the commit response and logs at `debug`, which the desktop app filters out.
  * Polling the server is therefore not a shortcut, it is the only reliable path.
+ *
+ * Presentation follows the default pills exactly (see `styles.ts`): same font
+ * metrics, tertiary label colour, transparent borderless 999px capsule, 14px
+ * currentColor icon, tabular figures, same hover/expanded background. The icon is
+ * the shell's own `IconArchiveOutlineRegular` — a commit in OpenViking produces
+ * an `archive_00N`, so it is also the honest glyph — resolved through the frozen
+ * module table with a local fallback if that export ever moves.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CommitStatus, MemoryDiff, MemoryDiffEntry } from '../shared/protocol.ts'
@@ -24,6 +31,46 @@ export interface CommitStatusProps {
 }
 
 const POLL_MS = 5000
+
+/** The shell's own icon, when the module table still exposes it. */
+type IconComponent = (props: Record<string, unknown>) => JSX.Element
+
+function resolveArchiveIcon(): IconComponent | null {
+  try {
+    // Guarded on purpose: a static import would fail the whole factory — and
+    // with it the entire client half — if this export ever moves.
+    const primitives = require('@deepseek-ai/dsh-client-ui-primitives') as Record<string, unknown> | undefined
+    const candidate = primitives?.IconArchiveOutlineRegular
+    return typeof candidate === 'function' ? (candidate as IconComponent) : null
+  } catch {
+    return null
+  }
+}
+
+const ArchiveIcon = resolveArchiveIcon()
+
+/** Same 14px / 1px-stroke / currentColor language as the primitives' icons. */
+function CommitIcon() {
+  if (ArchiveIcon) return <ArchiveIcon />
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1" aria-hidden="true">
+      <rect x="1.75" y="2.75" width="12.5" height="3" rx="1" />
+      <path d="M3 5.75v6.5a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-6.5" strokeLinecap="round" />
+      <path d="M6.5 8.75h3" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+/**
+ * Zero-size flex item that balances the pill's `margin-left:auto`.
+ *
+ * The dock centres its children; without this, pinning the pill right would push
+ * the default pills to the far left. Two auto margins split the free space, so
+ * the default pills stay centred and only the pill moves.
+ */
+export function DockSpacer() {
+  return <span className="ove-dock-spacer" aria-hidden="true" />
+}
 
 export function CommitStatusPill({ sessionId }: CommitStatusProps) {
   const [status, setStatus] = useState<CommitStatus | null>(null)
@@ -87,70 +134,78 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
   if (!sessionId) return null
 
   const phase = error ? 'failed' : (status?.phase ?? 'idle')
-  const label = phaseLabel(phase, status)
-  const pending = tasks.filter((task) => task.status === 'running' || task.status === 'pending')
+  const text = phaseLabel(phase, status)
+  const running = tasks.filter((task) => task.status === 'running' || task.status === 'pending')
+  const archives = status ? [...status.archives].reverse() : []
 
   return (
-    <span className="ove-pill-wrap" ref={wrap}>
+    <span className="ove-dock" ref={wrap} data-dsh-plugin="openviking-enhance-status">
       <button
         type="button"
-        className={`ove-pill ove-pill-phase-${phase}`}
-        onClick={() => setOpen((value) => !value)}
+        className="ove-pill"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-label={`OpenViking：${text}`}
         title={tooltip(status, error)}
-        data-dsh-plugin="openviking-enhance-status"
+        onClick={() => setOpen((value) => !value)}
       >
-        <span>OV</span>
-        {phase === 'pending' && status ? (
-          <span className="ove-bar" aria-hidden="true">
-            <i style={{ width: `${Math.round(status.ratio * 100)}%` }} />
-          </span>
-        ) : null}
-        <span>{label}</span>
+        <CommitIcon />
+        <span className={`ove-label${phase === 'extracting' ? ' ove-pulse' : ''}`}>{text}</span>
       </button>
       {open ? (
         <div className="ove-pop" role="dialog" aria-label="OpenViking 提交详情">
-          <h4>OpenViking 提交状态</h4>
-          <div className="ove-meta">
-            {status ? (
+          <div className="ove-pop-title">
+            <span className="ove-pop-title-label">
+              <CommitIcon />
+              提交
+            </span>
+            <span className="ove-row-count">{status ? `${status.commitCount} 次` : '—'}</span>
+          </div>
+          <div className="ove-pop-rule" aria-hidden="true" />
+          <dl className="ove-facts">
+            <dt>会话</dt>
+            <dd>
+              <code>{status?.ovSessionId ?? '—'}</code>
+            </dd>
+            <dt>待提交</dt>
+            <dd>
+              {status ? `${status.pendingTokens}${status.threshold ? ` / ${status.threshold}` : ''} tokens` : '—'}
+            </dd>
+            <dt>最近提交</dt>
+            <dd>{status?.lastCommitAt ? formatTime(status.lastCommitAt) : '—'}</dd>
+            {running.length > 0 ? (
               <>
-                会话 <code>{status.ovSessionId}</code>
-                <br />
-                已提交 {status.commitCount} 次
-                {status.lastCommitAt ? ` · 最近 ${formatTime(status.lastCommitAt)}` : ''}
-                {status.threshold ? ` · 待提交 ${status.pendingTokens}/${status.threshold} tokens` : ''}
+                <dt>进行中</dt>
+                <dd>{running.map((task) => task.status).join(', ')}</dd>
               </>
-            ) : error ? (
-              `读取失败：${error}`
+            ) : null}
+          </dl>
+
+          {error ? <div className="ove-facts ove-empty">读取失败：{error}</div> : null}
+
+          <div className="ove-section">
+            <div className="ove-section-title">提交记录</div>
+            {archives.length === 0 ? (
+              <div className="ove-empty">本会话尚无提交。达到 token 阈值或会话结束时自动提交。</div>
             ) : (
-              '读取中…'
+              archives.map((archive) => (
+                <button
+                  key={archive.archiveId}
+                  type="button"
+                  className="ove-row"
+                  onClick={() => void openArchive(archive.archiveUri)}
+                >
+                  <span>{archive.archiveId}</span>
+                  <span className="ove-row-count">查看影响 →</span>
+                </button>
+              ))
             )}
           </div>
 
-          {pending.length > 0 ? (
-            <div className="ove-empty">
-              抽取中：{pending.length} 个任务（{pending.map((task) => task.status).join(', ')}）
-            </div>
-          ) : null}
-
-          {status && status.archives.length > 0 ? (
-            <ul>
-              {[...status.archives].reverse().map((archive) => (
-                <li key={archive.archiveId}>
-                  <button type="button" className="ove-pill ove-archive" onClick={() => void openArchive(archive.archiveUri)}>
-                    <span>{archive.archiveId}</span>
-                    <span className="ove-empty">查看影响 →</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <div className="ove-empty">本会话尚无提交。达到 token 阈值或会话结束时自动提交。</div>
-          )}
-
-          {diffPending ? <div className="ove-empty">正在读取 {selected}…</div> : null}
+          {diffPending ? <div className="ove-section ove-empty">正在读取 {selected}…</div> : null}
           {diff ? <DiffView diff={diff} /> : null}
           {!diffPending && selected && !diff ? (
-            <div className="ove-empty">该归档还没有 memory_diff.json —— 抽取仍在进行。</div>
+            <div className="ove-section ove-empty">该归档还没有 memory_diff.json —— 抽取仍在进行。</div>
           ) : null}
         </div>
       ) : null}
@@ -161,11 +216,11 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
 function DiffView({ diff }: { diff: MemoryDiff }) {
   const { summary } = diff
   return (
-    <div>
-      <h4>
+    <div className="ove-section">
+      <div className="ove-section-title">
         影响记忆：新增 {summary.totalAdds} · 更新 {summary.totalUpdates} · 删除 {summary.totalDeletes}
-      </h4>
-      <div className="ove-meta">{diff.archiveUri}</div>
+      </div>
+      <div className="ove-empty">{diff.archiveUri}</div>
       <Group title="新增" entries={diff.adds} />
       <Group title="更新" entries={diff.updates} />
       <Group title="删除" entries={diff.deletes} />
