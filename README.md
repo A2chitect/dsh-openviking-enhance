@@ -135,8 +135,9 @@ half only after an app restart.
 
 ## Notes
 
-- **The plugin's own text is Chinese only.** The panel, the pill and its popover do
-  not follow the DSH locale setting yet; everything else in the interface does.
+- **The plugin's own text follows the app's language.** It ships Chinese and
+  English and reads the locale DSH sets, so switching the app's language switches
+  this plugin's copy too; anything else falls back to English.
 - OpenViking cleans up its commit task records over time, so the failure list
   covers recent commits only. The archives themselves are permanent.
 - The plugin's internal routes answer loopback requests only, and only from the

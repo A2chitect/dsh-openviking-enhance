@@ -20,7 +20,7 @@
  * Nothing here writes: retrieval is read-only on the server, and the session log
  * is only read.
  */
-import type { RecallBucket, RecallContent, RecallItem, RecallPayload, RecallQuerySource } from '../shared/protocol.ts'
+import type { PluginNotice, RecallBucket, RecallContent, RecallItem, RecallPayload, RecallQuerySource } from '../shared/protocol.ts'
 import { RECALL_BUCKETS, RECALL_CONTENT_MAX_CHARS, RECALL_DEFAULT_LIMIT, RECALL_MAX_LIMIT } from '../shared/protocol.ts'
 import type { OpenVikingApi, OvSearchItem, OvSearchResponse } from './openviking-api.ts'
 import { resolveSessionUri } from './commit-service.ts'
@@ -83,7 +83,7 @@ export class RecallService {
 
   private async collect(sessionId: string, explicitQuery: string, limit: number): Promise<RecallPayload> {
     const started = this.now()
-    const warnings: string[] = []
+    const warnings: PluginNotice[] = []
     const { api, commit } = this.options
 
     const ovSessionId = commit.ovSessionId(sessionId)
@@ -92,13 +92,13 @@ export class RecallService {
 
     const meta = await api.getSession(ovSessionId, request)
     const sessionUri = meta.ok && meta.result ? resolveSessionUri(meta.result, ovSessionId, api.user) : null
-    if (!meta.ok) warnings.push(`会话信息读取失败：${meta.error ?? `HTTP ${meta.status}`}`)
+    if (!meta.ok) warnings.push({ code: 'sessionFailed', params: { error: meta.error ?? `HTTP ${meta.status}` } })
 
     let queryText = explicitQuery
     let querySource: RecallQuerySource = 'manual'
     if (queryText.length === 0 && sessionUri !== null) {
       const prompt = await this.sessionPrompt(sessionUri, request)
-      if (prompt === null) warnings.push('会话日志里没有找到最近的用户提问，请手动输入检索内容。')
+      if (prompt === null) warnings.push({ code: 'noPrompt' })
       else {
         queryText = prompt
         querySource = 'session'
@@ -147,7 +147,7 @@ export class RecallService {
     let total = 0
     for (const { target, reply } of replies) {
       if (!reply.ok || reply.result === null) {
-        warnings.push(`检索 ${target.uri} 失败：${reply.error ?? `HTTP ${reply.status}`}`)
+        warnings.push({ code: 'targetFailed', params: { target: target.uri, error: reply.error ?? `HTTP ${reply.status}` } })
         continue
       }
       plan ??= reasoningOf(reply.result)
@@ -203,7 +203,7 @@ export class RecallService {
   /** One entry's full text, for the panel's detail view. */
   async content(uri: string): Promise<RecallContent | { error: string }> {
     if (!uri.startsWith('viking://')) {
-      return { error: 'only viking:// entries can be read' }
+      return { error: 'not-a-viking-path' }
     }
     const read = await this.options.api.readText(uri, { timeoutMs: 10000 })
     if (!read.ok || read.result === null) {

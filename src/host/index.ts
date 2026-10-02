@@ -24,6 +24,7 @@ import {
   TIMELINE_MAX,
   type ApiResult,
   type EnhanceConfig,
+  type PluginNotice,
 } from '../shared/protocol.ts'
 import { describeConnection, resolveConnection } from './config.ts'
 import { isLoopbackHostname, isTrustedLocalRequest } from './trust-fence.ts'
@@ -162,10 +163,10 @@ export function apply(ctx: Context, config: EnhanceConfigInput = {}): void {
 
   const configPayload = async (): Promise<ApiResult<EnhanceConfig>> => {
     const health = await api.health()
-    const warnings: string[] = []
-    if (!health.ok) warnings.push(`OpenViking unreachable at ${connection.endpoint}: ${health.error ?? 'unknown error'}`)
+    const warnings: PluginNotice[] = []
+    if (!health.ok) warnings.push({ code: 'unreachable', params: { endpoint: connection.endpoint, error: health.error ?? 'unknown' } })
     if (!memoryRuntime()) {
-      warnings.push('@openviking/dsh-memory-plugin is not mounted: session ids fall back to "dsh-<session>" and pending-token thresholds are unknown.')
+      warnings.push({ code: 'noMemoryPlugin' })
     }
     return {
       ok: true,
@@ -217,7 +218,7 @@ export function apply(ctx: Context, config: EnhanceConfigInput = {}): void {
         if (candidate === null) {
           writeJson(res, 400, {
             ok: false,
-            error: 'endpoint must be an http(s) URL on the loopback interface',
+            error: 'endpoint-not-loopback',
           } satisfies ApiResult<never>)
           return
         }

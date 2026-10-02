@@ -265,8 +265,8 @@ test('recall reports a session with no prompt instead of searching nothing', asy
     assert.equal(payload.query.text, '')
     assert.deepEqual(stub.calls.search, [])
     assert.deepEqual(payload.buckets.map((bucket) => bucket.items.length), [0, 0, 0])
-    assert.equal(payload.warnings.length, 1)
-    assert.equal(payload.warnings[0].includes('手动输入'), true)
+    // The host has no language: it reports a code, and the client words it.
+    assert.deepEqual(payload.warnings, [{ code: 'noPrompt' }])
   })
 })
 
@@ -275,10 +275,9 @@ test('recall keeps the other sources when one target fails', async () => {
   await withStub(stub.handler, async (endpoint) => {
     const payload = await serviceFor(endpoint).recall('abc')
     assert.equal(payload.buckets.find((bucket) => bucket.bucket === 'memories').items.length, 3)
-    assert.equal(payload.warnings.length, 1)
-    assert.equal(payload.warnings[0].includes('/skills'), true)
-    // The failure is reported with the server's own message, not a bare status.
-    assert.equal(payload.warnings[0].includes('boom'), true)
+    assert.deepEqual(payload.warnings, [
+      { code: 'targetFailed', params: { target: `${USER_ROOT}/skills`, error: 'boom' } },
+    ])
   })
 })
 
@@ -325,7 +324,7 @@ test("recall reads one entry's whole text and refuses anything that is not vikin
 
     const refused = await service.content('file:///etc/passwd')
     assert.equal('error' in refused, true)
-    assert.equal(refused.error.includes('viking://'), true)
+    assert.equal(refused.error, 'not-a-viking-path')
     // The refusal happens before any request leaves the host.
     assert.equal(stub.calls.read.length, 1)
   })

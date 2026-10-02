@@ -26,6 +26,7 @@ import { StudioPanel } from './studio-panel.tsx'
 import { CommitStatusPill } from './commit-status.tsx'
 import { RecallPanel } from './recall-panel.tsx'
 import { ConfigPage } from './config-page.tsx'
+import { attachLocale, t } from './locale.ts'
 
 /** Client services this half waits for before `apply` runs. */
 export const inject = ['slots']
@@ -93,6 +94,10 @@ function report(context: ClientContext, error: unknown): void {
 
 export function apply(context: ClientContext): void {
   const disposers: Array<() => void> = []
+
+  // The app's language, for every string this half renders. Read live by `t()`,
+  // so switching the app's locale does not need a reload.
+  attachLocale(context.locale)
 
   try {
     installStyles()
@@ -164,15 +169,15 @@ export function apply(context: ClientContext): void {
       const disposeType = tabs.register({
         id: RECALL_TAB_ID,
         kind: RECALL_TAB_KIND,
-        title: () => '记忆召回',
+        title: () => t('recall.tabTitle'),
         // The guide is how the tab is found at all: the right Sidebar opens on its
         // guide page, and a type with no entry there is reachable only by code.
         guide: [
           {
             id: 'recall',
             order: 40,
-            title: () => '记忆召回',
-            description: () => '本会话检索到的记忆、资源与技能',
+            title: () => t('recall.tabTitle'),
+            description: () => t('recall.tabDescription'),
           },
         ],
       })

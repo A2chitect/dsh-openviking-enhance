@@ -180,6 +180,23 @@ check(tabBody?.key === tabType?.id, 'the tab body is keyed by the type id')
 check(typeof tabBody?.inject === 'function', 'the tab body declares a session inject face')
 check(tabBody?.inject('session-x')?.sessionId === 'session-x', 'the tab body receives the session it was opened in')
 check(code.includes('/recall'), 'the panel requests the host recall route')
+// Both dictionaries must ship: the copy follows the app's language, and a build
+// that dropped one would leave half the interface in the other. esbuild escapes
+// non-ASCII by default (its `charset` is `ascii`), so the bundle is decoded before
+// looking for the Chinese.
+const decoded = code.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+check(
+  decoded.includes('记忆召回') && decoded.includes('Memory recall'),
+  'both languages ship in the bundle',
+)
+// The locale half is a manifest dependency, not a Cordis service this plugin
+// waits for: a composition without it must still run the plugin (its copy then
+// falls back to the browser language), so the dependency is declared here and
+// read opportunistically at runtime.
+check(
+  (pkg.dsh?.client?.inject ?? []).includes('@deepseek-ai/dsh-client-locale'),
+  'the manifest depends on the locale package',
+)
 check(injectedCss?.includes('.ove-recall'), 'installs the recall panel stylesheet')
 
 // The recall panel is styled from the shipped right-Sidebar tabs rather than from

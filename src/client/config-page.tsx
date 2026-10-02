@@ -25,6 +25,7 @@ import { useCallback, useState } from 'react'
 import type { PluginConfigViewProps } from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 import type { SettingsPathOpView } from '@deepseek-ai/dsh-api-remotes/client'
 import { probeEndpoint } from './host-api.ts'
+import { t } from './locale.ts'
 
 interface FieldSpec {
   readonly key: string
@@ -39,16 +40,16 @@ interface FieldSpec {
 const FIELDS: readonly FieldSpec[] = [
   {
     key: 'endpoint',
-    label: 'OpenViking 地址',
-    hint: '留空则读 ~/.openviking/ovcli.conf，再退回 http://127.0.0.1:1933',
+    label: 'config.endpoint',
+    hint: 'config.endpointHint',
     placeholder: 'http://127.0.0.1:1933',
   },
-  { key: 'apiKey', label: 'API Key', hint: '服务端开启鉴权时才需要；建议写在 ovcli.conf 里', secret: true },
-  { key: 'account', label: 'Account', hint: '留空 = default' },
-  { key: 'user', label: 'User', hint: '留空 = default' },
-  { key: 'studioPath', label: 'Studio 路径', hint: '默认 /studio/', placeholder: '/studio/' },
-  { key: 'cacheTtlMs', label: '状态缓存（毫秒）', hint: '默认 2500', numeric: true, placeholder: '2500' },
-  { key: 'recallCacheTtlMs', label: '召回缓存（毫秒）', hint: '默认 15000', numeric: true, placeholder: '15000' },
+  { key: 'apiKey', label: 'config.apiKey', hint: 'config.apiKeyHint', secret: true },
+  { key: 'account', label: 'config.account', hint: 'config.accountHint' },
+  { key: 'user', label: 'config.user', hint: 'config.userHint' },
+  { key: 'studioPath', label: 'config.studioPath', hint: 'config.studioPathHint', placeholder: '/studio/' },
+  { key: 'cacheTtlMs', label: 'config.cacheTtl', hint: 'config.cacheTtlHint', numeric: true, placeholder: '2500' },
+  { key: 'recallCacheTtlMs', label: 'config.recallCacheTtl', hint: 'config.recallCacheTtlHint', numeric: true, placeholder: '15000' },
 ]
 
 const SECRET_PLACEHOLDER = '••••••••'
@@ -68,7 +69,7 @@ function asText(value: unknown): string {
 function SummaryLine({ form }: { form: PluginConfigViewProps['form'] }) {
   const resolved = (form?.state.value ?? {}) as Record<string, unknown>
   const endpoint = asText(resolved.endpoint)
-  return <span>{endpoint.length > 0 ? `OpenViking · ${endpoint}` : 'OpenViking · 未配置地址'}</span>
+  return <span>{endpoint.length > 0 ? `OpenViking · ${endpoint}` : t('config.summaryUnset')}</span>
 }
 
 export function ConfigPage(props: PluginConfigViewProps) {
@@ -115,7 +116,7 @@ function ConfigForm({ form }: { form: PluginConfigViewProps['form'] }) {
       }
       if (field.numeric === true) {
         const parsed = Number(staged)
-        if (!Number.isFinite(parsed)) return `${field.label} 需要一个数字`
+        if (!Number.isFinite(parsed)) return t('config.needNumber', { label: t(field.label) })
         ops.push({ op: 'set', path: [key], value: parsed })
         continue
       }
@@ -132,7 +133,7 @@ function ConfigForm({ form }: { form: PluginConfigViewProps['form'] }) {
       return
     }
     if (ops.length === 0) {
-      setNote({ tone: 'ok', text: '没有改动。' })
+      setNote({ tone: 'ok', text: t('config.noChanges') })
       return
     }
     setBusy(true)
@@ -142,9 +143,9 @@ function ConfigForm({ form }: { form: PluginConfigViewProps['form'] }) {
       const accepted = await form.mutate(ops, state?.revision)
       if (accepted) {
         setDraft({})
-        setNote({ tone: 'ok', text: '已保存。宿主会在下一次组合时用上新值。' })
+        setNote({ tone: 'ok', text: t('config.saved') })
       } else {
-        setNote({ tone: 'bad', text: '宿主拒绝了这次修改（可能已被别处改动），你的改动还留在表单里。' })
+        setNote({ tone: 'bad', text: t('config.refused') })
       }
     } catch (error) {
       setNote({ tone: 'bad', text: error instanceof Error ? error.message : String(error) })
@@ -155,32 +156,34 @@ function ConfigForm({ form }: { form: PluginConfigViewProps['form'] }) {
 
   const test = async () => {
     const candidate = valueOf(FIELDS[0] as FieldSpec).trim()
-    setProbe('检测中…')
+    setProbe(t('config.checking'))
     const answer = await probeEndpoint(candidate)
-    if (!answer.ok) setProbe(answer.error)
-    else if (answer.reachable) setProbe(`连上了：OpenViking ${answer.version ?? '(版本未知)'}`)
-    else setProbe(`连不上：${answer.error ?? '未知错误'}`)
+    // One route error has copy of its own; anything else is a diagnostic and is
+    // shown as the host wrote it.
+    if (!answer.ok) setProbe(answer.error === 'endpoint-not-loopback' ? t('config.probeRefused') : answer.error)
+    else if (answer.reachable) setProbe(t('config.probeOk', { version: answer.version ?? t('config.probeVersionUnknown') }))
+    else setProbe(t('config.probeFailed', { error: answer.error ?? t('config.unknownError') }))
   }
 
   if (state === undefined || state.status === 'loading') {
-    return <p className="ove-config-note">正在读取配置…</p>
+    return <p className="ove-config-note">{t('config.loading')}</p>
   }
   if (state.status === 'unavailable') {
     return (
       <p className="ove-config-note">
-        这个部署没有把本插件的配置暴露给客户端（远程 Web 或未挂载 settings），请在 profile 的 cordis.patch.yml 里配置。
+        {t('config.unavailable')}
       </p>
     )
   }
 
   return (
     <div className="ove-config">
-      {!writable && <p className="ove-config-note">当前 profile 不接受写入，下面只能查看。</p>}
+      {!writable && <p className="ove-config-note">{t('config.readonly')}</p>}
       {FIELDS.map((field) => (
         <label className="ove-config-field" key={field.key}>
           <span className="ove-config-label">
-            {field.label}
-            {field.key in overrides && <span className="ove-config-badge">已覆盖</span>}
+            {t(field.label)}
+            {field.key in overrides && <span className="ove-config-badge">{t('config.overridden')}</span>}
           </span>
           <span className="ove-config-control">
             <input
@@ -194,20 +197,20 @@ function ConfigForm({ form }: { form: PluginConfigViewProps['form'] }) {
             />
             {field.key === 'endpoint' && (
               <button type="button" className="ove-config-button" onClick={() => void test()} disabled={busy}>
-                检测
+                {t('config.check')}
               </button>
             )}
             <button
               type="button"
               className="ove-config-button"
-              title="清空该字段，恢复为默认"
+              title={t('config.defaultHint')}
               onClick={() => clear(field.key)}
               disabled={!writable || busy}
             >
-              默认
+              {t('config.default')}
             </button>
           </span>
-          <span className="ove-config-hint">{field.hint}</span>
+          <span className="ove-config-hint">{t(field.hint)}</span>
         </label>
       ))}
 
@@ -218,7 +221,7 @@ function ConfigForm({ form }: { form: PluginConfigViewProps['form'] }) {
 
       <div className="ove-config-actions">
         <button type="button" className="ove-config-primary" onClick={() => void save()} disabled={!writable || busy}>
-          保存
+          {t('config.save')}
         </button>
         <button
           type="button"
@@ -229,7 +232,7 @@ function ConfigForm({ form }: { form: PluginConfigViewProps['form'] }) {
           }}
           disabled={busy || Object.keys(draft).length === 0}
         >
-          放弃改动
+          {t('config.discard')}
         </button>
       </div>
     </div>

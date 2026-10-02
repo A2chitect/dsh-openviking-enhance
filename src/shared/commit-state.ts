@@ -83,7 +83,9 @@ export function deriveClientPhase(input: {
  */
 export function describeFailure(task: CommitTask): string {
   const raw = (task.error ?? '').trim()
-  if (raw.length === 0) return task.stage ? `抽取失败（阶段：${task.stage}）` : '抽取失败（服务端未给出原因）'
+  // No copy lives in this module: both halves import it, and only one of them
+  // has a language. An error with no message asks the caller for its own words.
+  if (raw.length === 0) return ''
   const message = /['"]message['"]\s*:\s*['"]([^'"]+)['"]/.exec(raw)
   if (message?.[1]) return message[1].trim()
   const firstLine = raw.split('\n')[0] ?? raw

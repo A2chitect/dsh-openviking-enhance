@@ -172,7 +172,7 @@ async function report(base, sessionId) {
       )
     }
     if (payload.plan) console.log(`[smoke] plan        ${payload.plan.split('\n')[0].slice(0, 90)}`)
-    for (const warning of payload.warnings) console.log(`[smoke]   warning   ${warning}`)
+    for (const warning of payload.warnings) console.log(`[smoke]   warning   ${warning.code}`)
 
     // The detail view is a second route; exercise it on a real hit.
     const first = payload.buckets.flatMap((bucket) => bucket.items)[0]

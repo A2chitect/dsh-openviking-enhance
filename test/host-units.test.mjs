@@ -291,8 +291,10 @@ test('describeFailure unwraps the provider message out of the server error', () 
   }
   assert.equal(describeFailure(task), 'Thinking mode does not support this tool_choice (request_id: 49c9)')
   assert.equal(describeFailure({ ...task, error: 'plain failure' }), 'plain failure')
-  assert.equal(describeFailure({ ...task, error: null }), '抽取失败（阶段：failed）')
-  assert.equal(describeFailure({ ...task, error: null, stage: null }), '抽取失败（服务端未给出原因）')
+  // An error with no message yields no text: this module is shared by both
+  // halves, so the wording belongs to whichever half has a language.
+  assert.equal(describeFailure({ ...task, error: null }), '')
+  assert.equal(describeFailure({ ...task, error: '   ' }), '')
 })
 
 test('failedTasks and taskTime read the task list the way the popover needs', () => {

@@ -20,6 +20,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { EnhanceConfig } from '../shared/protocol.ts'
 import { fetchConfig } from './host-api.ts'
+import { noticeText, t } from './locale.ts'
 
 /**
  * The panel page. `nonce` forces the iframe to remount on refresh, which is the
@@ -48,9 +49,9 @@ export function StudioPanel() {
     return (
       <div className="ove-panel">
         <div className="ove-notice">
-          <h4>OpenViking 面板不可用</h4>
+          <h4>{t('panel.unavailable')}</h4>
           <p>{error}</p>
-          <p className="ove-empty">宿主路由未响应；确认插件已在 profile 中启用后重载界面。</p>
+          <p className="ove-empty">{t('panel.unavailableHint')}</p>
         </div>
       </div>
     )
@@ -59,7 +60,7 @@ export function StudioPanel() {
   if (!config) {
     return (
       <div className="ove-panel">
-        <div className="ove-notice ove-empty">正在连接 OpenViking…</div>
+        <div className="ove-notice ove-empty">{t('panel.connecting')}</div>
       </div>
     )
   }
@@ -69,24 +70,24 @@ export function StudioPanel() {
       <div className="ove-toolbar">
         <span className={`ove-dot ${config.healthy ? 'ove-dot-ok' : 'ove-dot-bad'}`} />
         <span className="ove-title">OpenViking Studio</span>
-        <span className="ove-empty">{config.version ? `v${config.version}` : '未连接'}</span>
+        <span className="ove-empty">{config.version ? `v${config.version}` : t('panel.notConnected')}</span>
         <span className="ove-empty">{`${config.account}/${config.user}`}</span>
         <span className="ove-spacer" />
-        <button type="button" onClick={() => setNonce((n) => n + 1)} title="重新加载面板">
-          刷新
+        <button type="button" onClick={() => setNonce((n) => n + 1)} title={t('panel.reload')}>
+          {t('panel.refresh')}
         </button>
         <button
           type="button"
           onClick={() => window.open(config.studioUrl, '_blank', 'noopener,noreferrer')}
-          title="在新标签页打开"
+          title={t('panel.openInTab')}
         >
-          新标签页
+          {t('panel.newTab')}
         </button>
       </div>
       {config.warnings.length > 0 ? (
         <div className="ove-notice" style={{ padding: '8px 12px', fontSize: 12, opacity: 0.75 }}>
-          {config.warnings.map((warning) => (
-            <div key={warning}>⚠ {warning}</div>
+          {config.warnings.map((warning, index) => (
+            <div key={`${warning.code}-${index}`}>⚠ {noticeText(warning)}</div>
           ))}
         </div>
       ) : null}

@@ -38,6 +38,7 @@ import {
   type RecallPayload,
 } from '../shared/protocol.ts'
 import { fetchRecall, fetchRecallContent } from './host-api.ts'
+import { noticeText, t } from './locale.ts'
 
 /** Panel props: the session this tab was opened in. */
 export interface RecallPanelProps {
@@ -45,9 +46,9 @@ export interface RecallPanelProps {
 }
 
 const BUCKET_LABELS: Record<string, string> = {
-  memories: '记忆',
-  resources: '资源',
-  skills: '技能',
+  memories: 'recall.bucket.memories',
+  resources: 'recall.bucket.resources',
+  skills: 'recall.bucket.skills',
 }
 
 /**
@@ -204,7 +205,7 @@ export function RecallPanel({ sessionId }: RecallPanelProps) {
           <input
             className="ove-recall-input"
             value={draft}
-            placeholder="本会话最近一次提问"
+            placeholder={t('recall.queryPlaceholder')}
             spellCheck={false}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
@@ -213,13 +214,13 @@ export function RecallPanel({ sessionId }: RecallPanelProps) {
           />
         </label>
         <button type="button" className="ove-recall-button" onClick={search} disabled={loading}>
-          检索
+          {t('recall.search')}
         </button>
         <button
           type="button"
           className="ove-recall-icon"
-          title="重新检索（跳过缓存）"
-          aria-label="重新检索"
+          title={t('recall.searchAgainHint')}
+          aria-label={t('recall.searchAgain')}
           onClick={() => void load(applied, true, limit)}
           disabled={loading}
         >
@@ -230,11 +231,17 @@ export function RecallPanel({ sessionId }: RecallPanelProps) {
       <div className="ove-recall-body">
         {payload !== null && (
           <div className="ove-recall-meta">
-            <span>{payload.query.source === 'session' ? '本会话提问' : '手动输入'}</span>
-            <span>{shown} 条</span>
+            {/* With no query there is no source to name: the empty state below says
+                what to do instead. */}
+            {payload.query.text.length > 0 && (
+              <span>
+                {payload.query.source === 'session' ? t('recall.sourceSession') : t('recall.sourceManual')}
+              </span>
+            )}
+            <span>{t('recall.count', { count: shown })}</span>
             <span>{payload.latencyMs} ms</span>
             <span>{formatTime(payload.searchedAt)}</span>
-            {payload.peer !== null && <span>peer 检索</span>}
+            {payload.peer !== null && <span>{t('recall.peerScoped')}</span>}
           </div>
         )}
 
@@ -243,18 +250,18 @@ export function RecallPanel({ sessionId }: RecallPanelProps) {
         {/* A search is not instant: the server expands and re-ranks the query,
             which costs seconds on a long prompt. Saying so beats an empty panel. */}
         {loading && payload === null && error === null && (
-          <p className="ove-recall-status">检索中…（服务端会做查询扩展，首次通常要几秒）</p>
+          <p className="ove-recall-status">{t('recall.loadingFirst')}</p>
         )}
 
         {payload !== null && payload.query.text.length === 0 && error === null && (
           <p className="ove-recall-status">
-            这个会话还没有可检索的提问。在上面输入内容后回车，即可看到会召回哪些记忆。
+            {t('recall.noQuery')}
           </p>
         )}
 
         {payload?.plan != null && (
           <details className="ove-recall-plan">
-            <summary><span className="ove-recall-summary">检索计划</span></summary>
+            <summary><span className="ove-recall-summary">{t('recall.plan')}</span></summary>
             <pre>{payload.plan}</pre>
           </details>
         )}
@@ -272,21 +279,21 @@ export function RecallPanel({ sessionId }: RecallPanelProps) {
 
         {hidden > 0 && limit < RECALL_MAX_LIMIT && (
           <button type="button" className="ove-recall-more" onClick={showAll} disabled={loading}>
-            显示全部（另有 {hidden} 条）
+            {t('recall.showAll', { count: hidden })}
           </button>
         )}
 
         {(payload?.warnings.length ?? 0) > 0 && (
           <div className="ove-recall-hint">
-            {payload?.warnings.map((warning) => (
-              <div key={warning}>{warning}</div>
+            {payload?.warnings.map((warning, index) => (
+              <div key={`${warning.code}-${index}`}>{noticeText(warning)}</div>
             ))}
           </div>
         )}
 
         {payload !== null && payload.targets.length > 0 && (
           <details className="ove-recall-targets">
-            <summary><span className="ove-recall-summary">检索范围（{payload.targets.length}）</span></summary>
+            <summary><span className="ove-recall-summary">{t('recall.targets', { count: payload.targets.length })}</span></summary>
             <ul>
               {payload.targets.map((target) => (
                 <li key={target}>{target}</li>
@@ -311,11 +318,11 @@ function Bucket({ bucket, loading, expanded, bodies, onToggle }: BucketProps) {
   return (
     <section>
       <div className="ove-recall-group">
-        <span className="ove-recall-group-name">{BUCKET_LABELS[bucket.bucket] ?? bucket.bucket}</span>
+        <span className="ove-recall-group-name">{t(BUCKET_LABELS[bucket.bucket] ?? bucket.bucket)}</span>
         <span className="ove-recall-group-count">{bucket.items.length}</span>
       </div>
       {bucket.items.length === 0 ? (
-        <p className="ove-recall-hint">{loading ? '检索中…' : '无命中'}</p>
+        <p className="ove-recall-hint">{loading ? t('recall.searching') : t('recall.noHits')}</p>
       ) : (
         bucket.items.map((item) => (
           <Item
@@ -377,13 +384,13 @@ function Item({ item, open, body, onToggle }: ItemProps) {
         <div className="ove-recall-detail">
           <span className="ove-recall-uri">{item.uri}</span>
           {body === undefined || (body as RecallContent).text === '' ? (
-            <p className="ove-recall-hint">载入中…</p>
+            <p className="ove-recall-hint">{t('recall.loadingEntry')}</p>
           ) : 'error' in body ? (
             <p className="ove-recall-error">{body.error}</p>
           ) : (
             <>
               <pre>{body.text}</pre>
-              {body.truncated && <p className="ove-recall-hint">内容过长，已截断显示。</p>}
+              {body.truncated && <p className="ove-recall-hint">{t('recall.truncated')}</p>}
             </>
           )}
         </div>

@@ -28,6 +28,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { TIMELINE_DEFAULT, TIMELINE_MAX, type CommitStatus, type CommitTask, type MemoryDiff, type MemoryDiffEntry, type MemoryDiffSummary } from '../shared/protocol.ts'
 import { fetchCommits, fetchDiff, type CommitsPayload } from './host-api.ts'
+import { t } from './locale.ts'
 import {
   deriveClientPhase,
   describeFailure,
@@ -129,7 +130,7 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
         className={`ove-pill${phase === 'errored' ? ' ove-pill-errored' : ''}`}
         aria-haspopup="dialog"
         aria-expanded={open}
-        aria-label={`OpenViking：${text}`}
+        aria-label={t('pill.aria', { text })}
         title={tooltip(status, error, failures)}
         onClick={() => setOpen((value) => !value)}
       >
@@ -143,40 +144,40 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
         </span>
       </button>
       {open ? (
-        <div className="ove-pop" role="dialog" aria-label="OpenViking 提交详情">
+        <div className="ove-pop" role="dialog" aria-label={t('pill.detailTitle')}>
           <div className="ove-pop-title">
             <span className="ove-pop-title-label">
               <OpenVikingIcon size={14} strokeWidth={1} />
-              OpenViking 提交
+              {t('pill.detailHeading')}
             </span>
-            <span className="ove-row-count">{status ? `${status.commitCount} 次` : '—'}</span>
+            <span className="ove-row-count">{status ? t('pill.commitCount', { count: status.commitCount }) : '—'}</span>
           </div>
           <div className="ove-pop-rule" aria-hidden="true" />
           <dl className="ove-facts">
-            <dt>会话</dt>
+            <dt>{t('pill.session')}</dt>
             <dd>
               <code>{status?.ovSessionId ?? '—'}</code>
             </dd>
-            <dt>待提交</dt>
+            <dt>{t('pill.pending')}</dt>
             <dd>
               {status ? `${status.pendingTokens}${status.threshold ? ` / ${status.threshold}` : ''} tokens` : '—'}
             </dd>
-            <dt>最近提交</dt>
+            <dt>{t('pill.lastCommit')}</dt>
             <dd>{status?.lastCommitAt ? formatTime(status.lastCommitAt) : '—'}</dd>
             {running.length > 0 ? (
               <>
-                <dt>进行中</dt>
+                <dt>{t('pill.inProgress')}</dt>
                 <dd>{running.map((task) => task.status).join(', ')}</dd>
               </>
             ) : null}
           </dl>
 
-          {error ? <div className="ove-facts ove-empty">读取失败：{error}</div> : null}
+          {error ? <div className="ove-facts ove-empty">{t('pill.readFailed', { error })}</div> : null}
 
           {failures.length > 0 ? (
             <div className="ove-section">
-              <div className="ove-section-title ove-error">记忆抽取失败 {failures.length} 次</div>
-              <div className="ove-empty">归档已写入，但这几次提交的记忆没有被抽取出来。</div>
+              <div className="ove-section-title ove-error">{t('pill.failedExtractions', { count: failures.length })}</div>
+              <div className="ove-empty">{t('pill.failedExtractionsHint')}</div>
               {failures.slice(0, 4).map((task) => (
                 <div className="ove-failure" key={task.task_id}>
                   <div className="ove-failure-head">
@@ -186,21 +187,21 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
                     </span>
                   </div>
                   <div className="ove-failure-msg" title={task.error ?? undefined}>
-                    {describeFailure(task)}
+                    {failureReason(task)}
                   </div>
                 </div>
               ))}
-              {failures.length > 4 ? <div className="ove-empty">…另有 {failures.length - 4} 次失败</div> : null}
+              {failures.length > 4 ? <div className="ove-empty">{t('pill.moreFailures', { count: failures.length - 4 })}</div> : null}
             </div>
           ) : null}
 
           <div className="ove-section">
             <div className="ove-section-title">
-              提交记录
-              {archives.length > visibleTimeline.length ? `（最近 ${visibleTimeline.length} / 共 ${archives.length} 次）` : `（${archives.length} 次）`}
+              {t('pill.commits')}
+              {archives.length > visibleTimeline.length ? t('pill.commitsNewest', { shown: visibleTimeline.length, total: archives.length }) : t('pill.commitsTotal', { total: archives.length })}
             </div>
             {archives.length === 0 ? (
-              <div className="ove-empty">本会话尚无提交。达到 token 阈值或会话结束时自动提交。</div>
+              <div className="ove-empty">{t('pill.noCommits')}</div>
             ) : (
               <div className="ove-timeline">
                 {visibleTimeline.map((archive) => {
@@ -216,7 +217,7 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
                       <span className="ove-tl-dot" aria-hidden="true" />
                       <span className="ove-tl-time">{formatShortTime(archive.modTime)}</span>
                       <span className={`ove-tl-counts${summary ? '' : ' ove-muted'}`}>{timelineLabel(summary, isNewest && running.length > 0)}</span>
-                      <span className="ove-tl-open">影响 →</span>
+                      <span className="ove-tl-open">{t('pill.affected')}</span>
                     </button>
                   )
                 })}
@@ -224,16 +225,16 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
             )}
             {archives.length > visibleTimeline.length ? (
               <button type="button" className="ove-row ove-tl-more" onClick={() => setSummaryLimit(TIMELINE_MAX)}>
-                <span>显示全部 {archives.length} 次</span>
+                <span>{t('pill.showAll', { total: archives.length })}</span>
                 <span className="ove-row-count">↓</span>
               </button>
             ) : null}
           </div>
 
-          {diffPending ? <div className="ove-section ove-empty">正在读取 {selected}…</div> : null}
+          {diffPending ? <div className="ove-section ove-empty">{t('pill.readingDiff', { archive: selected ?? '' })}</div> : null}
           {diff ? <DiffView diff={diff} /> : null}
           {!diffPending && selected && !diff ? (
-            <div className="ove-section ove-empty">该归档还没有 memory_diff.json —— 抽取仍在进行。</div>
+            <div className="ove-section ove-empty">{t('pill.diffMissing')}</div>
           ) : null}
         </div>
       ) : null}
@@ -246,14 +247,14 @@ function DiffView({ diff }: { diff: MemoryDiff }) {
   return (
     <div className="ove-section">
       <div className="ove-section-title">
-        影响记忆：新增 {summary.totalAdds} · 更新 {summary.totalUpdates} · 删除 {summary.totalDeletes}
+        {t('pill.diffSummary', { adds: summary.totalAdds, updates: summary.totalUpdates, deletes: summary.totalDeletes })}
       </div>
       <div className="ove-empty">{diff.archiveUri}</div>
-      <Group title="新增" entries={diff.adds} />
-      <Group title="更新" entries={diff.updates} />
-      <Group title="删除" entries={diff.deletes} />
+      <Group title={t('pill.group.adds')} entries={diff.adds} />
+      <Group title={t('pill.group.updates')} entries={diff.updates} />
+      <Group title={t('pill.group.deletes')} entries={diff.deletes} />
       {summary.totalAdds + summary.totalUpdates + summary.totalDeletes === 0 ? (
-        <div className="ove-empty">本次提交未改变任何记忆。</div>
+        <div className="ove-empty">{t('pill.noMemoryChange')}</div>
       ) : null}
     </div>
   )
@@ -264,7 +265,7 @@ function Group({ title, entries }: { title: string; entries: MemoryDiffEntry[] }
   return (
     <details className="ove-group" open>
       <summary>
-        {title}（{entries.length}）
+        {t('pill.groupTitle', { title, count: entries.length })}
       </summary>
       {entries.map((entry) => (
         <div className="ove-entry" key={entry.uri}>
@@ -283,12 +284,12 @@ function Group({ title, entries }: { title: string; entries: MemoryDiffEntry[] }
  * running. The failure section below says when it actually failed.
  */
 function timelineLabel(summary: MemoryDiffSummary | null, running: boolean): string {
-  if (!summary) return running ? '抽取中…' : '无明细'
+  if (!summary) return running ? t('pill.phase.extracting') : t('pill.phase.noDetail')
   const parts: string[] = []
-  if (summary.totalAdds > 0) parts.push(`${summary.totalAdds} 新增`)
-  if (summary.totalUpdates > 0) parts.push(`${summary.totalUpdates} 更新`)
-  if (summary.totalDeletes > 0) parts.push(`${summary.totalDeletes} 删除`)
-  if (parts.length === 0) return '未改变记忆'
+  if (summary.totalAdds > 0) parts.push(t('pill.phaseAdds', { count: summary.totalAdds }))
+  if (summary.totalUpdates > 0) parts.push(t('pill.phaseUpdates', { count: summary.totalUpdates }))
+  if (summary.totalDeletes > 0) parts.push(t('pill.phaseDeletes', { count: summary.totalDeletes }))
+  if (parts.length === 0) return t('pill.phase.unchanged')
   return parts.join(' · ')
 }
 
@@ -301,39 +302,51 @@ function formatShortTime(iso: string | null): string {
   return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
+/**
+ * The reason a failed extraction shows, in the reader's language.
+ *
+ * `describeFailure` returns the server's own message and nothing else, so the
+ * wording of "there was no message" is decided here rather than in shared code.
+ */
+function failureReason(task: CommitTask): string {
+  const reason = describeFailure(task)
+  if (reason.length > 0) return reason
+  return task.stage ? t('pill.stageReason', { stage: task.stage }) : t('pill.noReason')
+}
+
 function phaseLabel(phase: string, status: CommitStatus | null): string {
   switch (phase) {
     case 'failed':
-      return '不可用'
+      return t('pill.label.failed')
     case 'errored':
-      return '抽取失败'
+      return t('pill.label.errored')
     case 'extracting':
-      return '抽取中…'
+      return t('pill.label.extracting')
     case 'done':
-      return `${status?.commitCount ?? 0} 次提交`
+      return t('pill.label.commits', { count: status?.commitCount ?? 0 })
     case 'pending':
-      return status ? `${formatTokens(status.pendingTokens)}/${formatTokens(status.threshold ?? 0)}` : '待提交'
+      return status ? `${formatTokens(status.pendingTokens)}/${formatTokens(status.threshold ?? 0)}` : t('pill.label.pending')
     default:
-      return '未提交'
+      return t('pill.label.idle')
   }
 }
 
 function tooltip(status: CommitStatus | null, error: string | null, failures: CommitTask[]): string {
-  if (error) return `OpenViking 读取失败：${error}`
-  if (!status) return '正在读取 OpenViking 提交状态'
+  if (error) return t('pill.tip.readFailed', { error })
+  if (!status) return t('pill.tip.reading')
   const newest = failures[0]
   if (newest) {
     return [
-      `最近一次记忆抽取失败：${describeFailure(newest)}`,
-      `OpenViking 会话：${status.ovSessionId}`,
-      `已提交 ${status.commitCount} 次（其中 ${failures.length} 次抽取失败）`,
+      t('pill.tip.failure', { reason: failureReason(newest) }),
+      t('pill.tip.session', { id: status.ovSessionId }),
+      t('pill.tip.commits', { count: status.commitCount, failed: failures.length }),
     ].join('\n')
   }
   return [
-    `OpenViking 会话：${status.ovSessionId}`,
-    `待提交 tokens：${status.pendingTokens}${status.threshold ? ` / ${status.threshold}` : ''}`,
-    `提交次数：${status.commitCount}`,
-    status.lastCommitAt ? `最近提交：${status.lastCommitAt}` : '',
+    t('pill.tip.session', { id: status.ovSessionId }),
+    t('pill.tip.pending', { tokens: `${status.pendingTokens}${status.threshold ? ` / ${status.threshold}` : ''}` }),
+    t('pill.tip.commitCount', { count: status.commitCount }),
+    status.lastCommitAt ? t('pill.tip.lastCommit', { time: status.lastCommitAt }) : '',
   ]
     .filter(Boolean)
     .join('\n')

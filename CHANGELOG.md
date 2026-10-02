@@ -24,6 +24,11 @@ promotes to a dated section — see [RELEASING.md](RELEASING.md).
 
 ### Changed
 
+- **The interface is bilingual.** Every string this plugin renders — the panel,
+  the pill and its popover, the recall tab, the configuration form — now follows
+  the language DSH is set to, with Chinese and English dictionaries and English as
+  the fallback. Host-side messages became codes plus parameters, so the half that
+  has no language no longer decides the wording.
 - **The plugin's settings are editable in the GUI.** Its row on the **Plugins**
   page now has a **Configure** form — endpoint, key, identity, Studio path and the
   two cache lifetimes — with a *check* button that probes the address before
@@ -37,6 +42,9 @@ promotes to a dated section — see [RELEASING.md](RELEASING.md).
 
 ### 变更
 
+- **界面中英双语**：本插件渲染的每一处文字（面板、胶囊及其弹窗、召回面板、配置表单）现在都跟随
+  DSH 的语言设置，内置中英两套字典，其他语言退回英文。宿主侧消息改成"码 + 参数"，
+  不再由那个没有语言概念的半部分决定措辞。
 - **插件设置可以在界面里改了**：**Plugins** 页里本插件那一行多了 **Configure** 表单
   （地址、Key、身份、Studio 路径、两个缓存时长），地址旁有 **检测** 按钮可在保存前试连，
   每个字段的 **默认** 按钮是清除覆盖、恢复继承，而不是写入空值。同样的值仍可手写在 profile patch 里。

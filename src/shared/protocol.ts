@@ -142,7 +142,7 @@ export interface EnhanceConfig {
   account: string
   user: string
   /** Non-fatal problems worth surfacing in the panel header. */
-  warnings: string[]
+  warnings: PluginNotice[]
 }
 
 /**
@@ -208,7 +208,7 @@ export interface RecallPayload {
   latencyMs: number
   searchedAt: string
   /** Non-fatal problems: a target that failed, a session log with no user turn, … */
-  warnings: string[]
+  warnings: PluginNotice[]
 }
 
 /** One entry's full text, for the panel's detail view. */
@@ -226,6 +226,19 @@ export const RECALL_MAX_LIMIT = 25
 export const RECALL_CONTENT_MAX_CHARS = 20000
 /** The buckets the panel renders, in display order. */
 export const RECALL_BUCKETS = ['memories', 'resources', 'skills'] as const
+
+/**
+ * A message from the host, which has no language of its own.
+ *
+ * The host runs in Node with no locale: it reports *what happened* as a code and
+ * the parameters that fill it in, and the browser half renders it through `t()` as
+ * `notice.<code>`. An unknown code falls back to the code itself, so a newer host
+ * talking to an older client degrades to something readable rather than blank.
+ */
+export interface PluginNotice {
+  code: string
+  params?: Record<string, string | number>
+}
 
 /** Envelope every route returns; `ok: false` carries a message, never a throw. */
 export type ApiResult<T> = ({ ok: true } & T) | { ok: false; error: string }

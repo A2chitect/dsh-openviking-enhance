@@ -109,12 +109,30 @@ import("dsh-openviking-enhance")
 
 | # | 工作 | 说明 |
 | --- | --- | --- |
-| 1 | i18n | 界面文字目前全中文（面板、胶囊、召回面板、配置页）。规范面向英文读者；同类插件都带 `locale/`。宿主侧的消息（`warnings`）也要从"中文句子"改成"码 + 参数"，由客户端翻译 |
+| 1 | ~~i18n~~ | ☑ 已完成，见下面第 7 条 |
 | 2 | 可安装性实测（tarball 已验，profile 安装待办） | 已做：把 `pnpm pack` 的产物装进空工程，文件齐、**宿主半部分零依赖可加载**（见下）。待做：在干净 profile 里用 `dsh plugin add` 真装一次——那是"陌生人能不能装上"的最终证据 |
 | 3 | 截图 + `screenshots.json` | 需要真机截图（左侧 Studio、提交胶囊+时间线、右侧召回面板、插件配置页） |
 | 4 | README 更新 | 加截图、市场安装方式、兼容性说明（依赖 `@openviking/dsh-memory-plugin` 的内部结构这件事要写明） |
 | 5 | 条目 yml | `data/plugins/<owner>__<repo>.yml`，一个文件 |
 | 6 | 版本 0.2.0 | 这次是新增功能，按 RELEASING.md 走 minor；用 `pnpm run release` 本地打标签（**不发 npm**） |
+
+### 7. 界面中英双语 ☑
+
+**客户端**：新增 `src/client/locale.ts` —— 中英两套字典（各 112 个键），`attachLocale(ctx.locale)`
+读取应用语言，`t()` 取词。三个刻意的取舍写在文件头：英文是兜底（不是中文）、缺键时返回键本身
+（错字会在界面上显形）、**不调用 `ctx.locale.register`**（本插件是自己文案的唯一消费者，
+注册只是把字典冻结在加载时刻）。
+
+**宿主**：宿主跑在没有语言概念的 Node 里，原先它直接拼中文句子。现在协议里加了
+`PluginNotice { code, params }`：宿主只报告"发生了什么"，客户端按 `notice.<code>` 出词，
+未知码退化成码本身（新宿主 + 旧客户端不会渲染出空白）。
+
+**防回归**（`test/locale.test.mjs`，5 个用例）：中英字典键集必须完全一致；组件用到的每个键
+都必须存在（扫描 `t('…')` 与字段表）；同一键在两套语言里的占位符必须一致（否则会漏出 `{count}`）；
+语言解析顺序（应用 → 浏览器 → 英文）；缺键与多余参数的行为。
+
+顺带把 `describeFailure` 的兜底文案从 `shared/commit-state.ts` 移走——那个模块两半都 import，
+只有一半有语言；现在它只返回服务端自己的消息，措辞由客户端决定。
 
 ## 四、需要你拍板
 
@@ -138,4 +156,5 @@ import("dsh-openviking-enhance")
 | tarball 装得上且零依赖可加载 | 见上面第 5 条的三条命令 |
 | 源码安装的四种形态 | 见上面第 6 条；重跑：`pnpm add git+file:///<clone>` |
 | 发布产物不会缺 lib/ | `rm -rf lib && pnpm pack --pack-destination /tmp && tar tzf /tmp/*.tgz \| grep lib/` |
+| 中英字典一致 / 无缺键 | `node --test test/locale.test.mjs` |
 | 全量回归 | `pnpm test` |
