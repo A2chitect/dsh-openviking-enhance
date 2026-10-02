@@ -59,7 +59,8 @@ OpenViking 拉进上下文的记忆——检索用的那句话（默认是本会
 dsh plugin --profile desktop add dsh-openviking-enhance
 ```
 
-如果你是在源码目录里开发——客户端半部分是**预构建产物**，所以要从打好的包里装，而不是就地构建：
+直接用 Git 地址安装会被 pnpm 拒绝（这个包声明了构建脚本，pnpm 在得到允许前一律不放行），
+所以源码目录要打成 tarball 再装——客户端半部分是**预构建产物**，源码安装等于装了个没东西可加载的壳：
 
 ```bash
 pnpm pack && dsh plugin --profile desktop add ./dsh-openviking-enhance-<版本>.tgz

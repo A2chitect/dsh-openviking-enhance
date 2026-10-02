@@ -70,9 +70,10 @@ Install it from the Plugins page (Add plugin → package name or tarball), or:
 dsh plugin --profile desktop add dsh-openviking-enhance
 ```
 
-Installed from a source checkout instead — the client half is a prebuilt bundle,
-so the package must be installed from a published artifact rather than built in
-place:
+Installing straight from a Git URL is refused by pnpm — the package asks to run a
+build script and pnpm blocks those until they are allowed — so a source checkout is
+installed as a tarball instead. The client half is a prebuilt bundle: a source
+install would have nothing to load.
 
 ```bash
 pnpm pack && dsh plugin --profile desktop add ./dsh-openviking-enhance-<version>.tgz

@@ -1,6 +1,8 @@
 # 发布清单
 
-面向维护者。目标：**一个陌生人能装上这个插件**，并且它能被收录进
+> 维护者文档，中文；面向用户的是两份 README（`README.md` / `README.zh.md`）。
+
+目标：**一个陌生人能装上这个插件**，并且它能被收录进
 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)（规范原文
 `contributing.md`，2026-10-02 读取，223 行）。
 
@@ -255,6 +257,22 @@ CI 的五步我现在都在本地逐条复现过（checkout → node 22 → pnpm
   `.backup/`（profile 清单备份）、`.scratch/` 都在 `.gitignore` 里，不会被推上去。
 - **1 天门槛**：仓库 createdAt 为 `2026-10-02T06:46:47Z`，即本地时间 14:46:47，
   所以 **2026-10-03 14:46 之后**才可以提收录 PR。
+
+### 18. 从公开仓库直接安装会发生什么（实测）☑
+
+仓库公开之后，陌生人完全可能直接 `dsh plugin add https://github.com/A2chitect/dsh-openviking-enhance`。
+拿真实的公开地址实测：
+
+```
+pnpm add git+https://github.com/A2chitect/dsh-openviking-enhance
+  → 退出码 1：build scripts but is not in the "allowBuilds" allowlist
+  → node_modules 里什么都没装
+```
+
+也就是说：**它会响亮地失败，而不是静默装一个没有 `lib/` 的壳**——这正是上一条 `prepack` 带来的
+行为。规范对这种情况给的解法就是"挂一个预构建 tarball 并用 `tarball:` 字段指向它（如果你的仓库
+根本无法从源码安装，这一项是必需的）"。所以 **npm / tarball 是规范prescribe 的路径**，
+"把 `lib/` 提交进仓库"只是可选便利，不是必需项。README 的安装段已按这个事实改写。
 
 ## 三点五、仓库建好之后（照抄即可）
 
