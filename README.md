@@ -138,4 +138,5 @@ failure instead). The code comments explain how the pieces fit together.
 
 The version lives in `package.json` and is tagged `vX.Y.Z` in git; while it is `0.x`
 the internals may still change. See [CHANGELOG.md](CHANGELOG.md) for what each
-release contains.
+release contains, and [RELEASING.md](RELEASING.md) for the release steps and the
+GUI acceptance checklist — that one is a maintainer document, Chinese only.

@@ -11,7 +11,13 @@
 name: ci
 
 on:
+  # Branch pushes, pull requests, and release tags. A `v*` tag has to pass the same
+  # gate the release script ran locally — `pnpm test` includes
+  # `test/release-meta.test.mjs`, which fails when the version in package.json and
+  # the newest section of CHANGELOG.md disagree.
   push:
+    branches: ['**']
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 

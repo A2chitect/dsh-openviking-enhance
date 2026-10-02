@@ -121,4 +121,5 @@ pnpm run watch      # 改动后自动重建
 （`SMOKE_REQUIRE_SERVER=1` 可让跳过变成失败）。各部分的实现细节见源码注释。
 
 版本号写在 `package.json`，每次发布在 git 里打 `vX.Y.Z` 标签；`0.x` 期间内部实现
-仍可能调整。每个版本包含什么见 [CHANGELOG.md](CHANGELOG.md)。
+仍可能调整。每个版本包含什么见 [CHANGELOG.md](CHANGELOG.md)，发版步骤和必须在界面里
+过一遍的验收清单见 [RELEASING.md](RELEASING.md)。

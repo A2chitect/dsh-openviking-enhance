@@ -4,6 +4,11 @@ Notable changes to `dsh-openviking-enhance`. The `version` field in
 [`package.json`](package.json) is the source of truth; every release is tagged
 `vX.Y.Z` in git. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+Notes for the next release go under `## Unreleased`, which `pnpm run release`
+promotes to a dated section — see [RELEASING.md](RELEASING.md).
+
+## Unreleased
+
 ## 0.1.0 — 2026-10-02
 
 First release. Read-only throughout: the plugin never commits, writes or deletes

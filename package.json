@@ -45,7 +45,8 @@
     "check": "pnpm run typecheck && pnpm run build",
     "smoke": "node scripts/smoke-client.mjs && node scripts/smoke-host.mjs",
     "test": "pnpm run check && pnpm run unit && pnpm run smoke",
-    "unit": "node --test"
+    "unit": "node --test",
+    "release": "node scripts/release.mjs"
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.4"
