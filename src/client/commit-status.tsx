@@ -97,9 +97,14 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
 
   if (!sessionId) return null
 
-  const phase = error ? 'failed' : (status?.phase ?? 'idle')
-  const text = phaseLabel(phase, status)
   const running = tasks.filter((task) => task.status === 'running' || task.status === 'pending')
+  // The server's `commit_count` advances when the archive is written, before the
+  // background extraction finishes, so a freshly counted commit can have no
+  // `memory_diff.json` yet and the host's archive-vs-counter comparison sees no
+  // disagreement. The task list is the accurate signal, and this poll already
+  // carries it — so prefer it over the derived phase rather than fetching more.
+  const phase = error ? 'failed' : running.length > 0 ? 'extracting' : (status?.phase ?? 'idle')
+  const text = phaseLabel(phase, status)
   const archives = status ? [...status.archives].reverse() : []
 
   return (
