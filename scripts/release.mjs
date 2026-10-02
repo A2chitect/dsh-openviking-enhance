@@ -191,26 +191,28 @@ function main(argv) {
     return
   }
 
-  const pkg = JSON.parse(readFileSync(packagePath, 'utf8'))
-  const current = pkg.version
-  const next = resolveNextVersion(current, options.target)
-
-  if (compareVersions(next, current) <= 0) {
-    fail(`next version ${next} is not greater than the current ${current}`)
-  }
-  if (git(['rev-parse', '--verify', '--quiet', `refs/tags/v${next}`], { allowFailure: true }).status === 0) {
-    fail(`tag v${next} already exists`)
-  }
+  // Preconditions, cheapest and most actionable first: a dirty tree is the
+  // commonest blocker and a bad argument the next, and both are better reported
+  // before the "did you write the notes" check.
   const dirty = git(['status', '--porcelain']).stdout.trim()
   if (dirty) {
     fail(`working tree is not clean — commit or stash first:\n${dirty}`)
   }
 
-  const changelog = readFileSync(changelogPath, 'utf8')
+  const pkg = JSON.parse(readFileSync(packagePath, 'utf8'))
+  const current = pkg.version
   const date = localDate()
+  let next
   let promotion
   try {
-    promotion = promoteUnreleased(changelog, next, date)
+    next = resolveNextVersion(current, options.target)
+    if (compareVersions(next, current) <= 0) {
+      throw new Error(`next version ${next} is not greater than the current ${current}`)
+    }
+    if (git(['rev-parse', '--verify', '--quiet', `refs/tags/v${next}`], { allowFailure: true }).status === 0) {
+      throw new Error(`tag v${next} already exists`)
+    }
+    promotion = promoteUnreleased(readFileSync(changelogPath, 'utf8'), next, date)
   } catch (error) {
     fail(error.message)
   }
