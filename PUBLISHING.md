@@ -369,16 +369,25 @@ pnpm test                        → exit 0：62 测试 + 20 项发布契约 + �
 
 （按你的偏好，公开 PR 一律英文。实际提交时把 `<owner>__<repo>` 换成真实文件名。）
 
-## 三点七、发布那一步的命令（我先不做，等你）
+## 三点七、0.2.0 已出 ☑（2026-10-02）
 
-**共同第一步**——出 0.2.0：本次是新增功能，按 RELEASING.md 走 minor。
+`pnpm run release minor` 跑完了，`main` 与标签 `v0.2.0` 都已推送：
 
-```bash
-pnpm run release minor      # 把 ## Unreleased 提成 ## 0.2.0 — <日期>、写 package.json、跑门禁、commit、打 v0.2.0
-git push --follow-tags
+```
+[release] 0.1.0 -> 0.2.0
+[release] notes       51 line(s) from "## Unreleased"
+[release] gate        pnpm test with SMOKE_REQUIRE_SERVER=1     ← 真跑，含对运行中 OpenViking 的实时冒烟
+[release] changelog   "## Unreleased" promoted to "## 0.2.0 — 2026-10-02"
+[release] commit      52dcb31 release 0.2.0
+[release] tag         v0.2.0
 ```
 
-门禁会带 `SMOKE_REQUIRE_SERVER=1`，所以跑这条之前 OpenViking 要在运行。
+核对过：`package.json` = 0.2.0；CHANGELOG 顶部重新留了空的 `## Unreleased`，新段落中英两半都在
+（`### Added`/`### Changed` + `### 变更`/`### 新增`）；标签正文就是这段发布说明；工作区干净；CI 绿。
+
+## 三点八、剩下这一步（继续归你）
+
+**版本与标签已经就位**，下面只剩分发那一步。
 
 **路线 A：发 npm（推荐，市场能显示下载量）**
 
