@@ -145,5 +145,78 @@ export interface EnhanceConfig {
   warnings: string[]
 }
 
+/**
+ * Recall payloads for the right-Sidebar panel.
+ *
+ * The panel answers "what does OpenViking retrieve for this session, and why".
+ * The host asks the same session-aware route the memory plugin calls
+ * (`POST /api/v1/search/search`, see `src/host/recall-service.ts`), so the panel
+ * reports the server's own ranking rather than a re-implementation of it.
+ */
+
+/** One retrieved memory, resource or skill. */
+export interface RecallItem {
+  /** `viking://…` path of the retrieved entry. */
+  uri: string
+  /** Similarity score, 0…1. */
+  score: number
+  /** `memory` | `resource` | `skill` | … as the server labels it. */
+  contextType: string
+  /** Level in the memory tree, when the server reports one. */
+  level: number | null
+  /** What the entry says, as far as the server is willing to show. */
+  abstract: string
+  tags: string[]
+}
+
+/** One retrieval source. Every source is searched; one may come back empty. */
+export interface RecallBucket {
+  /** `memories` | `resources` | `skills` — the server's own bucket name. */
+  bucket: string
+  /** Best-ranked entries across the targets searched for this bucket. */
+  items: RecallItem[]
+}
+
+/** Where the query being shown came from. */
+export type RecallQuerySource = 'session' | 'manual'
+
+export interface RecallPayload {
+  sessionId: string
+  ovSessionId: string
+  /** Canonical session path, or null when the server knows no such session. */
+  sessionUri: string | null
+  /** Actor peer the search ran as, or null when the memory plugin did not know one. */
+  peer: string | null
+  query: { text: string; source: RecallQuerySource }
+  buckets: RecallBucket[]
+  /** The server's own retrieval plan, when it explains one. */
+  plan: string | null
+  /** Every `viking://` target that was searched, for the panel's detail row. */
+  targets: string[]
+  /** Entries returned across every bucket, before the per-bucket cap. */
+  total: number
+  /** Wall-clock duration of the searches, in milliseconds. */
+  latencyMs: number
+  searchedAt: string
+  /** Non-fatal problems: a target that failed, a session log with no user turn, … */
+  warnings: string[]
+}
+
+/** One entry's full text, for the panel's detail view. */
+export interface RecallContent {
+  uri: string
+  text: string
+  truncated: boolean
+}
+
+/** Entries shown per bucket before the panel offers "show all". */
+export const RECALL_DEFAULT_LIMIT = 8
+/** Upper bound for one request, so a crafted query cannot fan out unboundedly. */
+export const RECALL_MAX_LIMIT = 25
+/** Cap on `/recall/content`, so one click cannot pull an unbounded document. */
+export const RECALL_CONTENT_MAX_CHARS = 20000
+/** The buckets the panel renders, in display order. */
+export const RECALL_BUCKETS = ['memories', 'resources', 'skills'] as const
+
 /** Envelope every route returns; `ok: false` carries a message, never a throw. */
 export type ApiResult<T> = ({ ok: true } & T) | { ok: false; error: string }

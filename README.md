@@ -47,6 +47,14 @@ Click the pill for details:
 The panel and the pill read only. This plugin never commits, writes or deletes
 anything in OpenViking.
 
+**What this session retrieves.** The right sidebar gains a *记忆召回* (*memory
+recall*) tab: it shows what OpenViking pulls in for the session you are looking at
+— the query it searched with (that session's most recent message, or one you type
+yourself), every hit in each of its three sources (memories, resources, skills)
+with its score, `viking://` path and abstract, the server's own retrieval plan,
+and the full text of any entry on click. Open it from the right sidebar's `+`
+guide; it is per session, like the column itself.
+
 ## Requirements
 
 | | |
@@ -109,6 +117,12 @@ unknown. Commits themselves still work; only the progress denominator is missing
 
 **The timeline shows only 3 commits.**
 That is the default. Click *show all*.
+
+**There is no recall tab in the right sidebar.**
+The tab is reached through that column's own `+` guide, and it only exists after a
+window reload (the client half is a file the page loads). If DSH is older than
+0.2.0-rc.2 it has no right sidebar to contribute to: the row is skipped and the
+Studio panel and the pill keep working.
 
 **I changed the code and nothing happened.**
 The two halves reload differently: the client half after a window reload, the host

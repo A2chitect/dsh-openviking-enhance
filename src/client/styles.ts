@@ -185,6 +185,89 @@ button.ove-pill-errored:hover, button.ove-pill-errored[aria-expanded="true"] {
   color: var(--dsw-alias-label-tertiary); font-variant-numeric: tabular-nums;
 }
 .ove-failure-msg { margin-top: 4px; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }
+
+/* ---- Recall panel (right Sidebar tab) ----------------------------------- */
+/* The panel draws in a narrow column of the page, in the conversation's own
+   ground colour rather than a raised card (the right Sidebar's rule), so it uses
+   the label/border aliases only and never a surface of its own. */
+.ove-recall { display: flex; flex-direction: column; gap: 10px; padding: 10px 12px; font-size: 12px; }
+.ove-recall-search { display: flex; gap: 6px; align-items: center; }
+.ove-recall-input {
+  flex: 1; min-width: 0; font: inherit; color: var(--dsw-alias-label-primary);
+  background: transparent; border: .5px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-md); padding: 4px 8px;
+}
+.ove-recall-input::placeholder { color: var(--dsw-alias-label-caption); }
+.ove-recall-input:focus { outline: none; border-color: var(--dsw-alias-border-l3); }
+.ove-recall-button {
+  flex: none; font: inherit; cursor: pointer; color: var(--dsw-alias-label-secondary);
+  background: transparent; border: .5px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-md); padding: 4px 8px;
+}
+.ove-recall-button:hover:enabled { background: var(--dsw-alias-interactive-bg-hover); }
+.ove-recall-button:disabled { color: var(--dsw-alias-label-caption); cursor: default; }
+.ove-recall-facts { display: flex; flex-direction: column; gap: 2px; }
+.ove-recall-query {
+  color: var(--dsw-alias-label-secondary);
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.ove-recall-origin { color: var(--dsw-alias-label-caption); }
+.ove-recall-stats {
+  display: flex; gap: 10px; color: var(--dsw-alias-label-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.ove-recall-bucket { display: flex; flex-direction: column; gap: 4px; }
+.ove-recall-heading {
+  display: flex; justify-content: space-between; gap: 8px; margin: 0;
+  font-size: inherit; font-weight: 500; color: var(--dsw-alias-label-primary);
+}
+.ove-recall-count { color: var(--dsw-alias-label-caption); font-variant-numeric: tabular-nums; }
+.ove-recall-item {
+  border: .5px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-md);
+  padding: 4px 6px;
+}
+.ove-recall-item-open { border-color: var(--dsw-alias-border-l2); }
+.ove-recall-row {
+  display: flex; align-items: center; gap: 6px; width: 100%; box-sizing: border-box;
+  font: inherit; text-align: left; cursor: pointer; color: var(--dsw-alias-label-secondary);
+  background: 0 0; border: none; padding: 0;
+}
+.ove-recall-score {
+  flex: none; color: var(--dsw-alias-state-success-primary, #3fb950);
+  font-variant-numeric: tabular-nums;
+}
+.ove-recall-path { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.ove-recall-caret { flex: none; color: var(--dsw-alias-label-caption); }
+.ove-recall-abstract {
+  margin: 3px 0 0; color: var(--dsw-alias-label-tertiary);
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.ove-recall-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.ove-recall-tag {
+  color: var(--dsw-alias-label-caption); border: .5px solid var(--dsw-alias-border-l2);
+  border-radius: 999px; padding: 0 6px;
+}
+.ove-recall-tag-quiet { border-style: dashed; }
+.ove-recall-body { margin-top: 6px; }
+.ove-recall-body pre {
+  margin: 0; white-space: pre-wrap; overflow-wrap: anywhere;
+  color: var(--dsw-alias-label-secondary);
+  max-height: 340px; overflow: auto;
+}
+.ove-recall-empty { margin: 0; color: var(--dsw-alias-label-caption); }
+.ove-recall-note { margin: 0; color: var(--dsw-alias-label-tertiary); overflow-wrap: anywhere; }
+.ove-recall-error { margin: 0; color: var(--dsw-alias-state-error-primary, #f85149); overflow-wrap: anywhere; }
+.ove-recall-plan, .ove-recall-targets { color: var(--dsw-alias-label-tertiary); }
+.ove-recall-plan summary, .ove-recall-targets summary { cursor: pointer; }
+.ove-recall-plan pre { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ove-recall-targets ul { margin: 4px 0 0; padding-left: 16px; }
+.ove-recall-targets li { overflow-wrap: anywhere; }
+.ove-recall-more {
+  font: inherit; cursor: pointer; color: var(--dsw-alias-label-secondary);
+  background: transparent; border: .5px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-md); padding: 4px 8px;
+}
+.ove-recall-more:hover:enabled { background: var(--dsw-alias-interactive-bg-hover); }
 `
 
 /** Install the stylesheet once per document. */

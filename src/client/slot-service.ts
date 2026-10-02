@@ -29,6 +29,10 @@ import type { EntryKeyOf, KindOptions, PropsRuntime, SlotMap } from '@deepseek-a
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
+// Pulls in the right Sidebar's own augmentation: the two `sidebar.right.pane.tab*`
+// seats used by the recall tab. `SidebarRightTabDefinition` is the registry's real
+// definition type, so a tab type is checked against the framework, not our guess.
+import type { SidebarRightTabDefinition } from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
 
 /** Every slot key the framework currently declares. */
 export type SlotName = keyof SlotMap & string
@@ -99,5 +103,31 @@ export interface SlotService {
 export interface ClientContext {
   slots: SlotService
   effect(callback: () => (() => void) | void, label?: string): () => void
+  /**
+   * Run a callback once a service exists (and again if it is replaced).
+   *
+   * Required rather than optional because of the order the right Sidebar boots
+   * in: its seat declares `sidebar.right.pane.tab` *before* it provides
+   * `sidebarRightTabs`, so a plugin that registers on the slot declaration reads
+   * the registry as absent and never gets another chance.
+   */
+  inject(deps: readonly string[], callback: (scope: ClientScope) => (() => void) | void): { dispose(): void }
+  /** Read a service without waiting for it. */
+  get(key: string): unknown
   logger?: { warn(message: string, error?: unknown): void; info(message: string): void }
+}
+
+/** What `inject`'s callback is handed: the same lookup, scoped to the services asked for. */
+export interface ClientScope {
+  get(key: string): unknown
+}
+
+/** `ctx.sidebarRightTabs`, narrowed to the one call this plugin makes. */
+export interface SidebarRightTabRegistry {
+  register(definition: SidebarRightTabDefinition): () => void
+}
+
+/** `ctx.sidebarRight`, narrowed to the way in: opening a page by kind. */
+export interface SidebarRightNavigation {
+  openTab(kind: string, options?: { params?: unknown }): void
 }

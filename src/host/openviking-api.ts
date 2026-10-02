@@ -9,6 +9,7 @@
  *   GET /api/v1/fs/ls?uri=…                         history archive listing
  *   GET /api/v1/content/read?uri=…                  memory_diff.json (JSON *string*)
  *   GET /api/v1/tasks?resource_id=…                 in-flight commit tasks
+ *   POST /api/v1/search/search                      session-aware retrieval
  *
  * Design rules:
  *  - every method resolves; nothing throws on a dead server or an HTTP error,
@@ -86,13 +87,19 @@ export class OpenVikingApi {
   }
 
   /** One request; resolves to a result envelope and never throws. */
-  private async request<T>(path: string, options: RequestOptions = {}): Promise<OvResult<T>> {
+  private async request<T>(
+    path: string,
+    options: RequestOptions = {},
+    init: { method?: string; body?: unknown } = {},
+  ): Promise<OvResult<T>> {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_TIMEOUT_MS)
     try {
       const response = await fetch(`${this.connection.endpoint}${path}`, {
+        method: init.method ?? 'GET',
         headers: this.headers(options),
         signal: controller.signal,
+        ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
       })
       const body: unknown = await response.json().catch(() => null)
       if (!response.ok) {
@@ -191,6 +198,54 @@ export class OpenVikingApi {
     if (!text.ok || text.result === null) return text as OvResult<T>
     return { ...text, result: parseMaybeDoubleEncoded<T>(text.result) }
   }
+
+  /**
+   * Session-aware retrieval — the call the memory plugin itself makes.
+   *
+   * `session_id` is what makes the answer session-specific: the server applies
+   * its own peer penalties and cross-turn de-duplication against that session, so
+   * the same query under two sessions legitimately ranks differently. The reply
+   * carries every bucket at once plus the server's `query_plan`.
+   */
+  async search(body: OvSearchRequest, options: RequestOptions = {}): Promise<OvResult<OvSearchResponse>> {
+    return this.request<OvSearchResponse>('/api/v1/search/search', { timeoutMs: 12000, ...options }, {
+      method: 'POST',
+      body,
+    })
+  }
+}
+
+/** One retrieval request. Field names are the server's, snake_case included. */
+export interface OvSearchRequest {
+  query: string
+  /** The `viking://` subtree to rank within. */
+  target_uri: string
+  limit: number
+  /** 0 keeps weak matches visible instead of hiding them behind the default. */
+  score_threshold?: number
+  session_id?: string
+}
+
+/** One retrieved entry, exactly as the server ranks it. */
+export interface OvSearchItem {
+  uri: string
+  score: number
+  context_type?: string
+  level?: number
+  abstract?: string
+  tags?: string[]
+}
+
+/**
+ * A retrieval reply. The three buckets are always present (empty when nothing
+ * matched); `query_plan` explains the retrieval and is absent on some servers.
+ */
+export interface OvSearchResponse {
+  memories?: OvSearchItem[]
+  resources?: OvSearchItem[]
+  skills?: OvSearchItem[]
+  total?: number
+  query_plan?: { reasoning?: string } & Record<string, unknown>
 }
 
 /** Everything OpenViking's `content/read` returns is base64-free text, but the

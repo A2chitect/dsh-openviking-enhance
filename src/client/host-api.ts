@@ -19,6 +19,8 @@ import {
   type CommitTask,
   type EnhanceConfig,
   type MemoryDiff,
+  type RecallContent,
+  type RecallPayload,
 } from '../shared/protocol.ts'
 
 /** Relative base: no leading slash, so `<base href>` keeps working. */
@@ -70,4 +72,36 @@ export interface DiffPayload {
 export function fetchDiff(sessionId: string, archiveUri: string): Promise<ApiResult<DiffPayload>> {
   const archive = encodeURIComponent(archiveUri)
   return readJson<DiffPayload>(`${BASE}/diff?sessionId=${encodeURIComponent(sessionId)}&archive=${archive}`)
+}
+
+export interface RecallResponse {
+  recall: RecallPayload
+}
+
+/**
+ * The current session's retrieval.
+ *
+ * `query` is left out on purpose for the common case: the host then searches for
+ * the session's own most recent user turn, which is what the next recall would be
+ * about.
+ */
+export function fetchRecall(
+  sessionId: string,
+  query?: string,
+  options: { limit?: number; fresh?: boolean } = {},
+): Promise<ApiResult<RecallResponse>> {
+  const params = new URLSearchParams({ sessionId })
+  const trimmed = (query ?? '').trim()
+  if (trimmed.length > 0) params.set('query', trimmed)
+  if (options.limit !== undefined) params.set('limit', String(options.limit))
+  if (options.fresh === true) params.set('fresh', '1')
+  return readJson<RecallResponse>(`${BASE}/recall?${params.toString()}`)
+}
+
+export interface RecallContentResponse {
+  content: RecallContent
+}
+
+export function fetchRecallContent(uri: string): Promise<ApiResult<RecallContentResponse>> {
+  return readJson<RecallContentResponse>(`${BASE}/recall/content?uri=${encodeURIComponent(uri)}`)
 }

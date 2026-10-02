@@ -4,7 +4,9 @@
 // It boots `lib/index.js` under a minimal fake Cordis context, mounts the routes
 // on a throwaway HTTP server, and calls them the way the browser half does.
 // This is the only check that exercises the real route handlers, the real
-// OpenViking API and the real response shapes.
+// OpenViking API and the real response shapes — including the retrieval that
+// feeds the right-Sidebar panel, which no unit test can prove against a live
+// server's own ranking.
 //
 //   node scripts/smoke-host.mjs [dshSessionId]
 //
@@ -133,6 +135,46 @@ async function report(base, sessionId) {
     const s = entry.summary
     const counts = s ? `${s.totalAdds} adds / ${s.totalUpdates} updates / ${s.totalDeletes} deletes` : '(no diff yet)'
     console.log(`[smoke]   ${name.padEnd(12)} ${counts}`)
+  }
+
+  const recall = await get(
+    `${base}/api/openviking-enhance/recall?sessionId=${encodeURIComponent(sessionId)}&limit=3`,
+  )
+  if (recall?.ok !== true) {
+    console.log(`[smoke] FAIL recall      ${recall?.error ?? 'no answer'}`)
+    process.exitCode = 1
+  } else {
+    const payload = recall.recall
+    console.log(
+      `[smoke] recall      ${payload.query.source === 'session' ? 'session query' : 'explicit query'} ` +
+        `"${payload.query.text.slice(0, 40)}" · ${payload.targets.length} targets · ` +
+        `${payload.total} hits · ${payload.latencyMs} ms`,
+    )
+    for (const bucket of payload.buckets) {
+      const top = bucket.items[0]
+      console.log(
+        `[smoke]   ${bucket.bucket.padEnd(10)} ${String(bucket.items.length).padStart(2)}` +
+          (top ? `  ${top.score.toFixed(3)}  ${top.uri.replace('viking://user/default/', '~/')}` : ''),
+      )
+    }
+    if (payload.plan) console.log(`[smoke] plan        ${payload.plan.split('\n')[0].slice(0, 90)}`)
+    for (const warning of payload.warnings) console.log(`[smoke]   warning   ${warning}`)
+
+    // The detail view is a second route; exercise it on a real hit.
+    const first = payload.buckets.flatMap((bucket) => bucket.items)[0]
+    if (first) {
+      const content = await get(
+        `${base}/api/openviking-enhance/recall/content?uri=${encodeURIComponent(first.uri)}`,
+      )
+      if (content?.ok !== true) {
+        console.log(`[smoke] FAIL content     ${content?.error ?? 'no answer'}`)
+        process.exitCode = 1
+      } else {
+        console.log(
+          `[smoke] content     ${content.content.text.length} chars, truncated=${content.content.truncated}`,
+        )
+      }
+    }
   }
 
   const archive = commits?.status?.archives?.at(-1)

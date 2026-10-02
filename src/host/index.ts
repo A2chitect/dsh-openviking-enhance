@@ -3,8 +3,9 @@
  *
  * Responsibilities:
  *  1. resolve the local OpenViking connection (same files the CLI reads);
- *  2. expose four read-only JSON routes on the DSH web server for the browser
- *     half — config, commit status, commit list, and one commit's memory diff;
+ *  2. expose read-only JSON routes on the DSH web server for the browser half —
+ *     config, commit status, commit list, one commit's memory diff, the current
+ *     session's retrieval, and one retrieved entry's full text;
  *  3. stay completely inert when OpenViking is not running: every route answers
  *     `{ok:false, error}` instead of throwing, because a plugin route that
  *     throws can take a request down with it.
@@ -16,11 +17,19 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { API_PREFIX, TIMELINE_DEFAULT, TIMELINE_MAX, type ApiResult, type EnhanceConfig } from '../shared/protocol.ts'
+import {
+  API_PREFIX,
+  RECALL_DEFAULT_LIMIT,
+  TIMELINE_DEFAULT,
+  TIMELINE_MAX,
+  type ApiResult,
+  type EnhanceConfig,
+} from '../shared/protocol.ts'
 import { describeConnection, resolveConnection } from './config.ts'
 import { isTrustedLocalRequest } from './trust-fence.ts'
 import { CommitService, isArchiveUriForSession, type OpenVikingMemoryRuntime } from './commit-service.ts'
 import { OpenVikingApi } from './openviking-api.ts'
+import { RecallService } from './recall-service.ts'
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'openviking-enhance'
@@ -40,6 +49,8 @@ export const Config = z.object({
   studioPath: z.string().default('/studio/'),
   /** Status cache TTL in milliseconds. */
   cacheTtlMs: z.number().default(2500),
+  /** How long one retrieval answer is reused, in milliseconds. */
+  recallCacheTtlMs: z.number().default(15000),
 })
 
 export interface EnhanceConfigInput {
@@ -49,6 +60,7 @@ export interface EnhanceConfigInput {
   user?: string
   studioPath?: string
   cacheTtlMs?: number
+  recallCacheTtlMs?: number
 }
 
 /** Structural view of the host services this plugin uses. */
@@ -111,6 +123,12 @@ export function apply(ctx: Context, config: EnhanceConfigInput = {}): void {
     api,
     memoryRuntime,
     cacheTtlMs: config.cacheTtlMs ?? 2500,
+  })
+
+  const recall = new RecallService({
+    api,
+    commit: service,
+    cacheTtlMs: config.recallCacheTtlMs ?? 15000,
   })
 
   const configPayload = async (): Promise<ApiResult<EnhanceConfig>> => {
@@ -223,6 +241,55 @@ export function apply(ctx: Context, config: EnhanceConfigInput = {}): void {
             return
           }
           writeJson(res, 200, { ok: true, diff, pending: false })
+        } catch (error) {
+          writeJson(res, 200, { ok: false, error: message(error) })
+        }
+      },
+    },
+    {
+      kind: 'exact',
+      path: `${API_PREFIX}/recall`,
+      handler: async (req, res) => {
+        if (!guard(req, res)) return
+        const params = query(req)
+        const sessionId = params.get('sessionId') ?? ''
+        if (!sessionId) {
+          writeJson(res, 400, { ok: false, error: 'sessionId is required' } satisfies ApiResult<never>)
+          return
+        }
+        try {
+          // `query` is absent for the session's own last prompt; `limit` bounds
+          // each bucket, so a crafted request cannot ask for the whole library.
+          const requested = Number(params.get('limit') ?? RECALL_DEFAULT_LIMIT)
+          const limit = Number.isFinite(requested) ? requested : RECALL_DEFAULT_LIMIT
+          const payload = await recall.recall(sessionId, params.get('query') ?? undefined, limit, {
+            fresh: params.get('fresh') === '1',
+          })
+          writeJson(res, 200, { ok: true, recall: payload })
+        } catch (error) {
+          writeJson(res, 200, { ok: false, error: message(error) })
+        }
+      },
+    },
+    {
+      kind: 'exact',
+      path: `${API_PREFIX}/recall/content`,
+      handler: async (req, res) => {
+        if (!guard(req, res)) return
+        const uri = query(req).get('uri') ?? ''
+        if (!uri) {
+          writeJson(res, 400, { ok: false, error: 'uri is required' } satisfies ApiResult<never>)
+          return
+        }
+        try {
+          // The reader refuses anything that is not a `viking://` path, so this
+          // route cannot be turned into a file read of the host.
+          const content = await recall.content(uri)
+          if ('error' in content) {
+            writeJson(res, 200, { ok: false, error: content.error })
+            return
+          }
+          writeJson(res, 200, { ok: true, content })
         } catch (error) {
           writeJson(res, 200, { ok: false, error: message(error) })
         }

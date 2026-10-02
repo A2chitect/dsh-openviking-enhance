@@ -12,12 +12,19 @@
  *   sidebar.panellist          list, root      owner {size, active}  → panel icon
  *   main                       keyed, root     key must equal the panellist id
  *   conversation.composer.dock list, session   inject(sessionId)     → status pill
+ *
+ * Plus one tab type in the right Sidebar
+ * (`@deepseek-ai/dsh-client-ui-sidebar-right@0.2.0-rc.2`), registered in two
+ * stages because that is the only contract the framework offers:
+ *   ctx.sidebarRightTabs.register({id, kind, title, guide})   stage one: a page type
+ *   sidebar.right.pane.tab     keyed, session, key = that id → stage two: the body
  */
-import type { ClientContext } from './slot-service.ts'
+import type { ClientContext, SidebarRightTabRegistry } from './slot-service.ts'
 import { installStyles } from './styles.ts'
 import { OpenVikingIcon } from './openviking-icon.tsx'
 import { StudioPanel } from './studio-panel.tsx'
 import { CommitStatusPill } from './commit-status.tsx'
+import { RecallPanel } from './recall-panel.tsx'
 
 /** Client services this half waits for before `apply` runs. */
 export const inject = ['slots']
@@ -40,6 +47,17 @@ const PANEL_ID = 'openviking'
  * would collide again with the next plugin that picks it.
  */
 const SIDEBAR_ORDER = 1000
+
+/**
+ * The right Sidebar tab type.
+ *
+ * `id` is the implementation's identity and is what the framework keys the body
+ * and title seats by; `kind` is what `ctx.sidebarRight.openTab(kind)` names. Both
+ * are namespaced because the key domain is open: another plugin could register a
+ * `recall` kind, and a collision on `id` throws.
+ */
+const RECALL_TAB_ID = 'dsh-openviking-enhance:recall'
+const RECALL_TAB_KIND = 'openviking-recall'
 
 /**
  * Sidebar row glyph. The shell hands a list occupant only `{ size, active }` and
@@ -103,6 +121,62 @@ export function apply(context: ClientContext): void {
         ),
       ),
     )
+  } catch (error) {
+    report(context, error)
+  }
+
+  // Right Sidebar: one tab type, contributed in the two stages the framework
+  // asks for. Waiting on the REGISTRY (a service), not on the slot declaration, is
+  // load-bearing: the right Sidebar's own seat declares
+  // `sidebar.right.pane.tab` before it provides `sidebarRightTabs`, so a
+  // registration triggered by the declaration would read the registry as absent
+  // and — because a declaration never collapses — never retry.
+  try {
+    const seat = context.inject(['sidebarRightTabs'], (scope) => {
+      const tabs = scope.get('sidebarRightTabs') as SidebarRightTabRegistry | undefined
+      if (tabs === undefined) return
+      const disposeType = tabs.register({
+        id: RECALL_TAB_ID,
+        kind: RECALL_TAB_KIND,
+        title: () => '记忆召回',
+        // The guide is how the tab is found at all: the right Sidebar opens on its
+        // guide page, and a type with no entry there is reachable only by code.
+        guide: [
+          {
+            id: 'recall',
+            order: 40,
+            title: () => '记忆召回',
+            description: () => '本会话检索到的记忆、资源与技能',
+          },
+        ],
+      })
+      try {
+        // Stage two: the body, keyed by the type's own id (that is what the
+        // framework dispatches on). Registered on the slot declaration, which the
+        // right Sidebar has certainly made by the time its registry exists.
+        const disposeBody = context.slots.inject('sidebar.right.pane.tab', () =>
+          context.slots.register(
+            {
+              name: 'sidebar.right.pane.tab',
+              key: RECALL_TAB_ID,
+              inject: (sessionId: string) => ({ sessionId }),
+            },
+            RecallPanel,
+          ),
+        )
+        return () => {
+          disposeBody()
+          disposeType()
+        }
+      } catch (error) {
+        // A body that failed to register must not leave the type claimed: the
+        // registry refuses a second registration of the same id for the rest of
+        // the page's life.
+        disposeType()
+        throw error
+      }
+    })
+    disposers.push(() => seat.dispose())
   } catch (error) {
     report(context, error)
   }

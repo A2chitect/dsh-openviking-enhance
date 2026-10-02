@@ -9,6 +9,28 @@ promotes to a dated section — see [RELEASING.md](RELEASING.md).
 
 ## Unreleased
 
+### Added
+
+- **Recall detail in the right sidebar** — a per-session *记忆召回* tab showing what
+  OpenViking retrieves for the session in view: the query it searched with (the
+  session's own most recent user turn, or one you type), every hit in each of the
+  three sources with its score, `viking://` path and abstract, the server's own
+  retrieval plan, and one entry's full text on click. It asks the same
+  session-aware route the memory plugin calls, so the ranking is the server's
+  rather than a second implementation of it. Reached through the right sidebar's
+  guide; nothing is written.
+- Two routes behind the same trust fence: `/recall` and `/recall/content` (the
+  latter refuses anything that is not a `viking://` path, and truncates).
+
+### 新增
+
+- **右侧边栏的记忆召回面板**：按会话显示 OpenViking 为当前会话召回了什么——检索用的那句话
+  （默认本会话最近一次提问，也可自己输入）、三个来源里每条命中的分数与 `viking://` 路径及摘要、
+  服务端自己的检索计划，以及点开任意一条看全文。它调用的是记忆插件本身所用的那条会话感知接口，
+  所以看到的是服务端的真实排序，而不是另写一套检索。从右侧边栏的引导页进入，全程不写入。
+- 新增两个走同一道信任围栏的接口：`/recall` 与 `/recall/content`（后者只接受 `viking://`
+  路径，并做长度截断）。
+
 ## 0.1.0 — 2026-10-02
 
 First release. Read-only throughout: the plugin never commits, writes or deletes

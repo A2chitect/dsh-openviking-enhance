@@ -93,8 +93,13 @@ export class CommitService {
     return typeof fromPlugin === 'string' && fromPlugin.length > 0 ? fromPlugin : `dsh-${sessionId}`
   }
 
-  /** Actor peer, when the OpenViking plugin knows it. */
-  private peerId(sessionId: string): string | undefined {
+  /**
+   * Actor peer, when the OpenViking plugin knows it.
+   *
+   * Public because peer-scoped routing is not a commit concern: the recall
+   * service needs the same identity to search the same peer's memories.
+   */
+  actorPeer(sessionId: string): string | undefined {
     const peer = this.options.memoryRuntime()?.states?.get(sessionId)?.config?.peerId
     return typeof peer === 'string' && peer.length > 0 ? peer : undefined
   }
@@ -110,7 +115,7 @@ export class CommitService {
     if (!options.fresh && cached && Date.now() - cached.at < this.cacheTtlMs) return cached.value
 
     const ovSessionId = this.ovSessionId(sessionId)
-    const request = { actorPeerId: this.peerId(sessionId) }
+    const request = { actorPeerId: this.actorPeer(sessionId) }
     // Sequential, not parallel: the history path must be derived from the
     // session's own `uri`, which only the first call can answer. It costs one
     // round trip (~7 ms) and removes a whole class of "never committed" lies for
@@ -170,7 +175,7 @@ export class CommitService {
   ): Promise<{ status: CommitStatus; tasks: OvCommitTask[]; summaries: ArchiveSummary[] }> {
     const status = await this.status(sessionId)
     const tasks = await this.options.api.listCommitTasks(status.ovSessionId, {
-      actorPeerId: this.peerId(sessionId),
+      actorPeerId: this.actorPeer(sessionId),
     })
     const summaries = await this.summaries(sessionId, status.archives, summaryLimit)
     return { status, tasks: tasks.result ?? [], summaries }
@@ -182,7 +187,7 @@ export class CommitService {
     if (cached) return cached
     const uri = `${archiveUri.replace(/\/+$/, '')}/memory_diff.json`
     const response = await this.options.api.readJson<RawMemoryDiff>(uri, {
-      actorPeerId: this.peerId(sessionId),
+      actorPeerId: this.actorPeer(sessionId),
     })
     if (!response.ok || !response.result) return null
     const diff = normalizeDiff(archiveUri, response.result)

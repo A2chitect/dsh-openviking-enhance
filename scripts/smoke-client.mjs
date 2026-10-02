@@ -6,7 +6,8 @@
 //   2. the id must be the package name;
 //   3. `factory(require)` must return `{ apply, inject }` with React coming from
 //      the provided `require`, never from a bundled copy;
-//   4. `apply(ctx)` must register the three slots and must not throw.
+//   4. `apply(ctx)` must register the four slots and the right-Sidebar tab type,
+//      and must not throw.
 //
 // Rendering is not exercised here (that needs the real shell); registration is,
 // which is where a wrong slot name or a broken wrapper shows up.
@@ -66,6 +67,10 @@ check(!code.includes('react.development'), 'React is not bundled (external)')
 // declares the key, and each `register` records one contribution.
 const registrations = []
 const injectedKeys = []
+/** Right-Sidebar tab types, as the registry's own `register` would receive them. */
+const tabTypes = []
+/** Services the plugin waited for, as `ctx.inject([...])` names them. */
+const awaited = []
 const context = {
   slots: {
     inject(key, callback) {
@@ -81,6 +86,24 @@ const context = {
   effect(callback) {
     callback()
     return () => {}
+  },
+  inject(deps, callback) {
+    awaited.push(deps.join(','))
+    callback({
+      get(name) {
+        if (name !== 'sidebarRightTabs') return undefined
+        return {
+          register(definition) {
+            tabTypes.push(definition)
+            return () => {}
+          },
+        }
+      },
+    })
+    return { dispose() {} }
+  },
+  get() {
+    return undefined
   },
   logger: { warn: console.warn, info: () => {} },
 }
@@ -114,7 +137,30 @@ check(dock.length === 1, `registers one dock entry (saw ${dock.length})`)
 const pill = dock[0]
 check(pill?.id === 'openviking-commit', 'dock entry is the commit pill')
 check(typeof pill?.inject === 'function', 'status pill declares a session inject face')
-check(injectedKeys.length === 3, `all three slots are injected (saw ${injectedKeys.join(', ')})`)
+check(injectedKeys.length === 4, `all four slots are injected (saw ${injectedKeys.join(', ')})`)
+
+// The right Sidebar tab. Registration is two-stage and the stages must agree: the
+// registry keys the body seat by the type's `id`, so a body registered under
+// anything else renders the framework's "nothing can view this" notice.
+check(awaited.includes('sidebarRightTabs'), 'waits for the tab registry (a service), not the slot declaration')
+check(tabTypes.length === 1, `registers one right-Sidebar tab type (saw ${tabTypes.length})`)
+const tabType = tabTypes[0]
+check(
+  typeof tabType?.id === 'string' && tabType.id.includes(':'),
+  `tab id is namespaced, since the registry's key domain is open (${tabType?.id})`,
+)
+check(tabType?.kind === 'openviking-recall', `tab kind is namespaced (${tabType?.kind})`)
+check(typeof tabType?.title === 'function' && tabType.title('').length > 0, 'the tab type names its chip')
+check(
+  Array.isArray(tabType?.guide) && tabType.guide.length === 1,
+  'the tab carries a guide entry, which is the only way a user can open it',
+)
+const tabBody = registrations.find((entry) => entry.name === 'sidebar.right.pane.tab')
+check(tabBody?.key === tabType?.id, 'the tab body is keyed by the type id')
+check(typeof tabBody?.inject === 'function', 'the tab body declares a session inject face')
+check(tabBody?.inject('session-x')?.sessionId === 'session-x', 'the tab body receives the session it was opened in')
+check(code.includes('/recall'), 'the panel requests the host recall route')
+check(injectedCss?.includes('.ove-recall'), 'installs the recall panel stylesheet')
 
 // Style parity with the shell's own stats pills is the whole point of the pill's
 // CSS, and a template-literal slip silently ships invalid declarations, so assert
