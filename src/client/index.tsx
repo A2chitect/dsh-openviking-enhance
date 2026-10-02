@@ -61,9 +61,8 @@ export function apply(context: ClientContext): void {
     )
 
     // Session footer status pill. The inject factory receives the session id
-    // because the slot is session-scoped. The component renders two flex items
-    // (an invisible mirror ordered -1 and the pill ordered 1) so the pill can be
-    // pinned right without moving the shell's own pills — see styles.ts.
+    // because the slot is session-scoped. `order: 1` places it after the shell's
+    // stats pills and the context meter; the row keeps its own centring.
     disposers.push(
       slots.inject('conversation.composer.dock', () =>
         slots.register(

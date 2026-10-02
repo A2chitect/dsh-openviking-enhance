@@ -7,10 +7,10 @@ inside the Web GUI:
    server's own Studio SPA in the centre column.
 2. **Per-session commit status** — a pill under the composer shows how close the
    current session is to an OpenViking commit, and clicking it lists the
-   memories that each commit actually added, updated or deleted. It sits pinned
-   to the right of that row and is styled from the shell's own stats pills
-   (same font metrics, colour tokens, capsule shape, icon size and tabular
-   figures), so the row reads as one family.
+   memories that each commit actually added, updated or deleted. It renders as
+   the last item of that row, after the shell's own stats pills, and is styled
+   from them (same font metrics, colour tokens, capsule shape, icon size and
+   tabular figures), so the row reads as one family.
 
 Status: **scaffold + verified data path**. Both halves build, typecheck and pass
 their smoke tests against a live OpenViking 0.4.22 server; see

@@ -17,10 +17,12 @@
  *
  * Presentation follows the default pills exactly (see `styles.ts`): same font
  * metrics, tertiary label colour, transparent borderless 999px capsule, 14px
- * currentColor icon, tabular figures, same hover/expanded background. The icon is
- * the shell's own `IconArchiveOutlineRegular` — a commit in OpenViking produces
- * an `archive_00N`, so it is also the honest glyph — resolved through the frozen
- * module table with a local fallback if that export ever moves.
+ * currentColor icon, tabular figures, same hover/expanded background. It renders
+ * as the last item of the row, so the shell's own pills and their centring are
+ * left untouched. The icon is the shell's own `IconArchiveOutlineRegular` — a
+ * commit in OpenViking produces an `archive_00N`, so it is also the honest glyph —
+ * resolved through the frozen module table, with a local fallback if that export
+ * ever moves.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CommitStatus, MemoryDiff, MemoryDiffEntry } from '../shared/protocol.ts'
@@ -128,18 +130,7 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
   const archives = status ? [...status.archives].reverse() : []
 
   return (
-    <>
-      {/* Layout mirror. The dock centres its children, so pinning the pill right
-          needs an equal-width block on the left or the default pills slide over.
-          Same box, same content, invisible: `visibility:hidden` keeps the layout
-          box, so the centring stays exact without measuring anything in JS. */}
-      <span className="ove-dock-spacer" aria-hidden="true">
-        <span className="ove-pill-mirror">
-          <CommitIcon />
-          <span className="ove-label">{text}</span>
-        </span>
-      </span>
-      <span className="ove-dock" ref={wrap} data-dsh-plugin="openviking-enhance-status">
+    <span className="ove-dock" ref={wrap} data-dsh-plugin="openviking-enhance-status">
       <button
         type="button"
         className="ove-pill"
@@ -209,8 +200,7 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
           ) : null}
         </div>
       ) : null}
-      </span>
-    </>
+    </span>
   )
 }
 

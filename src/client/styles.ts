@@ -22,29 +22,24 @@
  *
  * ## Position
  *
- * Three facts about that row decide the rules below, all read off the shipped
- * CSS/source rather than guessed:
+ * The pill simply follows the shell's own pills in that row, so the whole group
+ * stays centred exactly as before. Three facts shape the rules below, all read
+ * off the shipped CSS/source rather than guessed:
  *
  *  1. the slot outlet wrapper is `display:contents` (`dsh-client-ui-renderer`'s
  *     `ANCHOR_STYLE`), so a slot entry is a real flex item of the dock — which
- *     also means `position:absolute` would escape to an unrelated ancestor;
- *  2. the dock is `justify-content:center` and, because its own parent is a
- *     `flex-direction:column; align-items:center` box, it is **fit-content**:
- *     there is no free space in it, so `margin-left:auto` alone does nothing;
- *  3. pinning the pill with `margin-left:auto` once the row *is* wide enough
- *     would otherwise shove the default pills to the far left, since the auto
- *     margin swallows all of it.
+ *     also rules out `position:absolute`, as it would escape to an unrelated
+ *     ancestor;
+ *  2. the dock is fit-content (its own parent is a
+ *     `flex-direction:column; align-items:center` box), so it is only as wide as
+ *     its content: there is no free space inside it at all;
+ *  3. consequently `margin-left:auto` on an entry does nothing, and anything
+ *     added to push the pill rightward — an auto margin, a balancing spacer, a
+ *     widened dock — either has no effect or shoves the whole group off centre.
  *
- * So the entry renders two elements — an invisible, equal-width mirror of the
- * pill carrying `margin-right:auto`, and the pill carrying `margin-left:auto` —
- * and a `:has()` rule widens the dock to the composer card's width. The two auto
- * margins then split the free space evenly, which keeps the default pills
- * exactly centred while ours is pinned right, however wide the figures get.
- *
- * The mirror's `display` is driven by a custom property that only the widening
- * rule sets, so the two cannot diverge: if that selector ever stops matching
- * (a shell DOM change), the mirror stays hidden and the row falls back to the
- * plain centred cluster instead of sitting off-centre.
+ * `order: 1` is the only positioning left, and it is deliberate: it guarantees
+ * the pill renders after the stats pills and the context meter regardless of
+ * plugin load order.
  */
 export const STYLE_ELEMENT_ID = 'dsh-openviking-enhance-styles'
 
@@ -73,33 +68,11 @@ const CSS = `
 .ove-dot-ok { background: var(--dsw-alias-state-success-primary, #3fb950); }
 .ove-dot-bad { background: var(--dsw-alias-state-warning-primary, #d29922); }
 
-/* ---- Composer dock: make room, then keep the default pills centred ------ */
-/* The dock is fit-content, so it must be widened before any auto margin can do
-   anything. The selector walks the DOM the renderer really produces — dock div >
-   div[data-slot] (the display:contents outlet anchor) > our element — so it hits
-   exactly that one row, and being element+attribute it also outranks the shell's
-   own .class max-width. The custom property enables the mirror, so these two
-   rules can never diverge. */
-div:has(> [data-slot="conversation.composer.dock"] > .ove-dock) {
-  width: 100%;
-  max-width: var(--dsh-composer-card-max-width, 100%);
-  box-sizing: border-box;
-  padding-right: 8px;
-  --ove-mirror-display: inline-flex;
-}
-/* Invisible mirror of the pill, same box, so the free space has an equal block
-   to absorb on the left. No JS measurement and no reflow: it tracks the label
-   as the figure changes. */
-.ove-dock-spacer {
-  display: var(--ove-mirror-display, none);
-  align-items: center; flex: none;
-  order: -1; margin-right: auto; visibility: hidden; pointer-events: none;
-}
-.ove-pill-mirror {
-  box-sizing: border-box; corner-shape: round;
-  align-items: center; gap: 6px; padding: 1px 8px; display: inline-flex;
-}
-.ove-pill-mirror svg { flex: none; width: 14px; height: 14px; }
+/* ---- Composer dock ------------------------------------------------------ */
+/* Our pill is a plain flex item of the dock: it renders after the shell's pills
+   and the context meter, and the dock's own centring carries the whole group.
+   Nothing here may reserve width or absorb free space — see the position notes
+   at the top of this file for why that only ever shifts the group. */
 
 /* ---- Commit status pill (mirrors StatsPills.module.css) ------------------ */
 .ove-dock {
@@ -108,7 +81,6 @@ div:has(> [data-slot="conversation.composer.dock"] > .ove-dock) {
   line-height: ${LINE_HEIGHT};
   display: inline-flex; align-items: center;
   order: 1;                 /* render after the stats pills and the context meter */
-  margin-left: auto;        /* pin to the right edge of the dock row */
   position: relative;       /* anchor for the popover (not for the pill itself) */
 }
 .ove-pill {
