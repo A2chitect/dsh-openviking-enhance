@@ -1,0 +1,129 @@
+// Smoke-test the built host half against the live OpenViking server, without
+// installing anything into a DSH profile.
+//
+// It boots `lib/index.js` under a minimal fake Cordis context, mounts the routes
+// on a throwaway HTTP server, and calls them the way the browser half does.
+// This is the only check that exercises the real route handlers, the real
+// OpenViking API and the real response shapes.
+//
+//   node scripts/smoke-host.mjs [dshSessionId]
+//
+// Defaults to this machine's most recently committed DSH session when one is
+// given, else it lists candidates from the OpenViking session index.
+import http from 'node:http'
+import { apply } from '../lib/index.js'
+
+const routes = []
+const context = {
+  webServer: {
+    port: 0,
+    register(route) {
+      routes.push(route)
+      return () => {}
+    },
+  },
+  effect(callback) {
+    callback()
+    return () => {}
+  },
+  get() {
+    // The OpenViking memory plugin is not mounted here: this exercises the
+    // documented fallback path (`dsh-<sessionId>`, no actor peer).
+    return undefined
+  },
+  logger: console,
+}
+
+apply(context)
+
+const server = http.createServer((req, res) => {
+  const { pathname } = new URL(req.url ?? '/', 'http://127.0.0.1')
+  const route = routes.find((candidate) => candidate.path === pathname)
+  if (!route) {
+    res.writeHead(404, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ ok: false, error: `no route for ${pathname}` }))
+    return
+  }
+  void route.handler(req, res)
+})
+
+await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+const base = `http://127.0.0.1:${server.address().port}`
+
+const requested = process.argv[2]
+const sessionId = requested ?? (await pickSession())
+if (!sessionId) {
+  console.error('[smoke] no session id given and none found on the server')
+  process.exitCode = 1
+  server.close()
+} else {
+  await report(base, sessionId)
+  server.close()
+}
+
+/** Ask the plugin for status of the given session and print a compact report. */
+async function report(base, sessionId) {
+  const config = await get(`${base}/api/openviking-enhance/config`)
+  console.log('[smoke] config     ', summarise(config))
+
+  const status = await get(`${base}/api/openviking-enhance/status?sessionId=${encodeURIComponent(sessionId)}`)
+  console.log('[smoke] status     ', summarise(status))
+
+  const commits = await get(`${base}/api/openviking-enhance/commits?sessionId=${encodeURIComponent(sessionId)}`)
+  console.log('[smoke] commits    ', summarise(commits))
+
+  const archive = commits?.status?.archives?.at(-1)
+  if (!archive) {
+    console.log('[smoke] diff        (no archive for this session yet)')
+    return
+  }
+  const diff = await get(
+    `${base}/api/openviking-enhance/diff?sessionId=${encodeURIComponent(sessionId)}&archive=${encodeURIComponent(archive.archiveUri)}`,
+  )
+  console.log('[smoke] diff        ', summarise(diff))
+  if (diff?.diff) {
+    console.log(
+      `[smoke] affected    adds=${diff.diff.summary.totalAdds} updates=${diff.diff.summary.totalUpdates} deletes=${diff.diff.summary.totalDeletes}`,
+    )
+    for (const entry of [...diff.diff.adds, ...diff.diff.updates].slice(0, 5)) {
+      console.log(`[smoke]   ${entry.memoryType.padEnd(12)} ${entry.uri}`)
+    }
+  }
+}
+
+/** Find a DSH session that already has commits, by asking OpenViking directly. */
+async function pickSession() {
+  const config = await get(`${base}/api/openviking-enhance/config`)
+  if (!config?.ok) return null
+
+  // A completed commit task names its session, so the diff path gets exercised.
+  const tasks = await get(`${config.endpoint}/api/v1/tasks?task_type=session_commit&limit=200`)
+  const taskItems = Array.isArray(tasks?.result) ? tasks.result : (tasks?.result?.items ?? [])
+  const committed = taskItems.find(
+    (task) => typeof task?.resource_id === 'string' && task.resource_id.startsWith('dsh-') && task.status === 'completed',
+  )
+  if (committed) return committed.resource_id.replace(/^dsh-/, '')
+
+  // Otherwise settle for any DSH session; the status path still gets tested.
+  const list = await get(`${config.endpoint}/api/v1/sessions?limit=200`)
+  const items = Array.isArray(list?.result) ? list.result : []
+  const anyDsh = items.find((item) => typeof item?.session_id === 'string' && item.session_id.startsWith('dsh-'))
+  return anyDsh ? anyDsh.session_id.replace(/^dsh-/, '') : null
+}
+
+async function get(url) {
+  try {
+    const response = await fetch(url)
+    return await response.json()
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+function summarise(payload) {
+  if (!payload || typeof payload !== 'object') return String(payload)
+  if (payload.ok === false) return `NOT OK: ${payload.error}`
+  const { ok, ...rest } = payload
+  const text = JSON.stringify(rest)
+  return text.length > 420 ? `${text.slice(0, 420)}…` : text
+}

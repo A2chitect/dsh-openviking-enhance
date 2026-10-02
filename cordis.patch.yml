@@ -1,0 +1,16 @@
+# dsh-openviking-enhance bundle patch: inserts the dual-face plugin row into the
+# profile roster. Applied as a profile bundle layer (the `dsh.bundle.patch`
+# manifest field) over dsh-base.
+#
+# One row covers both halves: the node half (exports ".") runs in the host
+# process and owns the OpenViking HTTP reads; the `dsh.client` declaration in
+# package.json makes the browser half (exports "./client", served at
+# /plugins/<id>/client.js) load in the web GUI and register the two slots:
+#   - sidebar.panellist + keyed `main`  → the OpenViking Studio panel
+#   - conversation.composer.dock        → the per-session commit status pill
+#
+# Reload the app (or the profile) after changing this row; the loader reads the
+# patch at boot.
+- insert:
+    - id: openviking-enhance
+      name: 'dsh-openviking-enhance'

@@ -1,0 +1,22 @@
+# dependencies
+node_modules/
+.pnpm-store/
+.npm-cache/
+
+# build output
+lib/
+dist/
+*.tsbuildinfo
+
+# scratch / local experiments
+.scratch/
+*.local.mjs
+*.local.json
+
+# macOS
+.DS_Store
+
+# editor
+.idea/
+.vscode/*
+!.vscode/extensions.json
