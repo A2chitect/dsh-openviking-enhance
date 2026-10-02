@@ -522,6 +522,37 @@ GitHub API quota on a cold cache.
 跑了**对照实验**：把条目移走再构建，**报错完全相同**（exit 1）。也就是说这个失败来自他们自己的
 star 探测数据（要联网刷 GitHub 配额），与我的投稿无关，我这边无法在本地补齐。
 
+### 24. 发布命令整条演练过（在公开仓库的克隆里）☑
+
+`pnpm run release minor` 是你只会跑一次的命令，之前只用桩数据排练过、没拿**真实的 CHANGELOG**
+跑。这次把公开仓库 clone 到 /tmp，装好依赖，**原样跑了一遍**（没有推送）：
+
+```
+[release] 0.1.0 -> 0.2.0
+[release] notes       51 line(s) from "## Unreleased"
+[release] gate        pnpm test with SMOKE_REQUIRE_SERVER=1
+[release] changelog   "## Unreleased" promoted to "## 0.2.0 — 2026-10-02"
+[package] all checks passed        # tests 62  pass 62  fail 0   client 全过   实时冒烟过
+[release] commit      e326af4 release 0.2.0
+[release] tag         v0.2.0
+exit=0
+```
+
+产物逐项核对：
+
+| 检查 | 结果 |
+| --- | --- |
+| `package.json` | `0.2.0` |
+| CHANGELOG 顶部 | 重新放回一个空的 `## Unreleased` |
+| 新段落 | `## 0.2.0 — 2026-10-02`，**中英两半都在里面**（`### Added` 与 `### 变更`/`### 新增`） |
+| 旧段落 | `## 0.1.0`（英）与 `## 0.1.0（中文）` 都原样保留 |
+| 标签正文 | 就是这段发布说明（含中文部分） |
+| 工作区 | 干净，提交为 `release 0.2.0` |
+| 再跑一次 | 正确拒绝：`"## Unreleased" is empty`——稳态成立 |
+
+也就是说你那条命令的行为已被完整验证，包括"发布后不会误发第二次"。剩下的只有 `git push --follow-tags`
+与 npm 发布本身，那两步按约定归你。
+
 ## 四、需要你拍板
 
 | # | 问题 | 影响 |
