@@ -204,6 +204,44 @@ markup 来验（`test/component-render.test.mjs`，5 个用例）——加载的
 顺带把 `describeFailure` 的兜底文案从 `shared/commit-state.ts` 移走——那个模块两半都 import，
 只有一半有语言；现在它只返回服务端自己的消息，措辞由客户端决定。
 
+### 13. 修掉一个"陌生人根本装不上"的问题 ☑
+
+CI 逐字执行的第一条命令是 `pnpm install --frozen-lockfile`。我复现它时**退出码 1**：
+
+```
+Error: ERR_PNPM_IGNORED_BUILDS
+  ╰─▶ Ignored build scripts: @deepseek-ai/dsh-subprocess-local, @google/genai,
+      koffi, node-pty, protobufjs
+```
+
+根因是 `pnpm-workspace.yaml` 里那五个包的值是 pnpm 交互式授权**写回去的占位文字**
+（`set this to true or false`）——既不是 true 也不是 false，于是 pnpm 判定"未决定"并直接失败。
+也就是说：**任何人 clone 下来都装不上**，第一次 push CI 就红。
+
+修法是把每个脚本都明确表态，并写清理由：esbuild 需要（构建要它 stage 平台二进制），
+另外五个是随 DSH 类型包一起进来的传递依赖，本仓库**一个都不跑**——为它们放开原生扩展的
+构建授权，等于要一份没人用得上的权限。修完 `pnpm install --frozen-lockfile` 退出 0。
+
+顺带把 CI 的 pnpm 从 11 提到 **12**：锁文件与本机、以及桌面端装插件用的都是 12，
+而 `allowBuilds` 是 12 的配置键——钉在 11 上有可能因为这个键不被识别而再次 `ERR_PNPM_IGNORED_BUILDS`。
+CI 的五步我现在都在本地逐条复现过（checkout → node 22 → pnpm 12 → frozen install → `pnpm test`）。
+
+**防回归**：`scripts/check-package.mjs` 增加两条断言——`allowBuilds` 里不允许出现未决定的值
+（已验证：把一条改回占位文字，检查如实报红），以及 esbuild 必须是 `true`。
+
+### 14. 依赖注入面核对 ☑
+
+`dsh.client.inject` 里的每一个包都必须在运行中的 shell 里存在，否则客户端半部分可能根本加载不上。
+逐个核对（asar 内 `/dsh/package.json` 与 `dsh-web-app/package.json`）：
+
+| 包 | 出处 |
+| --- | --- |
+| `dsh-client-locale` | web-app package.json + patch 里的 `locale` 行 |
+| `dsh-client-ui-slots` | 应用自己的 `/dsh/package.json` |
+| `dsh-client-ui-layout` / `-sidebar` / `-sidebar-right` / `-conversation` | web-app package.json |
+
+六个全部存在。另外 `pnpm publish --dry-run` 会先跑 `prepack`——发布路径上一定会重建 `lib/`。
+
 ## 三点五、仓库建好之后（照抄即可）
 
 名字定下来后，除了建仓库/加 topic，剩下的都是填空。
@@ -232,6 +270,27 @@ description:
 **3. 发布**：先发 npm（`pnpm publish`，`prepack` 会自动重建 `lib/`），或者给一个 GitHub Release
 挂 tarball 并在条目里加 `tarball:`（资产名**不要带版本号**，否则下次发版静默 404）。
 发 npm 的话，`repository` 指回仓库这一条是硬要求——否则市场不会把包和仓库关联起来。
+
+## 三点六、你拍截图时照这个来
+
+重启应用后，四张图（尺寸随意，但要能看清）：
+
+| # | 位置 | 内容 |
+| --- | --- | --- |
+| 1 | 左侧边栏 → OpenViking | Studio 面板（能看出是嵌在 DSH 里的） |
+| 2 | 输入框下方胶囊 → 点开 | 时间线（最近 3 次提交）+ 展开某次看记忆清单 |
+| 3 | 右侧边栏 → `+` → 记忆召回 | 召回结果（三个来源、分数着色、展开一条看全文） |
+| 4 | Plugins 页 → 本插件 → Configure | 配置表单（地址 + 检测按钮 + 默认按钮） |
+
+存到 `assets/`，然后在 `package.json` 旁边放 `screenshots.json`（路径相对该文件，1–8 张）：
+
+```jsonc
+// <repo>/screenshots.json
+["assets/panel.png", "assets/timeline.png", "assets/recall.png", "assets/config.png"]
+```
+
+市场会照这个顺序展示；不声明也行——它会从 README 里抽，但你这个 README 里目前没有图。
+图片进仓库时记得**别把隐私截进去**（会话标题、路径），必要时打码。
 
 ## 四、需要你拍板
 

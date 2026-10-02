@@ -29,9 +29,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      # The major this lockfile was produced with, and the one the desktop app
+      # installs plugins with: the build-script policy below (`allowBuilds`) is a
+      # pnpm 12 setting, and an older pnpm that does not know it fails the install
+      # with ERR_PNPM_IGNORED_BUILDS.
       - uses: pnpm/action-setup@v4
         with:
-          version: 11
+          version: 12
       # `.npmrc` keeps the store and cache inside the repository for the DSH
       # desktop sandbox; that is harmless here.
       - run: pnpm install --frozen-lockfile

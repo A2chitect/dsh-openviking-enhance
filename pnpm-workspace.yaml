@@ -1,9 +1,15 @@
-# pnpm 10+ blocks dependency build scripts by default. esbuild's install script
-# only stages its platform binary; the plugin ships no runtime dependency on it.
+# pnpm 10+ refuses to run dependency install scripts until each one is decided,
+# and it treats an undecided entry as a failure — so every package that asks for
+# one is listed here explicitly.
+#
+# esbuild's script stages the platform binary this repository's build needs.
+# The rest arrive with the DSH packages used for their type declarations; nothing
+# here runs them, and approving a harness package's postinstall to build native
+# addons this plugin never loads would be permission nobody asked for.
 allowBuilds:
-  '@deepseek-ai/dsh-subprocess-local': set this to true or false
-  '@google/genai': set this to true or false
+  '@deepseek-ai/dsh-subprocess-local': false
+  '@google/genai': false
   esbuild: true
-  koffi: set this to true or false
-  node-pty: set this to true or false
-  protobufjs: set this to true or false
+  koffi: false
+  node-pty: false
+  protobufjs: false

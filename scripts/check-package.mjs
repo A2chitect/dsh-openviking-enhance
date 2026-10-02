@@ -60,6 +60,29 @@ check(
 check(typeof pkg.engines?.node === 'string', 'engines.node is declared')
 check(typeof pkg.engines?.dsh === 'string', 'engines.dsh is declared')
 
+// ---- a stranger can install it --------------------------------------------
+// pnpm refuses to install while any dependency build script is undecided, and its
+// interactive approval writes the undecided ones back as prose ("set this to true
+// or false") — a file that no longer installs, in a repository where nobody ran
+// the installer again. This is that failure, one line of YAML.
+const workspacePath = join(root, 'pnpm-workspace.yaml')
+if (existsSync(workspacePath)) {
+  const workspace = readFileSync(workspacePath, 'utf8')
+  const lines = workspace.split('\n')
+  const start = lines.findIndex((line) => /^allowBuilds:\s*$/.test(line))
+  const undecided = []
+  if (start !== -1) {
+    for (const line of lines.slice(start + 1)) {
+      if (/^\S/.test(line)) break
+      const match = /^\s+'?([^':]+)'?:\s*(\S.*)$/.exec(line)
+      if (match === null) continue
+      if (match[2] !== 'true' && match[2] !== 'false') undecided.push(match[1])
+    }
+  }
+  check(undecided.length === 0, `every build script is decided in pnpm-workspace.yaml (${undecided.join(', ') || 'none undecided'})`)
+  check(/esbuild:\s*true/.test(workspace), 'esbuild may run its install script, which the build needs')
+}
+
 // ---- build output ----------------------------------------------------------
 // The client half is a prebuilt bundle the shell serves as a file, so a package
 // without it installs a plugin that cannot load.
