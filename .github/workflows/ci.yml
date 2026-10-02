@@ -1,0 +1,32 @@
+# Type check, build, unit tests and both smoke harnesses.
+#
+# No OpenViking server is required: `scripts/smoke-host.mjs` reports SKIP for the
+# live-data path when the server is unreachable and still asserts the route fence,
+# which is the part a change in this repository can actually regress. Locally, run
+# `SMOKE_REQUIRE_SERVER=1 pnpm run smoke` to make that skip a failure instead.
+#
+# The DSH UI packages are pinned to the runtime generation (0.2.0-rc.2) on purpose:
+# the type check validates our slot names and props against their `SlotMap`
+# augmentations, so a range would silently validate against the wrong generation.
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      # `.npmrc` keeps the store and cache inside the repository for the DSH
+      # desktop sandbox; that is harmless here.
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test

@@ -70,6 +70,9 @@ Full reasoning, evidence and rejected alternatives: [`docs/`](docs/).
 | `src/client/studio-panel.tsx` | Sidebar icon + Studio iframe page |
 | `src/client/commit-status.tsx` | Status pill + spacer + affected-memory popover |
 | `src/shared/protocol.ts` | Wire contract shared by both halves |
+| `src/shared/commit-state.ts` | Task-derived commit phase and failure reporting (pure) |
+| `src/client/slot-service.ts` | Slot registry typed against the framework's real `SlotMap` |
+| `src/client/type-assertions.ts` | Compile-time pins for the slot contract (never bundled) |
 | `build.mjs` | esbuild build for both faces |
 | `scripts/smoke-*.mjs` | Verification harnesses (see below) |
 | `docs/` | Feasibility analysis, design, plan, evidence |
@@ -93,9 +96,17 @@ The two halves reload differently, which matters while developing:
   HMR does not follow the profile's `link:` symlink back into this repository, so
   a rebuild needs an app restart before the host changes take effect.
 
-`pnpm test` runs type check, build, unit tests and both smoke harnesses. The host
-smoke needs a running OpenViking; the fence cases are the part that is worth
-watching in CI-friendly runs.
+`pnpm test` runs type check, build, unit tests and both smoke harnesses.
+
+The DSH UI packages in `devDependencies` are pinned to the runtime generation
+(`0.2.0-rc.2`), not a range: the type check validates our slot names, kinds and
+props against *their* `SlotMap` augmentations, so a range would happily validate
+against the wrong generation — the machine this was built on also carries a stale
+`0.1.0-rc.6` copy, whose slot names differ.
+
+CI (`.github/workflows/ci.yml`) needs no OpenViking: the host smoke reports SKIP
+for the live-data path and still asserts the route fence. Run
+`SMOKE_REQUIRE_SERVER=1 pnpm run smoke` locally to make that skip a failure.
 
 Two build details are load-bearing:
 
@@ -175,8 +186,10 @@ data path.
 | Check | What it proves |
 | --- | --- |
 | `tsc --noEmit` | Host and client compile against DSH `0.2.0-rc.2` types |
-| `node --test` | 15 unit tests over the pure logic: trust fence, phase derivation, diff normalization, session-URI resolution, the archive-URI guard, double-encoded JSON |
+| `node --test` | 20 unit tests over the pure logic: trust fence, phase derivation, diff normalization, session-URI resolution, the archive-URI guard, double-encoded JSON, failed-extraction reporting |
+| type assertions | `src/client/type-assertions.ts` pins the slot contract with `@ts-expect-error`: an unknown slot key, `key`/`id` swapped, a root slot declaring `inject`, a session slot omitting it, or a component that cannot accept its slot's props each have to be compile errors |
 | `scripts/smoke-host.mjs` (fence) | Live route fence: forged `Host`, cross-origin `Origin` and `POST` are refused (403/405), plain loopback still 200 |
+| `scripts/smoke-host.mjs` (data) | SKIPs with a note when OpenViking is unreachable, so CI stays green; `SMOKE_REQUIRE_SERVER=1` turns that back into a failure |
 | `node build.mjs` | Both bundles emit, client wrapped in the loader contract |
 | `scripts/smoke-client.mjs` | The built `lib/client.js` registers `apply`/`inject`, keeps React external, and registers all three slots without throwing |
 | `scripts/smoke-host.mjs` | The built `lib/index.js` answers all four routes against the **live** OpenViking server and reads a real `memory_diff.json` |

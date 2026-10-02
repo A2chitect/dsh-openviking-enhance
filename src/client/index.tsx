@@ -60,7 +60,7 @@ export function apply(context: ClientContext): void {
       slots.inject('sidebar.panellist', () =>
         slots.register(
           { name: 'sidebar.panellist', id: PANEL_ID, order: 30, label: () => 'OpenViking' },
-          SidebarIcon as never,
+          SidebarIcon,
         ),
       ),
     )
@@ -68,7 +68,7 @@ export function apply(context: ClientContext): void {
     // Centre column page for that row. Selecting a row whose `main` key is not
     // registered throws in the shell, so this pair must always ship together.
     disposers.push(
-      slots.inject('main', () => slots.register({ name: 'main', key: PANEL_ID }, StudioPanel as never)),
+      slots.inject('main', () => slots.register({ name: 'main', key: PANEL_ID }, StudioPanel)),
     )
 
     // Session footer status pill. The inject factory receives the session id
@@ -83,7 +83,7 @@ export function apply(context: ClientContext): void {
             order: 1,
             inject: (sessionId: string) => ({ sessionId }),
           },
-          CommitStatusPill as never,
+          CommitStatusPill,
         ),
       ),
     )

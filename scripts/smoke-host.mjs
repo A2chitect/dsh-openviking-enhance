@@ -50,18 +50,39 @@ const server = http.createServer((req, res) => {
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
 const base = `http://127.0.0.1:${server.address().port}`
 
+/**
+ * The live-data half needs a running OpenViking; the fence half does not.
+ *
+ * On a machine without the server (CI, a fresh clone) the data path reports SKIP
+ * and the exit code stays 0, while the fence assertions still run — those are the
+ * ones that catch a regression introduced by this repository. Asking for a
+ * specific session, or setting SMOKE_REQUIRE_SERVER=1, turns the skip back into a
+ * failure for anyone who wants the full check.
+ */
+const requireServer = process.env.SMOKE_REQUIRE_SERVER === '1'
 const requested = process.argv[2]
-const sessionId = requested ?? (await pickSession())
-if (!sessionId) {
-  console.error('[smoke] no session id given and none found on the server')
-  process.exitCode = 1
-  server.close()
-} else {
+const config = await get(`${base}/api/openviking-enhance/config`)
+const reachable = config?.ok === true && config?.healthy === true
+const sessionId = requested ?? (reachable ? await pickSession(config) : null)
+
+if (sessionId) {
   await report(base, sessionId)
-  server.close()
+} else {
+  const reason = config?.ok !== true
+    ? 'the plugin routes did not answer'
+    : `OpenViking is not healthy at ${config.endpoint}`
+  if (requireServer || requested) {
+    console.error(`[smoke] FAIL ${reason}`)
+    process.exitCode = 1
+  } else {
+    console.log(`[smoke] SKIP live data path: ${reason}`)
+    console.log('[smoke]      (start OpenViking, or set SMOKE_REQUIRE_SERVER=1 to fail instead)')
+  }
+  await checkFence(base)
 }
 
-/** Ask the plugin for status of the given session and print a compact report. */
+server.close()
+
 /** One raw request, so the Host/Origin/method can be shaped exactly. */
 function rawStatus(base, path, { method = 'GET', headers = {} } = {}) {
   const url = new URL(base)
@@ -129,10 +150,7 @@ async function report(base, sessionId) {
 }
 
 /** Find a DSH session that already has commits, by asking OpenViking directly. */
-async function pickSession() {
-  const config = await get(`${base}/api/openviking-enhance/config`)
-  if (!config?.ok) return null
-
+async function pickSession(config) {
   // A completed commit task names its session, so the diff path gets exercised.
   const tasks = await get(`${config.endpoint}/api/v1/tasks?task_type=session_commit&limit=200`)
   const taskItems = Array.isArray(tasks?.result) ? tasks.result : (tasks?.result?.items ?? [])
