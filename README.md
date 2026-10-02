@@ -23,17 +23,16 @@ turns accumulate until a token threshold is reached (or the session ends), then
 they are archived and the memories are extracted. The pill under the message box
 tells you where the session you are looking at stands.
 
-The pill's own wording is currently Chinese (see *Notes*), so the table lists what
-it actually renders:
+The pill follows the app's language (see *Notes*); in English it reads:
 
 | Pill | Meaning |
 | --- | --- |
-| `OV · 未提交` | Nothing from this session has been committed yet |
+| `OV · not committed` | Nothing from this session has been committed yet |
 | `OV · 12.3k/20k` | Turns are accumulating towards the commit threshold |
-| `OV · 抽取中…` | A commit is being archived and its memories extracted |
-| `OV · 3 次提交` | Three commits so far |
-| `OV · 抽取失败` | A commit was archived but its memories could not be extracted |
-| `OV · 不可用` | The local OpenViking server cannot be reached |
+| `OV · extracting…` | A commit is being archived and its memories extracted |
+| `OV · 3 commits` | Three commits so far |
+| `OV · extraction failed` | A commit was archived but its memories could not be extracted |
+| `OV · unavailable` | The local OpenViking server cannot be reached |
 
 Click the pill for details:
 
@@ -47,8 +46,7 @@ Click the pill for details:
 The panel and the pill read only. This plugin never commits, writes or deletes
 anything in OpenViking.
 
-**What this session retrieves.** The right sidebar gains a *记忆召回* (*memory
-recall*) tab: it shows what OpenViking pulls in for the session you are looking at
+**What this session retrieves.** The right sidebar gains a *Memory recall* tab: it shows what OpenViking pulls in for the session you are looking at
 — the query it searched with (that session's most recent message, or one you type
 yourself), every hit in each of its three sources (memories, resources, skills)
 with its score, `viking://` path and abstract, the server's own retrieval plan,
