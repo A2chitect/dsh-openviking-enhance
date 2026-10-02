@@ -187,87 +187,172 @@ button.ove-pill-errored:hover, button.ove-pill-errored[aria-expanded="true"] {
 .ove-failure-msg { margin-top: 4px; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }
 
 /* ---- Recall panel (right Sidebar tab) ----------------------------------- */
-/* The panel draws in a narrow column of the page, in the conversation's own
-   ground colour rather than a raised card (the right Sidebar's rule), so it uses
-   the label/border aliases only and never a surface of its own. */
-.ove-recall { display: flex; flex-direction: column; gap: 10px; padding: 10px 12px; font-size: 12px; }
-.ove-recall-search { display: flex; gap: 6px; align-items: center; }
+/* Every value below is copied from the shipped right-Sidebar tabs, so the panel
+   reads as one of them rather than as a plugin's own idea of a list:
+
+     tab body        @deepseek-ai/dsh-client-ui-sidebar-right   .tabBody
+     header + rows   @deepseek-ai/dsh-client-ui-sidebar-files   .header/.body/.row
+     input + button  @deepseek-ai/dsh-client-ui-primitives      Input / Button.sm
+     group header    @deepseek-ai/dsh-client-ui-primitives      SearchBlock .fileHeader
+
+   Two structural facts, taken from those rules rather than guessed: the pane
+   gives a tab body NO scrolling of its own (overflow:hidden on .tabBody), so
+   the body owns it — without that a long result list is clipped instead of
+   scrollable; and rows are borderless with a hover fill, not cards. */
+.ove-recall {
+  display: flex; flex-direction: column; height: 100%; min-height: 0; overflow: hidden;
+  /* The shipped tabs inherit the pane's content size; naming it here keeps the
+     12px captions below relative to something known instead of to whatever the
+     pane happens to hand down. */
+  font-size: var(--dsh-content-font-size-secondary, 13px); line-height: 1.5;
+}
+
+/* Shipped files-tab header: 38px, one hairline under it. */
+.ove-recall-bar {
+  box-sizing: border-box; flex: none; display: flex; align-items: center; gap: 4px;
+  height: 38px; padding: 0 6px 0 8px;
+  border-bottom: .5px solid var(--dsw-alias-border-l3);
+}
+/* Shipped Input.wrap, at the compact height the bar affords. */
+.ove-recall-field {
+  flex: 1; min-width: 0; display: inline-flex; align-items: center; gap: 6px;
+  height: 28px; padding: 0 8px;
+  border: .5px solid var(--dsw-alias-border-l4); border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-layer-1);
+}
+.ove-recall-field:focus-within { border-color: var(--dsw-alias-state-business-primary); }
+.ove-recall-field-icon {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; color: var(--dsw-alias-label-tertiary);
+}
 .ove-recall-input {
-  flex: 1; min-width: 0; font: inherit; color: var(--dsw-alias-label-primary);
-  background: transparent; border: .5px solid var(--dsw-alias-border-l2);
-  border-radius: var(--dsw-radius-md); padding: 4px 8px;
+  flex: 1; min-width: 0; border: none; outline: none; background: transparent;
+  font: inherit; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-primary);
 }
-.ove-recall-input::placeholder { color: var(--dsw-alias-label-caption); }
-.ove-recall-input:focus { outline: none; border-color: var(--dsw-alias-border-l3); }
+.ove-recall-input::placeholder { color: var(--dsw-alias-label-dimmed); }
+
+/* Shipped Button.sm (outline) and the chrome icon button. */
 .ove-recall-button {
-  flex: none; font: inherit; cursor: pointer; color: var(--dsw-alias-label-secondary);
-  background: transparent; border: .5px solid var(--dsw-alias-border-l2);
-  border-radius: var(--dsw-radius-md); padding: 4px 8px;
+  flex: none; box-sizing: border-box; height: 28px; padding: 0 10px;
+  font: inherit; font-size: 12px; line-height: 18px; cursor: pointer;
+  color: var(--dsw-alias-label-primary); background: transparent;
+  border: .5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-sm);
 }
-.ove-recall-button:hover:enabled { background: var(--dsw-alias-interactive-bg-hover); }
-.ove-recall-button:disabled { color: var(--dsw-alias-label-caption); cursor: default; }
-.ove-recall-facts { display: flex; flex-direction: column; gap: 2px; }
-.ove-recall-query {
-  color: var(--dsw-alias-label-secondary);
-  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+.ove-recall-button:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
+.ove-recall-button:disabled { opacity: .4; cursor: not-allowed; }
+.ove-recall-icon {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; padding: 0; cursor: pointer;
+  color: var(--dsw-alias-label-secondary); background: 0 0; border: none;
+  border-radius: var(--dsw-radius-sm);
 }
-.ove-recall-origin { color: var(--dsw-alias-label-caption); }
-.ove-recall-stats {
-  display: flex; gap: 10px; color: var(--dsw-alias-label-tertiary);
+.ove-recall-icon:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
+.ove-recall-icon:disabled { opacity: .4; cursor: not-allowed; }
+.ove-recall-icon svg { width: 15px; height: 15px; }
+
+/* Shipped files-tab body: it, not the pane, is the scroller. */
+.ove-recall-body {
+  flex: auto; min-height: 0; overflow: auto; scrollbar-gutter: stable;
+  padding: 8px 0 10px 8px; margin-right: 2px;
+}
+.ove-recall-meta {
+  display: flex; flex-wrap: wrap; gap: 4px 10px; padding: 0 10px 6px;
+  color: var(--dsw-alias-label-tertiary); font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
-.ove-recall-bucket { display: flex; flex-direction: column; gap: 4px; }
-.ove-recall-heading {
-  display: flex; justify-content: space-between; gap: 8px; margin: 0;
-  font-size: inherit; font-weight: 500; color: var(--dsw-alias-label-primary);
+
+/* Shipped SearchBlock .fileHeader: a bold label and its count on one baseline. */
+.ove-recall-group {
+  display: flex; align-items: baseline; gap: 8px; min-height: 22px;
+  padding: 8px 10px 2px; font-size: 12px;
 }
-.ove-recall-count { color: var(--dsw-alias-label-caption); font-variant-numeric: tabular-nums; }
-.ove-recall-item {
-  border: .5px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-md);
-  padding: 4px 6px;
-}
-.ove-recall-item-open { border-color: var(--dsw-alias-border-l2); }
+.ove-recall-group-name { font-weight: 600; color: var(--dsw-alias-label-primary); }
+.ove-recall-group-count { flex: none; color: var(--dsw-alias-label-tertiary); font-variant-numeric: tabular-nums; }
+
+/* Shipped files-tab row: borderless, radius-md, hover fill.
+   The row is a BLOCK holding one flex line, not a flex row itself: as a flex row
+   the abstract and the tags became siblings of the title and were laid out beside
+   it, which pushed the score to the middle of a three-line item. */
 .ove-recall-row {
-  display: flex; align-items: center; gap: 6px; width: 100%; box-sizing: border-box;
-  font: inherit; text-align: left; cursor: pointer; color: var(--dsw-alias-label-secondary);
-  background: 0 0; border: none; padding: 0;
+  box-sizing: border-box; display: block; width: 100%; min-width: 0;
+  padding: 5px 10px; font: inherit; text-align: left; color: inherit;
+  background: 0 0; border: 0; border-radius: var(--dsw-radius-md); cursor: pointer;
+}
+.ove-recall-row:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.ove-recall-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.ove-recall-title {
+  flex: 1; min-width: 0; color: var(--dsw-alias-label-primary);
+  white-space: nowrap; text-overflow: ellipsis; overflow: hidden;
 }
 .ove-recall-score {
-  flex: none; color: var(--dsw-alias-state-success-primary, #3fb950);
-  font-variant-numeric: tabular-nums;
+  flex: none; color: var(--dsw-alias-label-tertiary); font-variant-numeric: tabular-nums;
 }
-.ove-recall-path { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .ove-recall-caret { flex: none; color: var(--dsw-alias-label-caption); }
 .ove-recall-abstract {
-  margin: 3px 0 0; color: var(--dsw-alias-label-tertiary);
-  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; margin: 2px 0 0;
+  font-size: 12px; line-height: 1.5; color: var(--dsw-alias-label-tertiary);
+  white-space: normal;
 }
 .ove-recall-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 .ove-recall-tag {
-  color: var(--dsw-alias-label-caption); border: .5px solid var(--dsw-alias-border-l2);
-  border-radius: 999px; padding: 0 6px;
+  font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-tertiary);
+  border: .5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-sm);
+  padding: 0 6px;
 }
-.ove-recall-tag-quiet { border-style: dashed; }
-.ove-recall-body { margin-top: 6px; }
-.ove-recall-body pre {
-  margin: 0; white-space: pre-wrap; overflow-wrap: anywhere;
+.ove-recall-detail { padding: 0 10px 6px; }
+.ove-recall-uri {
+  display: block; margin-bottom: 4px; font-size: 12px;
+  color: var(--dsw-alias-label-caption); overflow-wrap: anywhere;
+}
+.ove-recall-detail pre {
+  margin: 0; max-height: 320px; overflow: auto;
+  padding: 8px 10px; border-radius: var(--dsw-radius-md);
+  /* The app's text-block surface. bg-layer-1 is the page's own colour, so the
+     block was invisible against it in the light theme. */
+  background: var(--dsw-alias-markdown-code-block);
+  font: inherit; font-size: 12px; line-height: 1.55;
   color: var(--dsw-alias-label-secondary);
-  max-height: 340px; overflow: auto;
+  white-space: pre-wrap; overflow-wrap: anywhere;
 }
-.ove-recall-empty { margin: 0; color: var(--dsw-alias-label-caption); }
-.ove-recall-note { margin: 0; color: var(--dsw-alias-label-tertiary); overflow-wrap: anywhere; }
-.ove-recall-error { margin: 0; color: var(--dsw-alias-state-error-primary, #f85149); overflow-wrap: anywhere; }
-.ove-recall-plan, .ove-recall-targets { color: var(--dsw-alias-label-tertiary); }
+/* Shipped SearchBlock .expand. */
+.ove-recall-more {
+  display: block; width: 100%; padding: 5px 10px; font: inherit; text-align: left;
+  color: var(--dsw-alias-label-tertiary); background: 0 0; border: none;
+  border-radius: var(--dsw-radius-md); cursor: pointer;
+}
+.ove-recall-more:hover:not(:disabled) {
+  color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-interactive-bg-hover);
+}
+.ove-recall-more:disabled { opacity: .4; cursor: not-allowed; }
+
+/* Shipped files-tab .status / .statusLine for the states that have no rows. */
+.ove-recall-status {
+  margin: 0; padding: 12px 10px; color: var(--dsw-alias-label-secondary);
+  font-size: var(--dsh-content-font-size-secondary, 13px); line-height: 1.6;
+}
+.ove-recall-hint {
+  margin: 0; padding: 4px 10px 8px; font-size: 12px; line-height: 1.5;
+  color: var(--dsw-alias-label-tertiary); overflow-wrap: anywhere;
+}
+.ove-recall-error {
+  margin: 0; padding: 12px 10px; color: var(--dsw-alias-state-error-primary, #f85149);
+  font-size: var(--dsh-content-font-size-secondary, 13px); line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.ove-recall-plan, .ove-recall-targets {
+  padding: 0 10px 6px; font-size: 12px; color: var(--dsw-alias-label-tertiary);
+}
 .ove-recall-plan summary, .ove-recall-targets summary { cursor: pointer; }
-.ove-recall-plan pre { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* The UA triangle has no margin of its own and ::marker cannot take one. */
+.ove-recall-summary { margin-left: 4px; }
+.ove-recall-plan pre {
+  margin: 4px 0 0; color: var(--dsw-alias-label-secondary);
+  font: inherit; font-size: 12px; line-height: 1.55;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
 .ove-recall-targets ul { margin: 4px 0 0; padding-left: 16px; }
 .ove-recall-targets li { overflow-wrap: anywhere; }
-.ove-recall-more {
-  font: inherit; cursor: pointer; color: var(--dsw-alias-label-secondary);
-  background: transparent; border: .5px solid var(--dsw-alias-border-l2);
-  border-radius: var(--dsw-radius-md); padding: 4px 8px;
-}
-.ove-recall-more:hover:enabled { background: var(--dsw-alias-interactive-bg-hover); }
 `
 
 /** Install the stylesheet once per document. */

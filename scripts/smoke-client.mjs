@@ -57,7 +57,16 @@ const check = (condition, message) => {
 check(handoff !== null, 'registers a handoff with window.__ModuleLoader__')
 check(handoff?.id === pkg.name, `handoff id is the package name (${pkg.name})`)
 
-const exports = typeof handoff?.factory === 'function' ? handoff.factory(require) : {}
+// Record what the factory asks for: the bundle's real dependencies, as opposed to
+// whatever package names its comments happen to mention.
+const required = []
+const exports =
+  typeof handoff?.factory === 'function'
+    ? handoff.factory((id) => {
+        required.push(id)
+        return require(id)
+      })
+    : {}
 check(typeof exports.apply === 'function', 'factory returns apply()')
 check(Array.isArray(exports.inject), 'factory returns inject[]')
 check(exports.inject?.includes('slots'), 'inject waits for the slots service')
@@ -162,6 +171,55 @@ check(tabBody?.inject('session-x')?.sessionId === 'session-x', 'the tab body rec
 check(code.includes('/recall'), 'the panel requests the host recall route')
 check(injectedCss?.includes('.ove-recall'), 'installs the recall panel stylesheet')
 
+// The recall panel is styled from the shipped right-Sidebar tabs rather than from
+// taste, and each check below pins one of those copied declarations. The source is
+// named per check: .header/.body/.row are the files tab's rules in
+// `@deepseek-ai/dsh-client-ui-sidebar-files`, the field is the primitives package's
+// `Input.module.css`, and the group header is `SearchBlock.module.css`.
+check(
+  injectedCss.includes('height: 38px; padding: 0 6px 0 8px;'),
+  'recall header uses the files tab header height (38px)',
+)
+check(
+  injectedCss.includes('border-bottom: .5px solid var(--dsw-alias-border-l3)'),
+  'recall header has the files tab hairline, not a card edge',
+)
+// The pane clips a tab body (`overflow:hidden` on .tabBody), so a body that does
+// not scroll itself is a list the user cannot reach the end of.
+check(
+  injectedCss.includes('flex: auto; min-height: 0; overflow: auto; scrollbar-gutter: stable;'),
+  'recall body is the scroller, like the files tab body',
+)
+check(
+  injectedCss.includes('padding: 5px 10px;') && injectedCss.includes('border-radius: var(--dsw-radius-md)'),
+  'recall rows use the files tab row metrics',
+)
+// A flex ROW here put the abstract and the tags on the title's own line, which
+// pushed the score to the middle of a multi-line item. The row is a block whose
+// first child is the flex line; pin both halves.
+check(
+  injectedCss.includes('display: block; width: 100%; min-width: 0;'),
+  'recall row is a block, so its second line starts under the title',
+)
+check(
+  injectedCss.includes('.ove-recall-line { display: flex; align-items: center; gap: 6px; min-width: 0; }'),
+  'exactly one line of a row is a flex line (title, score, caret)',
+)
+check(
+  injectedCss.includes('border: .5px solid var(--dsw-alias-border-l4)'),
+  'the query field uses the shipped Input border token',
+)
+check(
+  injectedCss.includes('border-color: var(--dsw-alias-state-business-primary)'),
+  'the query field focuses like the shipped Input',
+)
+// An entry body sits on the app's text-block surface. bg-layer-1 is the page's own
+// colour, so the block was invisible against it in the light theme.
+check(
+  injectedCss.includes('background: var(--dsw-alias-markdown-code-block)'),
+  'an opened entry reads as a text block, not as page background',
+)
+
 // Style parity with the shell's own stats pills is the whole point of the pill's
 // CSS, and a template-literal slip silently ships invalid declarations, so assert
 // the resolved text rather than trusting a visual check.
@@ -196,7 +254,13 @@ check(
   code.split('M6.5 6.5 9.5 9.5').length - 1 === 1,
   'the OpenViking mark is defined once and shared by both mounts',
 )
-check(!code.includes('dsh-client-ui-primitives'), 'no cross-package icon dependency')
+// The mark must stay self-contained: the only thing the bundle may pull from the
+// module table is React. Asserted on the require calls the factory actually makes
+// rather than on the bundle's text, so a comment naming a package cannot trip it.
+check(
+  !required.some((id) => id.startsWith('@deepseek-ai/dsh-client-ui-')),
+  `no cross-package icon dependency (required: ${required.join(', ') || 'nothing'})`,
+)
 
 // The failed-extraction state is the one thing nothing else in the system shows.
 check(
