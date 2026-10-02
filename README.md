@@ -159,7 +159,7 @@ half only after an app restart.
 ```bash
 pnpm install
 pnpm run build      # lib/index.js (host) + lib/client.js (browser)
-pnpm test           # typecheck, build, unit tests, smoke harnesses
+pnpm test           # typecheck, packaging contract, unit tests, smoke harnesses
 pnpm run watch      # rebuild on change
 ```
 

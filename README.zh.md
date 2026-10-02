@@ -136,7 +136,7 @@ Studio 面板和胶囊照常工作。
 ```bash
 pnpm install
 pnpm run build      # lib/index.js（宿主）+ lib/client.js（浏览器）
-pnpm test           # 类型检查、构建、单测、冒烟
+pnpm test           # 类型检查、构建、发布要求核对、单测、冒烟
 pnpm run watch      # 改动后自动重建
 ```
 

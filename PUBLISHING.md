@@ -138,6 +138,17 @@ CI 要检查（`dsh.bundle`）和市场上"装上就能用"的那一步。tarbal
 本地复现：`SMOKE_ENDPOINT=http://127.0.0.1:9 node scripts/smoke-host.mjs`；
 CI 上不需要任何参数——那里本来就没有 OpenViking，走的正是这条分支。
 
+### 10. 发布要求进了 CI：`scripts/check-package.mjs` ☑
+
+上面这些要求原先只存在于这份清单和我的一次性核对里，会漂。现在它们是 `pnpm test` 的一部分，
+逐条断言（20 项）：`dsh.bundle.patch` 已声明且文件存在、patch 里确实有 `insert:` 行并写了包名、
+`dsh.client.platform = web` 且 inject 非空、**不是 `private`**、有 LICENSE 且进了 `files`、
+有 description 与 keywords、**没有任何 `@deepseek-ai/*` 运行时依赖**、harness 是 peer、
+`engines` 齐、`lib/index.js` 与 `lib/client.js` 都已构建且在 `files` 里、`prepack` 存在。
+
+**不是空转**：故意把 `private` 设回 true、删掉 `files` 里的 LICENSE、把 schemastery 放回
+`dependencies` 之后，三条都如实报红；恢复后全绿。
+
 ## 三、待办
 
 | # | 工作 | 说明 |
@@ -192,4 +203,5 @@ CI 上不需要任何参数——那里本来就没有 OpenViking，走的正是
 | 中英字典一致 / 无缺键 | `node --test test/locale.test.mjs` |
 | 真实安装 + 组合树 | 见上面第 8 条的三条命令（`DSH_HOME` 指向临时目录） |
 | 没有 OpenViking 时的降级 | `SMOKE_ENDPOINT=http://127.0.0.1:9 node scripts/smoke-host.mjs` |
+| 发布要求全部成立 | `node scripts/check-package.mjs`（也是 `pnpm test` 的一环） |
 | 全量回归 | `pnpm test` |
