@@ -656,12 +656,18 @@ dsh-openviking-enhance: Error: cannot get property "locale" without inject
 4. 逐张核对**没有出现任何真实信息**：工作区名是 "Default workspace"、账号是 `demo/demo`、
    记忆内容全是编造的。
 
-产物：`assets/studio-panel.png`、`assets/recall-tab.png`、`assets/settings-form.png` +
-`screenshots.json`（市场按这个顺序展示），README 中英两份各嵌了 Studio 那张。
+产物（四张齐了）：`assets/studio-panel.png`、`assets/commit-pill.png`、`assets/recall-tab.png`、
+`assets/settings-form.png` + `screenshots.json`（市场按这个顺序展示），README 中英两份各嵌了 Studio 那张。
 
-**还缺一张：提交状态胶囊**。空白 profile 里没有模型，因此**不存在"有过一轮对话的会话"**，
-而 shell 只在那种会话里渲染输入框下方的 dock——胶囊没有容器可挂。这一张需要你补，或者下一轮我给临时
-profile 搭一个假的 OpenAI 兼容模型让它产生一轮真实交互。
+**第四张（胶囊）怎么来的**：shell 只在"跑过一轮对话"的会话里渲染输入框下方的 dock，空会话没有容器可挂。
+所以又加了 `scripts/screenshot-model.mjs`——一个假的 OpenAI 兼容模型（`/v1/chat/completions`，
+SSE 逐字返回一段编造的清单和 usage），临时 profile 的 patch 里用 `llm-pi-ai` 注册它、
+并用 `agent-default-model` 把它设为默认模型。于是产生**一轮真实交互**：转写、usage、dock 全部由 shell
+自己渲染，胶囊（`OV · 3 commits`）和它的提交时间线自然出现。
+
+两个坑记在这里：**把文字塞进输入框必须走 CDP 的 `Input.insertText`**（自己 `dispatchEvent` 一个
+`input` 事件进不了编辑器的状态，发送按钮会当成空草稿直接忽略）；**模型选择器只列出组合里注册过的
+provider**，所以 `agent-default-model` 直接指定比在界面上点更省事。
 
 **顺带发现并修掉一个真 bug**：这次截图暴露出插件的界面语言跟随的是**浏览器**而不是**应用**——
 `ctx.locale` 会抛错（第 27 条），而 `get('locale')` 也拿不到那个服务，于是退回 `navigator.language`。
