@@ -162,6 +162,15 @@ export interface RecallItem {
   score: number
   /** `memory` | `resource` | `skill` | … as the server labels it. */
   contextType: string
+  /**
+   * The entry's own kind — `entity`, `event`, `preference`, … — read host-side
+   * from the path the plugin writes (`…/memories/entities/<project>/…`).
+   *
+   * The retrieval reply carries no memory type and this server leaves `tags`
+   * empty, so the path is the only place that fact exists. Empty for entries
+   * that are not under `memories/` (resources, skills, index files).
+   */
+  memoryType: string
   /** Level in the memory tree, when the server reports one. */
   level: number | null
   /** What the entry says, as far as the server is willing to show. */

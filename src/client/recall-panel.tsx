@@ -50,9 +50,29 @@ const BUCKET_LABELS: Record<string, string> = {
   skills: '技能',
 }
 
-/** `viking://user/default/peers/<peer>/memories/events/x.md` → `peers/<peer>/events/x.md`. */
-function shortUri(uri: string): string {
-  return uri.replace(/^viking:\/\/user\/[^/]+\//, '').replace(/^memories\//, '')
+/**
+ * The entry's file name. The title line shows only this: the full `viking://`
+ * path is one hover away (`title`) and one click away (the detail block), and a
+ * relative path in front of a name that is already long enough to be truncated
+ * only cost the name its room.
+ */
+function fileName(uri: string): string {
+  const cut = uri.lastIndexOf('/')
+  return cut === -1 ? uri : uri.slice(cut + 1)
+}
+
+/**
+ * How strong a match looks.
+ *
+ * The bands follow the server's own reported score distribution — min 0.60,
+ * average 0.755, max 0.92 over 438 queries — rather than a 0…1 intuition, so a
+ * coloured number means the same thing on this machine as it does in the
+ * observer. Colour is never the only signal: the number itself is right there.
+ */
+function scoreTone(score: number): string {
+  if (score >= 0.8) return 'ove-recall-score-high'
+  if (score >= 0.7) return 'ove-recall-score-mid'
+  return 'ove-recall-score-low'
 }
 
 function formatTime(iso: string): string {
@@ -319,26 +339,33 @@ interface ItemProps {
 }
 
 function Item({ item, open, body, onToggle }: ItemProps) {
+  // The kind first (entity / event / preference / …), then the level of the
+  // memory tree, then anything the server itself tagged.
+  const tags = [
+    ...new Set(
+      [item.memoryType || item.contextType, item.level === null ? '' : `L${item.level}`, ...item.tags].filter(
+        (tag) => tag.length > 0,
+      ),
+    ),
+  ]
   return (
-    <>
-      {/* One button for the whole collapsed item: the abstract and the tags sit
-          inside it, so anywhere on the row opens it. */}
+    <div className={`ove-recall-item${open ? ' ove-recall-item-open' : ''}`}>
+      {/* One button for the whole collapsed card: the abstract and the tags sit
+          inside it, so anywhere on the card opens it. */}
       <button type="button" className="ove-recall-row" onClick={() => onToggle(item.uri)}>
         <span className="ove-recall-line">
           <span className="ove-recall-title" title={item.uri}>
-            {shortUri(item.uri)}
+            {fileName(item.uri)}
           </span>
-          <span className="ove-recall-score">{item.score.toFixed(2)}</span>
+          <span className={`ove-recall-score ${scoreTone(item.score)}`}>{item.score.toFixed(2)}</span>
           <span className="ove-recall-caret">{open ? '▾' : '▸'}</span>
         </span>
         {!open && item.abstract.length > 0 && (
           <span className="ove-recall-abstract">{item.abstract}</span>
         )}
-        {!open && (item.tags.length > 0 || item.contextType.length > 0 || item.level !== null) && (
+        {!open && tags.length > 0 && (
           <span className="ove-recall-tags">
-            {item.contextType.length > 0 && <span className="ove-recall-tag">{item.contextType}</span>}
-            {item.level !== null && <span className="ove-recall-tag">L{item.level}</span>}
-            {item.tags.map((tag) => (
+            {tags.map((tag) => (
               <span className="ove-recall-tag" key={tag}>
                 {tag}
               </span>
@@ -361,6 +388,6 @@ function Item({ item, open, body, onToggle }: ItemProps) {
           )}
         </div>
       )}
-    </>
+    </div>
   )
 }

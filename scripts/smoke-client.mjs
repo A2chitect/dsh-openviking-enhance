@@ -191,9 +191,24 @@ check(
   'recall body is the scroller, like the files tab body',
 )
 check(
-  injectedCss.includes('padding: 5px 10px;') && injectedCss.includes('border-radius: var(--dsw-radius-md)'),
-  'recall rows use the files tab row metrics',
+  injectedCss.includes('padding: 6px 10px;') && injectedCss.includes('border-radius: var(--dsw-radius-md)'),
+  'recall rows sit inside a card at the shipped row metrics',
 )
+// Every entry is outlined, and its score is graded by colour.
+check(
+  injectedCss.includes('border: .5px solid var(--dsw-alias-border-l3)'),
+  'each recall entry carries the shipped card border',
+)
+for (const [tone, token] of [
+  ['high', '--dsw-alias-state-success-primary'],
+  ['mid', '--dsw-alias-state-warn-primary'],
+  ['low', '--dsw-alias-state-error-primary'],
+]) {
+  check(
+    injectedCss.includes(`.ove-recall-score-${tone} { color: var(${token}`),
+    `the ${tone} score band uses the app's own ${token.replace('--dsw-alias-', '')} state colour`,
+  )
+}
 // A flex ROW here put the abstract and the tags on the title's own line, which
 // pushed the score to the middle of a multi-line item. The row is a block whose
 // first child is the flex line; pin both halves.

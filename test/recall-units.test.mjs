@@ -13,6 +13,7 @@ import { OpenVikingApi } from '../src/host/openviking-api.ts'
 import {
   RecallService,
   latestUserPrompt,
+  memoryTypeOf,
   searchTargets,
   userRootOf,
 } from '../src/host/recall-service.ts'
@@ -46,7 +47,7 @@ function replyFor(target) {
   if (target === `${USER_ROOT}/memories`) {
     return {
       memories: [
-        { uri: `${USER_ROOT}/memories/a.md`, score: 0.5, context_type: 'memory', level: 2, abstract: 'A', tags: [] },
+        { uri: `${USER_ROOT}/memories/entities/proj/a.md`, score: 0.5, context_type: 'memory', level: 2, abstract: 'A', tags: [] },
         { uri: `${USER_ROOT}/memories/shared.md`, score: 0.4, context_type: 'memory', abstract: 'S' },
       ],
       resources: [],
@@ -57,8 +58,8 @@ function replyFor(target) {
   if (target === `${USER_ROOT}/peers/${PEER}/memories`) {
     return {
       memories: [
-        { uri: `${USER_ROOT}/memories/a.md`, score: 0.9, context_type: 'memory', abstract: 'A again' },
-        { uri: `${USER_ROOT}/peers/${PEER}/memories/b.md`, score: 0.8, context_type: 'memory', abstract: 'B' },
+        { uri: `${USER_ROOT}/memories/entities/proj/a.md`, score: 0.9, context_type: 'memory', abstract: 'A again' },
+        { uri: `${USER_ROOT}/peers/${PEER}/memories/events/2026/10/02/b.md`, score: 0.8, context_type: 'memory', abstract: 'B' },
       ],
       resources: [],
       skills: [],
@@ -150,6 +151,19 @@ test('userRootOf reads the user root out of a session path', () => {
   assert.equal(userRootOf(null), null)
 })
 
+test('memoryTypeOf reads the memory kind out of the path, singular', () => {
+  assert.equal(memoryTypeOf(`${USER_ROOT}/memories/entities/dsh 插件项目/x.md`), 'entity')
+  assert.equal(memoryTypeOf(`${USER_ROOT}/peers/p/memories/events/2026/10/02/x.md`), 'event')
+  assert.equal(memoryTypeOf(`${USER_ROOT}/memories/preferences/default/x.md`), 'preference')
+  // A kind this build has never seen is passed through rather than dropped.
+  assert.equal(memoryTypeOf(`${USER_ROOT}/memories/recipes/x.md`), 'recipes')
+  // Not a memory: resources, skills, index files, or a file sitting directly
+  // under memories/ with no kind directory in front of it.
+  assert.equal(memoryTypeOf(`${USER_ROOT}/resources/.abstract.md`), '')
+  assert.equal(memoryTypeOf(`${USER_ROOT}/skills/s.md`), '')
+  assert.equal(memoryTypeOf(`${USER_ROOT}/memories/loose.md`), '')
+})
+
 test('searchTargets covers every source and the peer tree', () => {
   assert.deepEqual(searchTargets(SESSION_URI, 'default', PEER).map((target) => target.uri), [
     `${USER_ROOT}/memories`,
@@ -202,13 +216,16 @@ test('recall searches every target as the session, and merges the replies', asyn
     // Same uri from two targets: kept once, at the better score.
     const memories = payload.buckets.find((bucket) => bucket.bucket === 'memories')
     assert.deepEqual(memories.items.map((item) => item.uri), [
-      `${USER_ROOT}/memories/a.md`,
-      `${USER_ROOT}/peers/${PEER}/memories/b.md`,
+      `${USER_ROOT}/memories/entities/proj/a.md`,
+      `${USER_ROOT}/peers/${PEER}/memories/events/2026/10/02/b.md`,
       `${USER_ROOT}/memories/shared.md`,
     ])
     assert.equal(memories.items[0].score, 0.9)
     assert.equal(memories.items[1].level, null)
     assert.deepEqual(memories.items[1].tags, [])
+    // The kind a tag shows comes from the path: the reply has no memory type and
+    // this server leaves `tags` empty.
+    assert.deepEqual(memories.items.map((item) => item.memoryType), ['entity', 'event', ''])
 
     const resources = payload.buckets.find((bucket) => bucket.bucket === 'resources')
     const skills = payload.buckets.find((bucket) => bucket.bucket === 'skills')

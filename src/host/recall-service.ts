@@ -291,11 +291,36 @@ function reasoningOf(response: OvSearchResponse): string | null {
   return typeof reasoning === 'string' && reasoning.trim().length > 0 ? reasoning.trim() : null
 }
 
+/** Plural path segment → the singular kind a tag names. */
+const MEMORY_KINDS: Record<string, string> = {
+  entities: 'entity',
+  events: 'event',
+  preferences: 'preference',
+  experiences: 'experience',
+  facts: 'fact',
+  knowledge: 'knowledge',
+  summaries: 'summary',
+}
+
+/**
+ * The entry's own kind, read from the path the plugin writes.
+ *
+ * Retrieval says only `context_type` (memory/resource/skill) and this server
+ * leaves `tags` empty, so `…/memories/events/2026/10/02/x.md` is the only place
+ * that "this is an event" exists. An entry outside `memories/` has no kind.
+ */
+export function memoryTypeOf(uri: string): string {
+  const segment = /\/memories\/([^/]+)\//.exec(uri)?.[1]
+  if (segment === undefined) return ''
+  return MEMORY_KINDS[segment] ?? segment
+}
+
 function toRecallItem(item: OvSearchItem): RecallItem {
   return {
     uri: item.uri,
     score: typeof item.score === 'number' && Number.isFinite(item.score) ? item.score : 0,
     contextType: typeof item.context_type === 'string' ? item.context_type : '',
+    memoryType: memoryTypeOf(item.uri),
     level: typeof item.level === 'number' ? item.level : null,
     abstract: typeof item.abstract === 'string' ? item.abstract : '',
     tags: Array.isArray(item.tags) ? item.tags.filter((tag): tag is string => typeof tag === 'string') : [],

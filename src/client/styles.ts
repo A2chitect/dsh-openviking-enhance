@@ -269,14 +269,24 @@ button.ove-pill-errored:hover, button.ove-pill-errored[aria-expanded="true"] {
 .ove-recall-group-name { font-weight: 600; color: var(--dsw-alias-label-primary); }
 .ove-recall-group-count { flex: none; color: var(--dsw-alias-label-tertiary); font-variant-numeric: tabular-nums; }
 
-/* Shipped files-tab row: borderless, radius-md, hover fill.
+/* One entry is one outlined card: the file's own edge, so a list of memories
+   reads as a list of records rather than as loose text. The card owns the radius
+   and clips the row's hover fill to it. */
+.ove-recall-item {
+  border: .5px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-md);
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+.ove-recall-item-open { border-color: var(--dsw-alias-border-l2); }
+/* Shipped files-tab row inside that card: hover fill, no border of its own.
    The row is a BLOCK holding one flex line, not a flex row itself: as a flex row
    the abstract and the tags became siblings of the title and were laid out beside
    it, which pushed the score to the middle of a three-line item. */
 .ove-recall-row {
   box-sizing: border-box; display: block; width: 100%; min-width: 0;
-  padding: 5px 10px; font: inherit; text-align: left; color: inherit;
-  background: 0 0; border: 0; border-radius: var(--dsw-radius-md); cursor: pointer;
+  padding: 6px 10px; font: inherit; text-align: left; color: inherit;
+  background: 0 0; border: 0; cursor: pointer;
 }
 .ove-recall-row:hover { background: var(--dsw-alias-interactive-bg-hover); }
 .ove-recall-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
@@ -284,9 +294,12 @@ button.ove-pill-errored:hover, button.ove-pill-errored[aria-expanded="true"] {
   flex: 1; min-width: 0; color: var(--dsw-alias-label-primary);
   white-space: nowrap; text-overflow: ellipsis; overflow: hidden;
 }
-.ove-recall-score {
-  flex: none; color: var(--dsw-alias-label-tertiary); font-variant-numeric: tabular-nums;
-}
+.ove-recall-score { flex: none; font-variant-numeric: tabular-nums; }
+/* Bands: >=0.80 strong, >=0.70 medium, below that weak — see the scoreTone()
+   helper for where those three numbers come from. */
+.ove-recall-score-high { color: var(--dsw-alias-state-success-primary, #3fb950); }
+.ove-recall-score-mid { color: var(--dsw-alias-state-warn-primary, #d29922); }
+.ove-recall-score-low { color: var(--dsw-alias-state-error-primary, #f85149); }
 .ove-recall-caret { flex: none; color: var(--dsw-alias-label-caption); }
 .ove-recall-abstract {
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
@@ -300,7 +313,7 @@ button.ove-pill-errored:hover, button.ove-pill-errored[aria-expanded="true"] {
   border: .5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-sm);
   padding: 0 6px;
 }
-.ove-recall-detail { padding: 0 10px 6px; }
+.ove-recall-detail { padding: 0 10px 8px; }
 .ove-recall-uri {
   display: block; margin-bottom: 4px; font-size: 12px;
   color: var(--dsw-alias-label-caption); overflow-wrap: anywhere;
@@ -317,7 +330,7 @@ button.ove-pill-errored:hover, button.ove-pill-errored[aria-expanded="true"] {
 }
 /* Shipped SearchBlock .expand. */
 .ove-recall-more {
-  display: block; width: 100%; padding: 5px 10px; font: inherit; text-align: left;
+  display: block; width: 100%; margin-top: 2px; padding: 5px 10px; font: inherit; text-align: left;
   color: var(--dsw-alias-label-tertiary); background: 0 0; border: none;
   border-radius: var(--dsw-radius-md); cursor: pointer;
 }
