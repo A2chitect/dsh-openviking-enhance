@@ -502,6 +502,26 @@ PR 说明里补了一段主动说明差异（评审第 4 条正是看这个）�
 （`releases/download/v0.2.0/pkg-0.2.0.tgz`），它比 `latest/download/` + 去掉版本号文件名更省事也更稳
 （URL 自带版本，发下一个版本不会让旧链接悄悄失效）。下面第 3 节已按这个顺序改写。
 
+### 23. 他们 CI 的四步，我在本地复现了三步 ☑
+
+| CI 步骤 | 本地复现 | 结果 |
+| --- | --- | --- |
+| `check-submission.mjs`（条目数 / `dsh.bundle` / 仓库年龄 / 非 DSH） | ✔ | 只有年龄未过，其余全过（第 19 条） |
+| `generate-readme.mjs` + 两 README 的 locale parity | ✔ | 条目在两个 README 各生成一行，中英都有（第 19 条） |
+| 站点数据（4412 条条目的字段集） | ✔ | 字段只有 `url`/`name`/`description`/`category`（+可选 `tarball`），我的条目完整（第 22 条） |
+| `build-site.mjs` | ✖ 本地不可复现 | 见下 |
+
+站点构建在本地跑不起来，报的是：
+
+```
+refusing to publish: only 1442/4412 entries (32.7%) have a star count, below the 66% floor.
+data/stars.json is empty or truncated — almost always probe-stars.mjs hitting an exhausted
+GitHub API quota on a cold cache.
+```
+
+跑了**对照实验**：把条目移走再构建，**报错完全相同**（exit 1）。也就是说这个失败来自他们自己的
+star 探测数据（要联网刷 GitHub 配额），与我的投稿无关，我这边无法在本地补齐。
+
 ## 四、需要你拍板
 
 | # | 问题 | 影响 |
