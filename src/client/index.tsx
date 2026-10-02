@@ -15,7 +15,8 @@
  */
 import type { ClientContext } from './slot-service.ts'
 import { installStyles } from './styles.ts'
-import { StudioIcon, StudioPanel } from './studio-panel.tsx'
+import { OpenVikingIcon } from './openviking-icon.tsx'
+import { StudioPanel } from './studio-panel.tsx'
 import { CommitStatusPill } from './commit-status.tsx'
 
 /** Client services this half waits for before `apply` runs. */
@@ -23,6 +24,16 @@ export const inject = ['slots']
 
 /** Sidebar row id; the same value keys the `main` panel entry. */
 const PANEL_ID = 'openviking'
+
+/**
+ * Sidebar row glyph. The shell hands a list occupant only `{ size, active }` and
+ * draws the button, title and highlight itself, so this adds just the marker the
+ * panel row carries and defers the artwork to the shared mark — the same one the
+ * status pill uses.
+ */
+function SidebarIcon(props: { size: number; active: boolean }) {
+  return <OpenVikingIcon {...props} data-dsh-panel-entry={PANEL_ID} />
+}
 
 function report(context: ClientContext, error: unknown): void {
   const message = error instanceof Error ? error.message : String(error)
@@ -49,7 +60,7 @@ export function apply(context: ClientContext): void {
       slots.inject('sidebar.panellist', () =>
         slots.register(
           { name: 'sidebar.panellist', id: PANEL_ID, order: 30, label: () => 'OpenViking' },
-          StudioIcon as never,
+          SidebarIcon as never,
         ),
       ),
     )

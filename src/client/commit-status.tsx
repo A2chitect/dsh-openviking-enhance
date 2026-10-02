@@ -21,47 +21,20 @@
  * as the last item of the row, so the shell's own pills and their centring are
  * left untouched. The icon is the shell's own `IconArchiveOutlineRegular` — a
  * commit in OpenViking produces an `archive_00N`, so it is also the honest glyph —
- * resolved through the frozen module table, with a local fallback if that export
- * ever moves.
+ * taken from the sidebar row's own mark (`openviking-icon.tsx`) so the two mounts
+ * read as the same thing. The label leads with "OV" because a commit pill is
+ * otherwise indistinguishable from a git commit's.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CommitStatus, MemoryDiff, MemoryDiffEntry } from '../shared/protocol.ts'
 import { fetchCommits, fetchDiff, type CommitTaskSummary } from './host-api.ts'
+import { OpenVikingIcon } from './openviking-icon.tsx'
 
 export interface CommitStatusProps {
   sessionId?: string
 }
 
 const POLL_MS = 5000
-
-/** The shell's own icon, when the module table still exposes it. */
-type IconComponent = (props: Record<string, unknown>) => JSX.Element
-
-function resolveArchiveIcon(): IconComponent | null {
-  try {
-    // Guarded on purpose: a static import would fail the whole factory — and
-    // with it the entire client half — if this export ever moves.
-    const primitives = require('@deepseek-ai/dsh-client-ui-primitives') as Record<string, unknown> | undefined
-    const candidate = primitives?.IconArchiveOutlineRegular
-    return typeof candidate === 'function' ? (candidate as IconComponent) : null
-  } catch {
-    return null
-  }
-}
-
-const ArchiveIcon = resolveArchiveIcon()
-
-/** Same 14px / 1px-stroke / currentColor language as the primitives' icons. */
-function CommitIcon() {
-  if (ArchiveIcon) return <ArchiveIcon />
-  return (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1" aria-hidden="true">
-      <rect x="1.75" y="2.75" width="12.5" height="3" rx="1" />
-      <path d="M3 5.75v6.5a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-6.5" strokeLinecap="round" />
-      <path d="M6.5 8.75h3" strokeLinecap="round" />
-    </svg>
-  )
-}
 
 export function CommitStatusPill({ sessionId }: CommitStatusProps) {
   const [status, setStatus] = useState<CommitStatus | null>(null)
@@ -140,15 +113,21 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
         title={tooltip(status, error)}
         onClick={() => setOpen((value) => !value)}
       >
-        <CommitIcon />
-        <span className={`ove-label${phase === 'extracting' ? ' ove-pulse' : ''}`}>{text}</span>
+        <OpenVikingIcon size={14} strokeWidth={1} />
+        <span className={`ove-label${phase === 'extracting' ? ' ove-pulse' : ''}`}>
+          {'OV'}
+          <span className="ove-sep" aria-hidden="true">
+            ·
+          </span>
+          {text}
+        </span>
       </button>
       {open ? (
         <div className="ove-pop" role="dialog" aria-label="OpenViking 提交详情">
           <div className="ove-pop-title">
             <span className="ove-pop-title-label">
-              <CommitIcon />
-              提交
+              <OpenVikingIcon size={14} strokeWidth={1} />
+              OpenViking 提交
             </span>
             <span className="ove-row-count">{status ? `${status.commitCount} 次` : '—'}</span>
           </div>

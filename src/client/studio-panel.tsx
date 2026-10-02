@@ -21,29 +21,6 @@ import { useCallback, useEffect, useState } from 'react'
 import type { EnhanceConfig } from '../shared/protocol.ts'
 import { fetchConfig } from './host-api.ts'
 
-export function StudioIcon({ size }: { size: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.3"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-      data-dsh-panel-entry="openviking"
-    >
-      <circle cx="5" cy="5" r="2.1" />
-      <circle cx="11" cy="11" r="2.1" />
-      <path d="M6.5 6.5 9.5 9.5" />
-      <path d="M11 3.2c1.2 0 2 .8 2 2" />
-      <path d="M3 10.8c0 1.2.8 2 2 2" />
-    </svg>
-  )
-}
-
 /**
  * The panel page. `nonce` forces the iframe to remount on refresh, which is the
  * only way to reload a cross-origin frame without touching its `src`.

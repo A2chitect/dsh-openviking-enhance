@@ -10,7 +10,9 @@ inside the Web GUI:
    memories that each commit actually added, updated or deleted. It renders as
    the last item of that row, after the shell's own stats pills, and is styled
    from them (same font metrics, colour tokens, capsule shape, icon size and
-   tabular figures), so the row reads as one family.
+   tabular figures), so the row reads as one family. It carries the same glyph as
+   the sidebar row and leads its label with **OV**, so it cannot be mistaken for a
+   git commit.
 
 Status: **scaffold + verified data path**. Both halves build, typecheck and pass
 their smoke tests against a live OpenViking 0.4.22 server; see

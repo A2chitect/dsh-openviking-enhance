@@ -130,12 +130,20 @@ check(
 check(injectedCss.includes('border-radius: 999px'), 'pill capsule shape matches')
 check(
   injectedCss.includes('.ove-pill svg { flex: none; width: 14px; height: 14px; }'),
-  'pill icon box matches the primitives (14x14)',
+  'pill icon box matches the default pills (14x14)',
 )
 check(
   injectedCss.includes("font-variant-numeric: tabular-nums"),
   'pill figures are tabular like the default pills',
 )
+
+// One glyph, two mounts: the sidebar row and the pill must not drift apart, and
+// the mark must stay self-contained (no cross-package icon lookup).
+check(
+  code.split('M6.5 6.5 9.5 9.5').length - 1 === 1,
+  'the OpenViking mark is defined once and shared by both mounts',
+)
+check(!code.includes('dsh-client-ui-primitives'), 'no cross-package icon dependency')
 
 if (failures.length > 0) {
   console.error(`[client] ${failures.length} check(s) failed`)
