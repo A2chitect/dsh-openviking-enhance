@@ -2,8 +2,7 @@
  * Thin, dependency-free client for the OpenViking HTTP API.
  *
  * Only the routes this feature needs are implemented, and every one of them was
- * verified against a live OpenViking 0.4.22 server while the project was
- * designed (`docs/04-调研证据.md` records the raw evidence):
+ * verified against a live OpenViking 0.4.22 server:
  *
  *   GET /health                                     liveness + version
  *   GET /api/v1/sessions/{id}                       commit state for a session

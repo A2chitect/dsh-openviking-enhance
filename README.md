@@ -1,136 +1,65 @@
 # dsh-openviking-enhance
 
-A DeepSeek Harness (DSH) bundle that puts the local **OpenViking** memory system
-inside the Web GUI:
+English | [中文](README.zh.md)
 
-1. **OpenViking Studio in the left sidebar** — a new sidebar row opens the
-   server's own Studio SPA in the centre column.
-2. **Per-session commit status** — a pill under the composer shows how close the
-   current session is to an OpenViking commit, and clicking it lists the
-   memories that each commit actually added, updated or deleted, as a timeline of
-   the most recent 3 commits (with a one-click "show all"), each row carrying its
-   time and how many memories it added, updated or deleted. It renders as the last
-   item of that row, after the shell's own stats pills, and is styled
-   from them (same font metrics, colour tokens, capsule shape, icon size and
-   tabular figures), so the row reads as one family. It carries the same glyph as
-   the sidebar row and leads its label with **OV**, so it cannot be mistaken for a
-   git commit. When the newest commit's memory extraction failed, the pill turns
-   amber and reads `OV · 抽取失败` — see below.
+Brings your local [OpenViking](https://docs.openviking.ai) memory server into the
+DeepSeek Harness (DSH) Web GUI: a Studio panel in the left sidebar, and a commit
+status pill under the message box that shows what each session commit did to your
+memories.
 
-Status: **scaffold + verified data path**. Both halves build, typecheck and pass
-their smoke tests against a live OpenViking 0.4.22 server; see
-[Verification](#verification). It has not yet been mounted in a running GUI
-profile — that is the first step of the plan in
-[`docs/03-实施计划.md`](docs/03-实施计划.md).
+Nothing needs to be patched in DSH or in the OpenViking plugin — it mounts as an
+ordinary DSH bundle.
 
-## Why this plugin exists
+## What you get
 
-`@openviking/dsh-memory-plugin` owns capture and commit, and it deliberately has
-no UI: its `client.mjs` is a *host-side* HTTP client, not a browser half, and
-`package.json` declares no `dsh.client`. It also exposes no commit state — the
-service it provides (`openvikingMemory`) has no commit fields, and the commit
-response's `task_id`/`archive_uri` are discarded while its log lines are emitted
-at `debug`, which the desktop app filters out.
+**OpenViking Studio, inside DSH.** A new row at the bottom of the left sidebar
+opens the OpenViking server's own Studio UI in the main area, so you can browse
+memories, sessions and retrieval without leaving the app or switching to a browser.
 
-Everything in this bundle is therefore read from the OpenViking server, which
-also makes it survive upgrades of that third-party package.
+**Per-session commit status.** OpenViking writes memory in *commits*: a session's
+turns accumulate until a token threshold is reached (or the session ends), then
+they are archived and the memories are extracted. The pill under the message box
+tells you where the session you are looking at stands.
 
-## Architecture
+The pill's own wording is currently Chinese (see *Notes*), so the table lists what
+it actually renders:
 
-```
-┌─ host process ──────────────────────────────┐   ┌─ browser (Web GUI) ──────────────┐
-│ lib/index.js  (Cordis plugin)               │   │ lib/client.js                    │
-│                                             │   │                                  │
-│  /api/openviking-enhance/config   ──────────┼──▶│  sidebar.panellist  → Studio icon│
-│  /api/openviking-enhance/status   ──────────┼──▶│  main (key=openviking) → <iframe>│
-│  /api/openviking-enhance/commits  ──────────┼──▶│  conversation.composer.dock      │
-│  /api/openviking-enhance/diff     ──────────┼──▶│      → commit status pill        │
-│                                             │   │                                  │
-│  reads: ~/.openviking/ovcli.conf            │   │  fetches document-relative       │
-│  optional: ctx.get('openvikingMemory')      │   │  (never root-absolute)           │
-└─────────────────────────────────────────────┘   └──────────────────────────────────┘
-                    │
-                    ▼
-        OpenViking 127.0.0.1:1933
-        /api/v1/sessions/{id}          commit state
-        /api/v1/fs/ls?uri=…            history/archive_00N
-        /api/v1/content/read?uri=…     memory_diff.json
-        /studio/                       Studio SPA
-```
-
-Full reasoning, evidence and rejected alternatives: [`docs/`](docs/).
-
-## Repository layout
-
-| Path | Purpose |
+| Pill | Meaning |
 | --- | --- |
-| `src/host/index.ts` | Cordis plugin: config, routes, lifecycle |
-| `src/host/openviking-api.ts` | OpenViking HTTP client (no dependencies, never throws) |
-| `src/host/commit-service.ts` | Commit status (incl. the archive-vs-counter phase probe) + memory-diff assembly |
-| `src/host/config.ts` | Connection resolution from env / `~/.openviking` |
-| `src/client/index.tsx` | Client entry: three slot registrations |
-| `src/client/studio-panel.tsx` | Sidebar icon + Studio iframe page |
-| `src/client/commit-status.tsx` | Status pill + spacer + affected-memory popover |
-| `src/shared/protocol.ts` | Wire contract shared by both halves |
-| `src/shared/commit-state.ts` | Task-derived commit phase and failure reporting (pure) |
-| `src/client/slot-service.ts` | Slot registry typed against the framework's real `SlotMap` |
-| `src/client/type-assertions.ts` | Compile-time pins for the slot contract (never bundled) |
-| `build.mjs` | esbuild build for both faces |
-| `scripts/smoke-*.mjs` | Verification harnesses (see below) |
-| `docs/` | Feasibility analysis, design, plan, evidence |
+| `OV · 未提交` | Nothing from this session has been committed yet |
+| `OV · 12.3k/20k` | Turns are accumulating towards the commit threshold |
+| `OV · 抽取中…` | A commit is being archived and its memories extracted |
+| `OV · 3 次提交` | Three commits so far |
+| `OV · 抽取失败` | A commit was archived but its memories could not be extracted |
+| `OV · 不可用` | The local OpenViking server cannot be reached |
 
-## Build
+Click the pill for details:
 
-```bash
-pnpm install          # store/cache are kept in-repo, see .npmrc
-pnpm run build        # lib/index.js + lib/client.js
-pnpm run typecheck
-pnpm test             # typecheck + build + both smoke tests
-```
+- a **timeline** of the most recent 3 commits — when each happened and how many
+  memories it added, updated or deleted (the rest are one click away);
+- clicking a commit lists the **exact memories it changed**, with their
+  `viking://` paths;
+- any **failed extraction**, with the time, how long it ran, and the reason the
+  server reported.
 
-`pnpm run watch` rebuilds on change.
+The panel and the pill read only. This plugin never commits, writes or deletes
+anything in OpenViking.
 
-The two halves reload differently, which matters while developing:
+## Requirements
 
-- the **client half** is served from `lib/client.js` by revision, so a rebuild plus
-  a page reload picks it up;
-- the **host half** is a Node module already imported into the running process.
-  HMR does not follow the profile's `link:` symlink back into this repository, so
-  a rebuild needs an app restart before the host changes take effect.
+| | |
+| --- | --- |
+| DSH | 0.2.0-rc.2 or newer (desktop or web profile) |
+| OpenViking | A local server; 0.4.22 tested. Studio is served at `/studio/` on the same port |
+| Memory plugin | `@openviking/dsh-memory-plugin` recommended — it is what commits sessions. Without it the panel still works, but pending-token thresholds are unknown |
 
-`pnpm test` runs type check, build, unit tests and both smoke harnesses.
-
-The DSH UI packages in `devDependencies` are pinned to the runtime generation
-(`0.2.0-rc.2`), not a range: the type check validates our slot names, kinds and
-props against *their* `SlotMap` augmentations, so a range would happily validate
-against the wrong generation — the machine this was built on also carries a stale
-`0.1.0-rc.6` copy, whose slot names differ.
-
-CI (`.github/workflows/ci.yml`) needs no OpenViking: the host smoke reports SKIP
-for the live-data path and still asserts the route fence. Run
-`SMOKE_REQUIRE_SERVER=1 pnpm run smoke` locally to make that skip a failure.
-
-Two build details are load-bearing:
-
-- The client half **must** be prebuilt. The shell serves `lib/client.js` as-is;
-  there is no source-build path, and a missing bundle fails activation loudly.
-- The client bundle is wrapped as a lazy-CJS factory
-  (`window.__ModuleLoader__.load({id, factory})`) and React is left **external**.
-  The shell seeds a frozen module table and passes `require` into the factory;
-  bundling React would give the plugin a second copy and break hooks.
-
-## Install into a profile
-
-Installing writes to the profile outside this repository, so run it yourself:
+## Install
 
 ```bash
-dsh plugin --profile desktop add link:/Users/a2chitect/AIplayground/DeepseekHarness/dsh-openviking-enhance
+dsh plugin --profile desktop add link:/path/to/dsh-openviking-enhance
 ```
 
-Then restart the app (or reload the profile). The bundle patch inserts one row,
-`openviking-enhance`, which carries both halves.
-
-To remove it:
+Then restart the DSH app once: the host half is loaded at startup. To remove it:
 
 ```bash
 dsh plugin --profile desktop remove dsh-openviking-enhance
@@ -138,109 +67,69 @@ dsh plugin --profile desktop remove dsh-openviking-enhance
 
 ## Configuration
 
-Every field is optional; the defaults read the same files the OpenViking CLI
-reads, so the panel always shows the memory space the sessions write to.
+Everything has a sensible default — a standard local setup needs no configuration
+at all. Settings go in your profile's patch file
+(`~/.dsh/profiles/desktop/cordis.patch.yml`), under the row `openviking-enhance`:
+
+```yaml
+- id: openviking-enhance
+  name: 'dsh-openviking-enhance'
+  config:
+    endpoint: http://127.0.0.1:1933
+```
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `endpoint` | `~/.openviking/ovcli.conf` → `url`, else `http://127.0.0.1:1933` | OpenViking base URL |
-| `apiKey` | `ovcli.conf` → `api_key`, else `OPENVIKING_API_KEY` | Bearer token (unused while `auth_mode: dev`) |
-| `account` / `user` | `ovcli.conf.local`, else `default`/`default` | Identity the panel reads under |
-| `studioPath` | `/studio/` | Studio SPA path on that origin |
-| `cacheTtlMs` | `2500` | Status cache TTL |
+| `endpoint` | from `~/.openviking/ovcli.conf`, else `http://127.0.0.1:1933` | OpenViking base URL |
+| `apiKey` | from `ovcli.conf` | Only needed if the server requires authentication |
+| `account` / `user` | `default` / `default` | Identity the panel reads under |
+| `studioPath` | `/studio/` | Where Studio is served on that origin |
+| `cacheTtlMs` | `2500` | How long a status answer is reused |
 
-Precedence is plugin config → `OPENVIKING_*` environment → `~/.openviking` conf
-files → built-in defaults.
+## Troubleshooting
 
-## Security
+**No OpenViking row in the sidebar, or no pill under the message box.**
+The client half is served as a file and picked up on page load. Reload the window
+(⌘R). If it is still missing, restart the app.
 
-Plugin routes are **not** covered by the DSH web authentication gate: `GET /`
-answers 401 without the launch token, while `GET /api/openviking-enhance/config`
-answers 200 to a bare `curl`. On loopback that adds no exposure worth worrying
-about — anything on the machine can read `~/.openviking` directly — but these
-routes return memory metadata and `/diff` returns memory bodies, so a UI bound to
-a non-loopback interface, a tunnel, or a reverse proxy would turn them into an
-unauthenticated read API over a personal memory store.
+**The panel says it cannot reach OpenViking.**
+Start the server and check it directly: `curl http://127.0.0.1:1933/health`. The
+panel shows the address it tried, which helps when `endpoint` is not the default.
 
-Every route therefore requires the request to be what it claims to be
-([`src/host/trust-fence.ts`](src/host/trust-fence.ts)):
+**The pill says extraction failed.**
+The commit was archived but OpenViking could not turn it into memories — those
+memories are not in your library. Click the pill for the server's own error; it is
+usually a problem with the extraction model configured in `~/.openviking/ov.conf`.
 
-| Check | Blocks |
-| --- | --- |
-| socket address is loopback | any off-machine connection, including via a proxy elsewhere |
-| `Host` names a loopback authority | a proxy or tunnel reaching us over loopback but fronting a public name |
-| `sec-fetch-site` is not `cross-site` | a page on another site targeting a loopback port |
-| `Origin`, when present, equals `Host` | a same-machine different-port caller, and `Origin: null` |
+**The pill shows a token count instead of a commit count.**
+`@openviking/dsh-memory-plugin` is not installed, so the commit threshold is
+unknown. Commits themselves still work; only the progress denominator is missing.
 
-`X-Forwarded-For` is never consulted — a client-settable header must not be able
-to assert its own trustworthiness. A reverse proxy that needs these routes has to
-be allowlisted in code, which is a deliberate change rather than a config toggle.
-Non-`GET` methods answer 405.
+**The timeline shows only 3 commits.**
+That is the default. Click *show all*.
 
-The plugin performs **no writes** to OpenViking: it never commits, writes or
-deletes anything.
+**I changed the code and nothing happened.**
+The two halves reload differently: the client half after a window reload, the host
+half only after an app restart.
 
-## Verification
+## Notes
 
-`pnpm test` runs everything below; the smoke tests are the ones that prove the
-data path.
+- **The plugin's own text is Chinese only.** The panel, the pill and its popover do
+  not follow the DSH locale setting yet; everything else in the interface does.
+- OpenViking cleans up its commit task records over time, so the failure list
+  covers recent commits only. The archives themselves are permanent.
+- The plugin's internal routes answer loopback requests only, and only from the
+  DSH window's own origin.
 
-| Check | What it proves |
-| --- | --- |
-| `tsc --noEmit` | Host and client compile against DSH `0.2.0-rc.2` types |
-| `node --test` | 20 unit tests over the pure logic: trust fence, phase derivation, diff normalization, session-URI resolution, the archive-URI guard, double-encoded JSON, failed-extraction reporting |
-| type assertions | `src/client/type-assertions.ts` pins the slot contract with `@ts-expect-error`: an unknown slot key, `key`/`id` swapped, a root slot declaring `inject`, a session slot omitting it, or a component that cannot accept its slot's props each have to be compile errors |
-| `scripts/smoke-host.mjs` (fence) | Live route fence: forged `Host`, cross-origin `Origin` and `POST` are refused (403/405), plain loopback still 200 |
-| `scripts/smoke-host.mjs` (data) | SKIPs with a note when OpenViking is unreachable, so CI stays green; `SMOKE_REQUIRE_SERVER=1` turns that back into a failure. When it does run it prints the commit timeline, so the counts are visible without the GUI |
-| `node build.mjs` | Both bundles emit, client wrapped in the loader contract |
-| `scripts/smoke-client.mjs` | The built `lib/client.js` registers `apply`/`inject`, keeps React external, and registers all three slots without throwing |
-| `scripts/smoke-host.mjs` | The built `lib/index.js` answers all four routes against the **live** OpenViking server and reads a real `memory_diff.json` |
+## Development
 
-The host smoke test exercises the real route handlers under a minimal fake Cordis
-context — no DSH profile is touched.
+```bash
+pnpm install
+pnpm run build      # lib/index.js (host) + lib/client.js (browser)
+pnpm test           # typecheck, build, unit tests, smoke harnesses
+pnpm run watch      # rebuild on change
+```
 
-## Failed extractions are surfaced, not swallowed
-
-A commit is two-phase: the archive is written inline, memory extraction runs in
-the background. When extraction **fails**, OpenViking still writes the archive and
-still advances `commit_count`, so every other signal looks exactly like success —
-the count matches the archive count, the archive exists, and only
-`memory_diff.json` is missing. The third-party memory plugin also discards the
-task, and logs at a level the desktop app filters out.
-
-This plugin reads the `session_commit` task records, so the failure is visible:
-
-- the pill switches to `OV · 抽取失败` (amber, same geometry as the other pills);
-- the popover lists each failure with its time, duration and the provider's own
-  message, and says plainly that those commits' memories were never extracted.
-
-This is not hypothetical: on the machine this was built for, the first run of the
-feature reported **6 failed extractions in the current session, every one of them
-`400 Thinking mode does not support this tool_choice`** from the extraction model
-configured in `~/.openviking/ov.conf`.
-
-## Known limitations
-
-- **Not yet mounted in the GUI.** Slot names and props are verified against the
-  `0.2.0-rc.2` type declarations and the published bundles of two working
-  third-party plugins, but the live slot tree has not been observed (the Web GUI
-  requires an authenticated session for the client Inspect bridge).
-- **The status pill polls** (5 s) rather than subscribing; there is no push
-  channel for commits.
-- **The timeline reads counts for the newest 3 archives** (a fourth request per new
-  commit, cached forever once written, since `memory_diff.json` is immutable).
-  Expanding to "show all" reads the rest in one pass; a diff that does not exist yet
-  is re-probed at most every 10 s.
-- **`memories_extracted` on the session object undercounts**: when an extraction
-  task fails, its operations are still written to the archive's
-  `memory_diff.json` but never counted. The panel trusts the diff, not the
-  counter.
-- **Task records are pruned**, so commit history comes from archive directories.
-- `deletes[]` entries carry `deleted_content` instead of before/after; that path
-  is schema-verified but has never been observed populated.
-- The plugin only reads. It never commits, writes or deletes anything in
-  OpenViking.
-
-## License
-
-MIT.
+The smoke harness prints the commit timeline without needing the GUI, and skips the
+live-data part when OpenViking is not running (`SMOKE_REQUIRE_SERVER=1` makes that a
+failure instead). The code comments explain how the pieces fit together.
