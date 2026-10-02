@@ -204,6 +204,35 @@ markup 来验（`test/component-render.test.mjs`，5 个用例）——加载的
 顺带把 `describeFailure` 的兜底文案从 `shared/commit-state.ts` 移走——那个模块两半都 import，
 只有一半有语言；现在它只返回服务端自己的消息，措辞由客户端决定。
 
+## 三点五、仓库建好之后（照抄即可）
+
+名字定下来后，除了建仓库/加 topic，剩下的都是填空。
+
+**1. package.json 补一个字段**（npm 与仓库的关联只认它）：
+
+```jsonc
+"repository": { "type": "git", "url": "git+https://github.com/<owner>/<repo>.git" },
+```
+
+**2. 投稿文件**：往 awesome-dsh-plugin 提交**一个**文件
+`data/plugins/<owner>__<repo>.yml`：
+
+```yaml
+url: https://github.com/<owner>/<repo>
+name: <owner>/<repo>
+category: memory          # 备选 ui；规范说选得不准维护者会直接改，不会打回
+description:
+  en: 'OpenViking in the DSH web GUI: a Studio panel, a per-session memory-commit status pill with its commit timeline, and a right-sidebar tab showing what the current session retrieves.'
+```
+
+描述就是 `package.json` 里那一句，已按规范核对过：只说功能、无营销词、提到的每一个东西
+（Studio 面板 / commit 胶囊 + 时间线 / 右侧召回 tab）都能在代码里指出来。
+注意含 `: ` 必须加引号（规范专门警告过 YAML 会把它当嵌套键）。
+
+**3. 发布**：先发 npm（`pnpm publish`，`prepack` 会自动重建 `lib/`），或者给一个 GitHub Release
+挂 tarball 并在条目里加 `tarball:`（资产名**不要带版本号**，否则下次发版静默 404）。
+发 npm 的话，`repository` 指回仓库这一条是硬要求——否则市场不会把包和仓库关联起来。
+
 ## 四、需要你拍板
 
 | # | 问题 | 影响 |
