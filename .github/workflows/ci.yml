@@ -40,3 +40,14 @@ jobs:
       # desktop sandbox; that is harmless here.
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
+      # The one thing `pnpm test` cannot see: that the tarball a user installs
+      # actually carries the built bundle the shell serves. `prepack` builds it,
+      # so this fails if that hook is ever lost.
+      - name: the published tarball is complete
+        run: |
+          pnpm pack --pack-destination /tmp
+          tarball=$(ls /tmp/dsh-openviking-enhance-*.tgz)
+          for entry in package/lib/index.js package/lib/client.js package/cordis.patch.yml package/LICENSE package/package.json; do
+            tar tzf "$tarball" | grep -qx "$entry" || { echo "missing from the tarball: $entry"; exit 1; }
+          done
+          echo "tarball carries the bundle, the patch, the licence and the manifest"

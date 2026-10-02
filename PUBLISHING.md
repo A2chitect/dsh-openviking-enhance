@@ -472,6 +472,7 @@ node scripts/generate-readme.mjs
 | 真实安装 + 组合树 | 见上面第 8 条的三条命令（`DSH_HOME` 指向临时目录） |
 | 没有 OpenViking 时的降级 | `SMOKE_ENDPOINT=http://127.0.0.1:9 node scripts/smoke-host.mjs` |
 | 发布要求全部成立 | `node scripts/check-package.mjs`（也是 `pnpm test` 的一环） |
+| 打出来的 tarball 里真有构建产物 | CI 新增一步：`pnpm pack` 后逐项 grep `lib/index.js`、`lib/client.js`、`cordis.patch.yml`、LICENSE、package.json |
 | 组件真的能渲染 | `node --test test/component-render.test.mjs` |
 | 配置表单的写入语义 | `node --test test/config-ops.test.mjs` |
 | 全量回归 | `pnpm test` |
