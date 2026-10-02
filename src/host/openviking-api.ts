@@ -18,6 +18,7 @@
  *  - responses come back either bare (`/health`) or enveloped
  *    (`{status, result, error}`) — `unwrap` handles both.
  */
+import type { CommitTask } from '../shared/protocol.ts'
 import type { OvConnection } from './config.ts'
 
 export interface OvResult<T> {
@@ -57,17 +58,8 @@ export interface OvFsEntry {
   abstract?: string
 }
 
-export interface OvCommitTask {
-  task_id: string
-  task_type: string
-  status: string
-  stage: string | null
-  resource_id: string | null
-  result: { memory_diff_uri?: string; archive_uri?: string } | null
-  error: string | null
-  created_at_iso?: string
-  updated_at_iso?: string
-}
+/** A commit task as the server returns it; the shared shape is what we rely on. */
+export type OvCommitTask = CommitTask & { task_type?: string }
 
 interface RequestOptions {
   /** Actor peer for peer-scoped sessions. Omitted when the peer is unknown. */

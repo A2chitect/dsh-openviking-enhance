@@ -26,8 +26,16 @@
  * otherwise indistinguishable from a git commit's.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { CommitStatus, MemoryDiff, MemoryDiffEntry } from '../shared/protocol.ts'
-import { fetchCommits, fetchDiff, type CommitTaskSummary } from './host-api.ts'
+import type { CommitStatus, CommitTask, MemoryDiff, MemoryDiffEntry } from '../shared/protocol.ts'
+import { fetchCommits, fetchDiff } from './host-api.ts'
+import {
+  deriveClientPhase,
+  describeFailure,
+  isActiveTask,
+  durationSeconds,
+  failedTasks,
+  taskTime,
+} from '../shared/commit-state.ts'
 import { OpenVikingIcon } from './openviking-icon.tsx'
 
 export interface CommitStatusProps {
@@ -38,7 +46,7 @@ const POLL_MS = 5000
 
 export function CommitStatusPill({ sessionId }: CommitStatusProps) {
   const [status, setStatus] = useState<CommitStatus | null>(null)
-  const [tasks, setTasks] = useState<CommitTaskSummary[]>([])
+  const [tasks, setTasks] = useState<CommitTask[]>([])
   const [error, setError] = useState<string | null>(null)
   const [open, setOpen] = useState(false)
   const [diff, setDiff] = useState<MemoryDiff | null>(null)
@@ -97,13 +105,13 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
 
   if (!sessionId) return null
 
-  const running = tasks.filter((task) => task.status === 'running' || task.status === 'pending')
-  // The server's `commit_count` advances when the archive is written, before the
-  // background extraction finishes, so a freshly counted commit can have no
-  // `memory_diff.json` yet and the host's archive-vs-counter comparison sees no
-  // disagreement. The task list is the accurate signal, and this poll already
-  // carries it — so prefer it over the derived phase rather than fetching more.
-  const phase = error ? 'failed' : running.length > 0 ? 'extracting' : (status?.phase ?? 'idle')
+  // The task list is the accurate signal and this poll already carries it, so the
+  // phase is derived from it rather than from the host's archive-vs-counter view:
+  // `commit_count` advances when the archive is written, so a failed or in-flight
+  // extraction is invisible to a count comparison. See shared/commit-state.ts.
+  const running = tasks.filter(isActiveTask)
+  const failures = failedTasks(tasks)
+  const phase = deriveClientPhase({ error, status, tasks })
   const text = phaseLabel(phase, status)
   const archives = status ? [...status.archives].reverse() : []
 
@@ -111,11 +119,11 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
     <span className="ove-dock" ref={wrap} data-dsh-plugin="openviking-enhance-status">
       <button
         type="button"
-        className="ove-pill"
+        className={`ove-pill${phase === 'errored' ? ' ove-pill-errored' : ''}`}
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-label={`OpenViking：${text}`}
-        title={tooltip(status, error)}
+        title={tooltip(status, error, failures)}
         onClick={() => setOpen((value) => !value)}
       >
         <OpenVikingIcon size={14} strokeWidth={1} />
@@ -157,6 +165,27 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
           </dl>
 
           {error ? <div className="ove-facts ove-empty">读取失败：{error}</div> : null}
+
+          {failures.length > 0 ? (
+            <div className="ove-section">
+              <div className="ove-section-title ove-error">记忆抽取失败 {failures.length} 次</div>
+              <div className="ove-empty">归档已写入，但这几次提交的记忆没有被抽取出来。</div>
+              {failures.slice(0, 4).map((task) => (
+                <div className="ove-failure" key={task.task_id}>
+                  <div className="ove-failure-head">
+                    <span>{taskTime(task) ?? '—'}</span>
+                    <span className="ove-row-count">
+                      {durationSeconds(task) !== null ? `${durationSeconds(task)}s` : ''}
+                    </span>
+                  </div>
+                  <div className="ove-failure-msg" title={task.error ?? undefined}>
+                    {describeFailure(task)}
+                  </div>
+                </div>
+              ))}
+              {failures.length > 4 ? <div className="ove-empty">…另有 {failures.length - 4} 次失败</div> : null}
+            </div>
+          ) : null}
 
           <div className="ove-section">
             <div className="ove-section-title">提交记录</div>
@@ -227,6 +256,8 @@ function phaseLabel(phase: string, status: CommitStatus | null): string {
   switch (phase) {
     case 'failed':
       return '不可用'
+    case 'errored':
+      return '抽取失败'
     case 'extracting':
       return '抽取中…'
     case 'done':
@@ -238,9 +269,17 @@ function phaseLabel(phase: string, status: CommitStatus | null): string {
   }
 }
 
-function tooltip(status: CommitStatus | null, error: string | null): string {
+function tooltip(status: CommitStatus | null, error: string | null, failures: CommitTask[]): string {
   if (error) return `OpenViking 读取失败：${error}`
   if (!status) return '正在读取 OpenViking 提交状态'
+  const newest = failures[0]
+  if (newest) {
+    return [
+      `最近一次记忆抽取失败：${describeFailure(newest)}`,
+      `OpenViking 会话：${status.ovSessionId}`,
+      `已提交 ${status.commitCount} 次（其中 ${failures.length} 次抽取失败）`,
+    ].join('\n')
+  }
   return [
     `OpenViking 会话：${status.ovSessionId}`,
     `待提交 tokens：${status.pendingTokens}${status.threshold ? ` / ${status.threshold}` : ''}`,

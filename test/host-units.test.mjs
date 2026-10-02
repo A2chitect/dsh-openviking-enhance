@@ -24,6 +24,13 @@ import {
   resolveSessionUri,
 } from '../src/host/commit-service.ts'
 import { OpenVikingApi, parseMaybeDoubleEncoded } from '../src/host/openviking-api.ts'
+import {
+  deriveClientPhase,
+  describeFailure,
+  durationSeconds,
+  failedTasks,
+  taskTime,
+} from '../src/shared/commit-state.ts'
 
 /**
  * Fabricate the parts of an IncomingMessage the fence reads.
@@ -232,4 +239,56 @@ test('parseMaybeDoubleEncoded unwraps the nested JSON content/read returns', () 
   assert.deepEqual(parseMaybeDoubleEncoded(JSON.stringify(JSON.stringify(payload))), payload)
   assert.deepEqual(parseMaybeDoubleEncoded(JSON.stringify(payload)), payload)
   assert.equal(parseMaybeDoubleEncoded('not json'), null)
+})
+
+// --- commit-state: the failure signal the rest of the system hides ---------
+
+test('deriveClientPhase prefers work in progress over an older failure', () => {
+  const failed = { task_id: 'a', status: 'failed', stage: 'failed', error: 'boom', result: null }
+  const running = { task_id: 'b', status: 'running', stage: null, error: null, result: null }
+  assert.equal(deriveClientPhase({ error: null, status: null, tasks: [running, failed] }), 'extracting')
+  assert.equal(deriveClientPhase({ error: null, status: null, tasks: [failed] }), 'errored')
+  assert.equal(deriveClientPhase({ error: 'host down', status: null, tasks: [failed] }), 'failed')
+})
+
+test('deriveClientPhase reports the newest task, not any failure', () => {
+  const older = { task_id: 'a', status: 'failed', stage: null, error: 'x', result: null, created_at: 100 }
+  const newer = { task_id: 'b', status: 'completed', stage: null, error: null, result: null, created_at: 200 }
+  // A superseded failure must not own the pill; the popover still lists it.
+  assert.equal(deriveClientPhase({ error: null, status: { phase: 'done' }, tasks: [newer, older] }), 'done')
+  assert.equal(deriveClientPhase({ error: null, status: { phase: 'done' }, tasks: [older, newer] }), 'done')
+  assert.equal(deriveClientPhase({ error: null, status: { phase: 'done' }, tasks: [older] }), 'errored')
+})
+
+test('deriveClientPhase falls back to the host phase with no tasks', () => {
+  assert.equal(deriveClientPhase({ error: null, status: { phase: 'pending' }, tasks: [] }), 'pending')
+  assert.equal(deriveClientPhase({ error: null, status: null, tasks: [] }), 'idle')
+})
+
+test('describeFailure unwraps the provider message out of the server error', () => {
+  const task = {
+    task_id: 'a',
+    status: 'failed',
+    stage: 'failed',
+    result: null,
+    error:
+      "Error code: 400 - {'error': {'message': 'Thinking mode does not support this tool_choice (request_id: 49c9)', 'type': 'invalid_request_error', 'param': None, 'code': 'invalid_request_error'}}",
+  }
+  assert.equal(describeFailure(task), 'Thinking mode does not support this tool_choice (request_id: 49c9)')
+  assert.equal(describeFailure({ ...task, error: 'plain failure' }), 'plain failure')
+  assert.equal(describeFailure({ ...task, error: null }), '抽取失败（阶段：failed）')
+  assert.equal(describeFailure({ ...task, error: null, stage: null }), '抽取失败（服务端未给出原因）')
+})
+
+test('failedTasks and taskTime read the task list the way the popover needs', () => {
+  const tasks = [
+    { task_id: 'a', status: 'completed', stage: null, error: null, result: null, created_at_iso: '2026-10-02T02:03:53+00:00' },
+    { task_id: 'b', status: 'failed', stage: 'failed', error: 'x', result: null, created_at_iso: '2026-10-02T02:25:34+00:00', processing_seconds: 89.4 },
+    { task_id: 'c', status: 'cancelled', stage: null, error: null, result: null, created_at_iso: '2026-10-02T02:53:25+00:00' },
+  ]
+  const failures = failedTasks(tasks)
+  assert.deepEqual(failures.map((t) => t.task_id), ['c', 'b'])
+  assert.equal(durationSeconds(failures[1]), 89)
+  assert.equal(taskTime(failures[1]).startsWith('10-02 '), true)
+  assert.equal(taskTime({ ...tasks[0], created_at_iso: 'nonsense' }), null)
 })

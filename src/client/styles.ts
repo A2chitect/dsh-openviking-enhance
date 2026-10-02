@@ -66,7 +66,7 @@ const CSS = `
 .ove-muted { color: var(--dsw-alias-label-tertiary); }
 .ove-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; }
 .ove-dot-ok { background: var(--dsw-alias-state-success-primary, #3fb950); }
-.ove-dot-bad { background: var(--dsw-alias-state-warning-primary, #d29922); }
+.ove-dot-bad { background: var(--dsw-alias-state-warn-primary, #d29922); }
 
 /* ---- Composer dock ------------------------------------------------------ */
 /* Our pill is a plain flex item of the dock: it renders after the shell's pills
@@ -97,6 +97,14 @@ button.ove-pill:hover, button.ove-pill[aria-expanded="true"] {
   color: var(--dsw-alias-label-secondary);
 }
 .ove-label { text-overflow: ellipsis; min-width: 0; overflow: hidden; }
+/* A failed extraction is the one state the default pills have no equivalent for,
+   and silence is what makes it expensive: the archive exists, the counter advanced,
+   and the memories are simply missing. So the pill keeps its exact geometry and
+   only takes the warning colour. */
+.ove-pill-errored { color: var(--dsw-alias-state-warn-primary, #d29922); }
+button.ove-pill-errored:hover, button.ove-pill-errored[aria-expanded="true"] {
+  color: var(--dsw-alias-state-warn-primary, #d29922);
+}
 .ove-sep { color: var(--dsw-alias-separator-primary); margin: 0 6px; }
 .ove-pulse { animation: ove-pulse 1s ease-in-out infinite alternate; }
 @keyframes ove-pulse { from { opacity: .45; } to { opacity: 1; } }
@@ -145,6 +153,16 @@ button.ove-pill:hover, button.ove-pill[aria-expanded="true"] {
 .ove-entry .ove-uri { color: var(--dsw-alias-label-tertiary); overflow-wrap: anywhere; }
 .ove-entry .ove-type { color: var(--dsw-alias-label-caption); font-size: 11px; }
 .ove-empty { color: var(--dsw-alias-label-tertiary); }
+.ove-error { color: var(--dsw-alias-state-error-primary, #f85149); }
+.ove-failure {
+  margin-top: 8px; padding: 6px 8px; border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+.ove-failure-head {
+  display: flex; justify-content: space-between; gap: 12px;
+  color: var(--dsw-alias-label-tertiary); font-variant-numeric: tabular-nums;
+}
+.ove-failure-msg { margin-top: 4px; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }
 `
 
 /** Install the stylesheet once per document. */

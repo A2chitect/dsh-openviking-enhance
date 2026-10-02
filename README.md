@@ -12,7 +12,8 @@ inside the Web GUI:
    from them (same font metrics, colour tokens, capsule shape, icon size and
    tabular figures), so the row reads as one family. It carries the same glyph as
    the sidebar row and leads its label with **OV**, so it cannot be mistaken for a
-   git commit.
+   git commit. When the newest commit's memory extraction failed, the pill turns
+   amber and reads `OV · 抽取失败` — see below.
 
 Status: **scaffold + verified data path**. Both halves build, typecheck and pass
 their smoke tests against a live OpenViking 0.4.22 server; see
@@ -182,6 +183,26 @@ data path.
 
 The host smoke test exercises the real route handlers under a minimal fake Cordis
 context — no DSH profile is touched.
+
+## Failed extractions are surfaced, not swallowed
+
+A commit is two-phase: the archive is written inline, memory extraction runs in
+the background. When extraction **fails**, OpenViking still writes the archive and
+still advances `commit_count`, so every other signal looks exactly like success —
+the count matches the archive count, the archive exists, and only
+`memory_diff.json` is missing. The third-party memory plugin also discards the
+task, and logs at a level the desktop app filters out.
+
+This plugin reads the `session_commit` task records, so the failure is visible:
+
+- the pill switches to `OV · 抽取失败` (amber, same geometry as the other pills);
+- the popover lists each failure with its time, duration and the provider's own
+  message, and says plainly that those commits' memories were never extracted.
+
+This is not hypothetical: on the machine this was built for, the first run of the
+feature reported **6 failed extractions in the current session, every one of them
+`400 Thinking mode does not support this tool_choice`** from the extraction model
+configured in `~/.openviking/ov.conf`.
 
 ## Known limitations
 

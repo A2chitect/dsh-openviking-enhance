@@ -145,6 +145,13 @@ check(
 )
 check(!code.includes('dsh-client-ui-primitives'), 'no cross-package icon dependency')
 
+// The failed-extraction state is the one thing nothing else in the system shows.
+check(
+  injectedCss.includes('.ove-pill-errored { color: var(--dsw-alias-state-warn-primary'),
+  'the pill has a warning state for a failed extraction',
+)
+check(injectedCss.includes('.ove-failure'), 'the popover has a failure block')
+
 if (failures.length > 0) {
   console.error(`[client] ${failures.length} check(s) failed`)
   process.exitCode = 1

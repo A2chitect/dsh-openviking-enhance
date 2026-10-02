@@ -14,17 +14,10 @@ import {
   CLIENT_API_PREFIX,
   type ApiResult,
   type CommitStatus,
+  type CommitTask,
   type EnhanceConfig,
   type MemoryDiff,
 } from '../shared/protocol.ts'
-
-export interface CommitTaskSummary {
-  task_id: string
-  status: string
-  stage: string | null
-  error: string | null
-  result: { memory_diff_uri?: string; archive_uri?: string } | null
-}
 
 /** Relative base: no leading slash, so `<base href>` keeps working. */
 const BASE = CLIENT_API_PREFIX
@@ -57,7 +50,7 @@ export function fetchStatus(sessionId: string, fresh = false): Promise<ApiResult
 
 export interface CommitsPayload {
   status: CommitStatus
-  tasks: CommitTaskSummary[]
+  tasks: CommitTask[]
 }
 
 export function fetchCommits(sessionId: string): Promise<ApiResult<CommitsPayload>> {

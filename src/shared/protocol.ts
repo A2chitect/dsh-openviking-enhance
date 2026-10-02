@@ -42,8 +42,44 @@ export interface MemoryDiffEntry {
   deletedContent?: string
 }
 
-/** Why a commit is not finished yet; drives the spinner copy in the UI. */
-export type CommitPhase = 'idle' | 'pending' | 'extracting' | 'done' | 'failed'
+/**
+ * What the pill reports.
+ *
+ *  - `failed`  — the host could not be asked (server or route down)
+ *  - `errored` — the newest commit's memory extraction failed: the archive was
+ *                written, but its memories were never extracted
+ */
+export type CommitPhase = 'idle' | 'pending' | 'extracting' | 'done' | 'failed' | 'errored'
+
+/**
+ * One `session_commit` task.
+ *
+ * This is the only place a failed extraction is visible at all: the archive is
+ * written either way, `commit_count` advances either way, and the third-party
+ * memory plugin discards the task. A failed task carries the server's own error
+ * text and no `result`.
+ */
+export interface CommitTask {
+  task_id: string
+  /** `pending` | `running` | `cancelling` | `completed` | `failed` | `cancelled` */
+  status: string
+  stage: string | null
+  /** Server error text, e.g. the provider's 400. Null when it succeeded. */
+  error: string | null
+  created_at?: number
+  updated_at?: number
+  created_at_iso?: string
+  updated_at_iso?: string
+  processing_seconds?: number
+  resource_id?: string | null
+  result: {
+    memory_diff_uri?: string
+    archive_uri?: string
+    memories_extracted?: { total?: number; memory_write?: number; memory_edit?: number }
+    /** Present when the extraction ran but skipped operations. */
+    memory_extraction?: { skipped?: number; skipped_operations?: unknown[] }
+  } | null
+}
 
 export interface CommitStatus {
   /** DSH session id. */
@@ -59,7 +95,7 @@ export interface CommitStatus {
   /** Successful extractions counted by the server. */
   commitCount: number
   lastCommitAt: string | null
-  /** Best-effort phase; see `commit-service.ts` for how it is derived. */
+  /** Best-effort phase derived by the host; the client refines it with tasks. */
   phase: CommitPhase
   /** One entry per archive directory found on the server. */
   archives: CommitArchive[]
