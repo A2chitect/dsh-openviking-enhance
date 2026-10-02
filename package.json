@@ -84,6 +84,11 @@
     "type": "git",
     "url": "git+https://github.com/A2chitect/dsh-openviking-enhance.git"
   },
+  "bugs": {
+    "url": "https://github.com/A2chitect/dsh-openviking-enhance/issues"
+  },
+  "homepage": "https://github.com/A2chitect/dsh-openviking-enhance#readme",
+  "author": "A2chitect",
   "keywords": [
     "dsh",
     "dsh-plugin",

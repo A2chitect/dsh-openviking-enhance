@@ -435,15 +435,26 @@ GITHUB_TOKEN=$(gh auth token) node scripts/check-submission.mjs --base HEAD~1
 node scripts/generate-readme.mjs
 ```
 
+### 20. 描述与代码对齐（规范最较真的一条）☑
+
+规范把"描述必须属实、会被对着代码核"列为**打回主因**，所以我把 README / CHANGELOG 里对召回面板的
+描述逐句对着实现核了一遍，抓到一处漂移：文档写的是每条命中显示 "`viking://` path"，
+而面板**实际只显示文件名**（完整路径在悬停与展开时才有）。已按实际行为改写两份 README 与 CHANGELOG，
+顺带把两处用户看得见但没写进去的行为补上：分数是**红→橙→绿分级**的，标签里有**类型**
+（`entity` / `event` 等）。
+
+同时补齐 npm 元数据清单里剩下三项：`author`、`homepage`、`bugs`（此前只有 `repository` 与
+`keywords`）。`check-package.mjs` 已断言 `repository` 是 URL，`pnpm test` 仍全绿。
+
 ## 四、需要你拍板
 
 | # | 问题 | 影响 |
 | --- | --- | --- |
-| 1 | 分类 `memory` 还是 `ui` | 只影响列表归类，选错维护者会改 |
-| 2 | GitHub owner / 仓库名 | `url` 必须与仓库完全一致；也是 `repository` 字段的值 |
+| 1 | ~~分类~~ | 已按 `memory` 写进条目并用他们的校验器验过；规范说选得不准维护者会直接改 |
+| 2 | ~~GitHub owner / 仓库名~~ | 已建：`A2chitect/dsh-openviking-enhance`（见第 17 条） |
 | 3 | npm 包名 | `dsh-openviking-enhance` 在 registry 上 404（未被占用）；是否加 scope |
 | 4 | 分发方式 | **推荐 npm + GitHub Release tarball**（第 6 条已实测：源码安装要么静默装坏、要么被 `allowBuilds` 拦住）。另一个选项是**把 `lib/` 提交进仓库**——raw git 安装就能直接可用，代价是每次改 src 都要重新提交构建产物（可以用 CI 校验 `lib/` 是否与 `src/` 同步来兜底）。这条会改变仓库的跟踪内容，所以留给你定 |
-| 5 | LICENSE 署名 | 现在写的是 `dsh-openviking-enhance contributors` |
+| 5 | LICENSE 署名 | LICENSE 里现在写的是 `dsh-openviking-enhance contributors`，而 `package.json` 的 `author` 我在补元数据时填了 **A2chitect**。两者不一致，改哪个由你定（署名是归属声明，我不擅自改） |
 | 6 | i18n 范围 | 界面中英双语，还是先只做英文 README |
 
 ## 五、证据索引

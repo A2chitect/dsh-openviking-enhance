@@ -14,8 +14,8 @@ promotes to a dated section — see [RELEASING.md](RELEASING.md).
 - **Recall detail in the right sidebar** — a per-session *记忆召回* tab showing what
   OpenViking retrieves for the session in view: the query it searched with (the
   session's own most recent user turn, or one you type), every hit in each of the
-  three sources with its score, `viking://` path and abstract, the server's own
-  retrieval plan, and one entry's full text on click. It asks the same
+  three sources with its score (graded red through green), file name, kind and
+  abstract, the server's own retrieval plan, and one entry's full text on click. It asks the same
   session-aware route the memory plugin calls, so the ranking is the server's
   rather than a second implementation of it. Reached through the right sidebar's
   guide; nothing is written.

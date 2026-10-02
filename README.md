@@ -49,8 +49,10 @@ anything in OpenViking.
 **What this session retrieves.** The right sidebar gains a *Memory recall* tab: it shows what OpenViking pulls in for the session you are looking at
 — the query it searched with (that session's most recent message, or one you type
 yourself), every hit in each of its three sources (memories, resources, skills)
-with its score, `viking://` path and abstract, the server's own retrieval plan,
-and the full text of any entry on click. Open it from the right sidebar's `+`
+with its score — graded from red through orange to green — its file name, its kind
+(`entity`, `event`, …) and its abstract. The full `viking://` path is on hover, and
+opening a row loads that entry's whole text. The plan the server retrieved with is there
+too. Open it from the right sidebar's `+`
 guide; it is per session, like the column itself.
 
 ## Requirements
