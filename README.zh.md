@@ -2,7 +2,7 @@
 
 [English](README.md) | 中文
 
-**v0.1.0** · [更新记录](CHANGELOG.md)
+**v0.2.0** · [更新记录](CHANGELOG.md)
 
 把本地 [OpenViking](https://docs.openviking.ai) 记忆服务接进 DeepSeek Harness
 （DSH）的 Web 界面：左侧边栏多一个 OpenViking Studio 面板，输入框下方多一个

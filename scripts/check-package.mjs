@@ -83,6 +83,15 @@ if (existsSync(workspacePath)) {
   check(/esbuild:\s*true/.test(workspace), 'esbuild may run its install script, which the build needs')
 }
 
+// ---- the version the documentation claims --------------------------------
+// The release script bumps `package.json`; the two READMEs carry a version line
+// that nothing else reads. They drifted on the very first release — 0.2.0 shipped
+// with both headers still saying 0.1.0 — so the claim is asserted here instead.
+for (const readme of ['README.md', 'README.zh.md']) {
+  const text = readFileSync(join(root, readme), 'utf8')
+  check(text.includes(`**v${pkg.version}**`), `${readme} states the current version (v${pkg.version})`)
+}
+
 // ---- build output ----------------------------------------------------------
 // The client half is a prebuilt bundle the shell serves as a file, so a package
 // without it installs a plugin that cannot load.

@@ -2,7 +2,7 @@
 
 English | [中文](README.zh.md)
 
-**v0.1.0** · [Changelog](CHANGELOG.md)
+**v0.2.0** · [Changelog](CHANGELOG.md)
 
 Brings your local [OpenViking](https://docs.openviking.ai) memory server into the
 DeepSeek Harness (DSH) Web GUI: a Studio panel in the left sidebar, and a commit
