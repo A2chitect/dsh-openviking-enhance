@@ -8,6 +8,9 @@ lib/
 dist/
 *.tsbuildinfo
 
+# local-only backup of the profile manifests taken before installing
+.backup/
+
 # scratch / local experiments
 .scratch/
 *.local.mjs
