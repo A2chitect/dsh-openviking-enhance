@@ -358,6 +358,44 @@ pnpm test                        → exit 0：62 测试 + 20 项发布契约 + �
 
 （按你的偏好，公开 PR 一律英文。实际提交时把 `<owner>__<repo>` 换成真实文件名。）
 
+## 三点七、发布那一步的命令（我先不做，等你）
+
+**共同第一步**——出 0.2.0：本次是新增功能，按 RELEASING.md 走 minor。
+
+```bash
+pnpm run release minor      # 把 ## Unreleased 提成 ## 0.2.0 — <日期>、写 package.json、跑门禁、commit、打 v0.2.0
+git push --follow-tags
+```
+
+门禁会带 `SMOKE_REQUIRE_SERVER=1`，所以跑这条之前 OpenViking 要在运行。
+
+**路线 A：发 npm（推荐，市场能显示下载量）**
+
+```bash
+pnpm publish                # prepack 自动重建 lib/；private 已移除；repository 已指回仓库
+```
+
+需要你先 `npm login`（我无法代做）。发布后**条目 yml 里不要加 `npm:` 字段**——规范明确说会被校验拒绝，
+映射由 registry 自动采集，前提正是 `repository` 指回仓库（已填）。
+
+**路线 B：GitHub Release 挂 tarball（不发 npm 时）**
+
+```bash
+pnpm pack --pack-destination /tmp
+cp /tmp/dsh-openviking-enhance-0.2.0.tgz /tmp/dsh-openviking-enhance.tgz   # ← 去掉版本号
+gh release create v0.2.0 /tmp/dsh-openviking-enhance.tgz \
+  --title "v0.2.0" --notes-from-tag
+```
+
+`cp` 那一步是规范专门警告的坑：`latest/download/` 只在请求时解析 `latest`，**文件名是照字面取的**。
+资产名若带版本号，链接提交当天有效、下一次发版就 404，而且没人会发现。去掉版本号后条目写：
+
+```yaml
+tarball: https://github.com/A2chitect/dsh-openviking-enhance/releases/latest/download/dsh-openviking-enhance.tgz
+```
+
+（也可以钉住 tag、文件名带版本号：`.../releases/download/v0.2.0/dsh-openviking-enhance-0.2.0.tgz`。）
+
 ## 四、需要你拍板
 
 | # | 问题 | 影响 |
