@@ -60,7 +60,10 @@ Studio 面板、打开它的侧边栏行，以及输入框下方的提交状态�
 从 Plugins 页安装（Add plugin → 填包名或 tarball），或：
 
 ```bash
-# 最新 release 里的预构建 tarball
+# 从 npm 装
+dsh plugin --profile desktop add dsh-openviking-enhance
+
+# 或从最新 release 装预构建 tarball
 dsh plugin --profile desktop add https://github.com/A2chitect/dsh-openviking-enhance/releases/latest/download/dsh-openviking-enhance.tgz
 ```
 

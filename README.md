@@ -72,7 +72,10 @@ The Studio panel, the sidebar row that opens it, and the commit pill below the c
 Install it from the Plugins page (Add plugin → package name or tarball), or:
 
 ```bash
-# the prebuilt tarball from the latest release
+# from npm
+dsh plugin --profile desktop add dsh-openviking-enhance
+
+# or the prebuilt tarball from the latest release
 dsh plugin --profile desktop add https://github.com/A2chitect/dsh-openviking-enhance/releases/latest/download/dsh-openviking-enhance.tgz
 ```
 

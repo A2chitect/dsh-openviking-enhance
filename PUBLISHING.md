@@ -414,11 +414,41 @@ dsh plugin --profile check add https://github.com/A2chitect/dsh-openviking-enhan
 两份 README 的安装命令已从"npm 包名"改成这条**真实可用**的 Release 地址（npm 上目前没有包，
 不能指向它）。若你以后想发 npm：`npm login` 后 `pnpm publish` 即可，条目里的 `tarball:` 可留可删。
 
-## 三点九、npm 路线（可选，归你）
+## 三点九、已发 npm ☑（2026-10-02）
 
-**版本与标签已经就位**，下面只剩分发那一步。
+你登录 npm 后自己跑了 `pnpm publish`（2FA 验证码我这边无法交互输入）。核验结果：
 
-**路线 A：发 npm（推荐，市场能显示下载量）**
+```
+dist-tags   latest: 0.2.0
+versions    0.2.0
+deps        {}                                     ← 零运行时依赖
+peers       @deepseek-ai/dsh ^0.2.0-rc.1 · react ^18.2.0
+files       11 · unpacked 507 KB · LICENSE MIT · repository 指回本仓库
+shasum      b428cecef98b5afbcb2fbf8cc6b074e8bc8d2d9e   ← 与 registry 公布值一致
+```
+
+**发布的内容与我在本地验证过的构建逐字节一致**（`lib/index.js`、`lib/client.js`、`cordis.patch.yml`、
+`icon.svg` 四个文件 sha1 全等）——也就是说 npm 上那份正是跑过 66 个测试与发布契约的那份。
+
+**端到端验证**（照 README 里那条命令，在全新 `DSH_HOME` 里跑）：
+
+```
+dsh plugin --profile npmcheck add dsh-openviking-enhance
+  → + dsh-openviking-enhance 0.2.0        (8.5s)
+  → version 0.2.0 · deps 0 · lib true
+  → --dump-config: - id: openviking-enhance  name: dsh-openviking-enhance
+```
+
+**一个坑记在这里**：在**普通 npm 工程**里装这个包会失败（`ERR_PNPM_IGNORED_BUILDS`）——pnpm 默认
+`autoInstallPeers: true`，于是它去装 `@deepseek-ai/dsh` 这个 peer，把整个 harness 拉下来，而那些包带
+构建脚本、被 pnpm 拦住。**DSH profile 自带 `autoInstallPeers: false`**，所以用户那条命令干净通过
+（实测 exit 0，只装我们一个包）。这不是本插件的问题，任何 peer 依赖 harness 的插件都一样。
+
+## 三点十、两条分发路线都在
+
+两条路线**都已上线**，任选其一安装即可（互不冲突）：
+
+**路线 A：npm（已发布，市场能显示下载量）**
 
 ```bash
 pnpm publish                # prepack 自动重建 lib/；private 已移除；repository 已指回仓库
