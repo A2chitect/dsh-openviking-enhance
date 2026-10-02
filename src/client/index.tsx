@@ -25,6 +25,7 @@ import { OpenVikingIcon } from './openviking-icon.tsx'
 import { StudioPanel } from './studio-panel.tsx'
 import { CommitStatusPill } from './commit-status.tsx'
 import { RecallPanel } from './recall-panel.tsx'
+import { ConfigPage } from './config-page.tsx'
 
 /** Client services this half waits for before `apply` runs. */
 export const inject = ['slots']
@@ -58,6 +59,20 @@ const SIDEBAR_ORDER = 1000
  */
 const RECALL_TAB_ID = 'dsh-openviking-enhance:recall'
 const RECALL_TAB_KIND = 'openviking-recall'
+
+/**
+ * The key of this plugin's row configuration on the Plugins page.
+ *
+ * The page keys the seat by `<package name>#<row id>`, taken from the bundle's
+ * manifest and its patch, and the **Configure** control appears only because a
+ * registration exists here. Nothing else in DSH renders a form for a plugin's
+ * Config, however well declared the schema is.
+ *
+ * `PACKAGE_NAME` is written out because the browser half has no package.json to
+ * read; `scripts/smoke-client.mjs` asserts it equals the manifest's name.
+ */
+const PACKAGE_NAME = 'dsh-openviking-enhance'
+const CONFIG_ROW_KEY = `${PACKAGE_NAME}#openviking-enhance`
 
 /**
  * Sidebar row glyph. The shell hands a list occupant only `{ size, active }` and
@@ -119,6 +134,17 @@ export function apply(context: ClientContext): void {
           },
           CommitStatusPill,
         ),
+      ),
+    )
+  } catch (error) {
+    report(context, error)
+  }
+
+  // The plugin's own settings, on its row of the Plugins page.
+  try {
+    disposers.push(
+      context.slots.inject('plugins.row.config', () =>
+        context.slots.register({ name: 'plugins.row.config', key: CONFIG_ROW_KEY }, ConfigPage),
       ),
     )
   } catch (error) {

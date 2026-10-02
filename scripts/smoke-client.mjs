@@ -146,7 +146,18 @@ check(dock.length === 1, `registers one dock entry (saw ${dock.length})`)
 const pill = dock[0]
 check(pill?.id === 'openviking-commit', 'dock entry is the commit pill')
 check(typeof pill?.inject === 'function', 'status pill declares a session inject face')
-check(injectedKeys.length === 4, `all four slots are injected (saw ${injectedKeys.join(', ')})`)
+check(injectedKeys.length === 5, `all five slots are injected (saw ${injectedKeys.join(', ')})`)
+
+// The configuration form. DSH renders no form for a plugin's Config on its own:
+// the Plugins page grows a Configure control only because this seat is taken, and
+// it keys the seat by the manifest's package name — which the browser half cannot
+// read, so it is written out and pinned here instead.
+const configRow = registrations.find((entry) => entry.name === 'plugins.row.config')
+check(configRow !== undefined, 'registers the row configuration form (plugins.row.config)')
+check(
+  configRow?.key === `${pkg.name}#openviking-enhance`,
+  `the config seat is keyed by package name and row id (${configRow?.key})`,
+)
 
 // The right Sidebar tab. Registration is two-stage and the stages must agree: the
 // registry keys the body seat by the type's `id`, so a body registered under

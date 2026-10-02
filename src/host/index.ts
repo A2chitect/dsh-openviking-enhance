@@ -26,7 +26,7 @@ import {
   type EnhanceConfig,
 } from '../shared/protocol.ts'
 import { describeConnection, resolveConnection } from './config.ts'
-import { isTrustedLocalRequest } from './trust-fence.ts'
+import { isLoopbackHostname, isTrustedLocalRequest } from './trust-fence.ts'
 import { CommitService, isArchiveUriForSession, type OpenVikingMemoryRuntime } from './commit-service.ts'
 import { OpenVikingApi } from './openviking-api.ts'
 import { RecallService } from './recall-service.ts'
@@ -37,20 +37,30 @@ export const name = 'openviking-enhance'
 /** The web server is the only hard requirement; the OpenViking plugin is optional. */
 export const inject = ['webServer']
 
+/**
+ * Everything a user may want to change, marked `.volatile()`.
+ *
+ * That marker is what puts a field on the Plugins page's configuration form: the
+ * settings service projects volatile fields only, and a plugin whose fields are
+ * ordinary has no form at all — its configuration stays in `cordis.patch.yml`,
+ * which is exactly the situation this plugin shipped with. An empty string means
+ * "not overridden", so the defaults below stay the composition layer the form
+ * reverts to when a field is cleared.
+ */
 export const Config = z.object({
   /** Override the OpenViking base URL; default comes from `~/.openviking/ovcli.conf`. */
-  endpoint: z.string().default(''),
+  endpoint: z.string().default('').volatile(),
   /** Override the API key (prefer the config file; this is for unusual setups). */
-  apiKey: z.string().default(''),
+  apiKey: z.string().default('').volatile(),
   /** Override the identity the panel reads under. */
-  account: z.string().default(''),
-  user: z.string().default(''),
+  account: z.string().default('').volatile(),
+  user: z.string().default('').volatile(),
   /** Studio path appended to the endpoint when building the iframe URL. */
-  studioPath: z.string().default('/studio/'),
+  studioPath: z.string().default('/studio/').volatile(),
   /** Status cache TTL in milliseconds. */
-  cacheTtlMs: z.number().default(2500),
+  cacheTtlMs: z.number().default(2500).volatile(),
   /** How long one retrieval answer is reused, in milliseconds. */
-  recallCacheTtlMs: z.number().default(15000),
+  recallCacheTtlMs: z.number().default(15000).volatile(),
 })
 
 export interface EnhanceConfigInput {
@@ -90,6 +100,25 @@ function writeJson(res: ServerResponse, status: number, body: unknown): void {
     'content-length': Buffer.byteLength(payload),
   })
   res.end(payload)
+}
+
+/**
+ * An `http(s)` endpoint on this machine, or null.
+ *
+ * A candidate that is not loopback is refused rather than normalized: the point
+ * of the check is that a request this plugin makes cannot leave the machine.
+ */
+export function parseLoopbackEndpoint(raw: string): URL | null {
+  const trimmed = raw.trim()
+  if (trimmed.length === 0) return null
+  let url: URL
+  try {
+    url = new URL(trimmed)
+  } catch {
+    return null
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
+  return isLoopbackHostname(url.hostname) ? url : null
 }
 
 function query(req: IncomingMessage): URLSearchParams {
@@ -173,6 +202,34 @@ export function apply(ctx: Context, config: EnhanceConfigInput = {}): void {
       handler: async (req, res) => {
         if (!guard(req, res)) return
         writeJson(res, 200, await configPayload())
+      },
+    },
+    {
+      kind: 'exact',
+      path: `${API_PREFIX}/probe`,
+      handler: async (req, res) => {
+        if (!guard(req, res)) return
+        // The configuration form's "test" button: it sends whatever the user has
+        // typed, so the endpoint is checked before anything is fetched. Loopback
+        // only — without that this route would be a general-purpose URL fetcher
+        // for anyone who can reach the plugin's port.
+        const candidate = parseLoopbackEndpoint(query(req).get('endpoint') ?? '')
+        if (candidate === null) {
+          writeJson(res, 400, {
+            ok: false,
+            error: 'endpoint must be an http(s) URL on the loopback interface',
+          } satisfies ApiResult<never>)
+          return
+        }
+        // The key is the one already in force, never the staged edit: a secret in
+        // a query string ends up in logs.
+        const health = await new OpenVikingApi({
+          endpoint: candidate.origin,
+          apiKey: connection.apiKey,
+          account: connection.account,
+          user: connection.user,
+        }).health()
+        writeJson(res, 200, { ok: true, reachable: health.ok, version: health.version, error: health.error })
       },
     },
     {

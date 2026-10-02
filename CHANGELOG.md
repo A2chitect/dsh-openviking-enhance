@@ -22,6 +22,28 @@ promotes to a dated section — see [RELEASING.md](RELEASING.md).
 - Two routes behind the same trust fence: `/recall` and `/recall/content` (the
   latter refuses anything that is not a `viking://` path, and truncates).
 
+### Changed
+
+- **The plugin's settings are editable in the GUI.** Its row on the **Plugins**
+  page now has a **Configure** form — endpoint, key, identity, Studio path and the
+  two cache lifetimes — with a *check* button that probes the address before
+  saving, and a per-field reset that clears the override instead of writing an
+  empty value. The same values can still be written by hand in the profile patch.
+- The host half is self-contained: `@deepseek-ai/schemastery` is bundled instead
+  of being imported at runtime, so the plugin no longer assumes a harness hands it
+  a schema library the profile may not have.
+- The package is publishable: `private` removed, `LICENSE` added, and the official
+  `@deepseek-ai/*` dependency replaced by an explicit `@deepseek-ai/dsh` peer.
+
+### 变更
+
+- **插件设置可以在界面里改了**：**Plugins** 页里本插件那一行多了 **Configure** 表单
+  （地址、Key、身份、Studio 路径、两个缓存时长），地址旁有 **检测** 按钮可在保存前试连，
+  每个字段的 **默认** 按钮是清除覆盖、恢复继承，而不是写入空值。同样的值仍可手写在 profile patch 里。
+- 宿主半部分自包含：`@deepseek-ai/schemastery` 改为打进 bundle，不再假设 harness 会提供它。
+- 包已可发布：移除 `private`、补 `LICENSE`、把官方 `@deepseek-ai/*` 依赖换成显式的
+  `@deepseek-ai/dsh` peer。
+
 ### 新增
 
 - **右侧边栏的记忆召回面板**：按会话显示 OpenViking 为当前会话召回了什么——检索用的那句话

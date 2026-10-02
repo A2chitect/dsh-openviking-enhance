@@ -98,6 +98,22 @@ export function fetchRecall(
   return readJson<RecallResponse>(`${BASE}/recall?${params.toString()}`)
 }
 
+export interface ProbePayload {
+  reachable: boolean
+  version: string | null
+  error: string | null
+}
+
+/**
+ * Test one candidate endpoint before it is saved.
+ *
+ * The host refuses anything that is not loopback, so this cannot be turned into
+ * a general-purpose fetch of an arbitrary address.
+ */
+export function probeEndpoint(endpoint: string): Promise<ApiResult<ProbePayload>> {
+  return readJson<ProbePayload>(`${BASE}/probe?endpoint=${encodeURIComponent(endpoint)}`)
+}
+
 export interface RecallContentResponse {
   content: RecallContent
 }

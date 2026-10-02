@@ -366,6 +366,51 @@ button.ove-pill-errored:hover, button.ove-pill-errored[aria-expanded="true"] {
 }
 .ove-recall-targets ul { margin: 4px 0 0; padding-left: 16px; }
 .ove-recall-targets li { overflow-wrap: anywhere; }
+
+/* ---- Plugin configuration (Plugins -> this plugin -> Configure) ---------- */
+/* A page, not a sidebar strip: full-width fields on the same control metrics the
+   shipped Input/Button use (32px, border-l4, radius-md, primary fill). */
+.ove-config { display: flex; flex-direction: column; gap: 14px; max-width: 560px; padding: 4px 0 8px; }
+.ove-config-field { display: flex; flex-direction: column; gap: 4px; }
+.ove-config-label {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 13px; color: var(--dsw-alias-label-primary);
+}
+.ove-config-badge {
+  font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-tertiary);
+  border: .5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-sm);
+  padding: 0 6px;
+}
+.ove-config-control { display: flex; align-items: center; gap: 6px; }
+.ove-config-input {
+  flex: 1; min-width: 0; box-sizing: border-box; height: 32px; padding: 0 8px;
+  border: .5px solid var(--dsw-alias-border-l4); border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-layer-1); outline: none;
+  font: inherit; font-size: 13px; color: var(--dsw-alias-label-primary);
+}
+.ove-config-input:focus { border-color: var(--dsw-alias-state-business-primary); }
+.ove-config-input:disabled { opacity: .6; }
+.ove-config-input::placeholder { color: var(--dsw-alias-label-dimmed); }
+.ove-config-button {
+  flex: none; box-sizing: border-box; height: 32px; padding: 0 12px; cursor: pointer;
+  font: inherit; font-size: 13px; color: var(--dsw-alias-label-primary);
+  background: transparent; border: .5px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-md);
+}
+.ove-config-button:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
+.ove-config-button:disabled { opacity: .4; cursor: not-allowed; }
+.ove-config-primary {
+  box-sizing: border-box; height: 32px; padding: 0 16px; cursor: pointer;
+  font: inherit; font-size: 13px; color: var(--dsw-alias-label-primary-foreground);
+  background: var(--dsw-alias-button-primary-fill); border: none;
+  border-radius: var(--dsw-radius-md);
+}
+.ove-config-primary:hover:not(:disabled) { background: var(--dsw-alias-button-primary-hover); }
+.ove-config-primary:disabled { opacity: .4; cursor: not-allowed; }
+.ove-config-hint { font-size: 12px; color: var(--dsw-alias-label-tertiary); }
+.ove-config-note { margin: 0; font-size: 12px; color: var(--dsw-alias-label-secondary); }
+.ove-config-error { margin: 0; font-size: 12px; color: var(--dsw-alias-state-error-primary, #f85149); }
+.ove-config-actions { display: flex; gap: 8px; align-items: center; }
 `
 
 /** Install the stylesheet once per document. */

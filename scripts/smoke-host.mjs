@@ -137,6 +137,20 @@ async function report(base, sessionId) {
     console.log(`[smoke]   ${name.padEnd(12)} ${counts}`)
   }
 
+  // The configuration form's own guard: a loopback endpoint is probed, anything
+  // else is refused before a request leaves the host.
+  const probe = await get(`${base}/api/openviking-enhance/probe?endpoint=${encodeURIComponent(config.endpoint)}`)
+  console.log(
+    `[smoke] probe       ${probe?.ok === true ? `reachable=${probe.reachable} version=${probe.version ?? '?'}` : `FAIL ${probe?.error ?? 'no answer'}`}`,
+  )
+  if (probe?.ok !== true || probe.reachable !== true) process.exitCode = 1
+  const refused = await get(
+    `${base}/api/openviking-enhance/probe?endpoint=${encodeURIComponent('http://example.com:1933')}`,
+  )
+  const refusedOk = refused?.ok === false
+  console.log(`[smoke] probe guard ${refusedOk ? 'ok  ' : 'FAIL'} non-loopback endpoint refused (${refused?.error ?? 'not refused'})`)
+  if (!refusedOk) process.exitCode = 1
+
   const recall = await get(
     `${base}/api/openviking-enhance/recall?sessionId=${encodeURIComponent(sessionId)}&limit=3`,
   )

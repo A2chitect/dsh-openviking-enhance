@@ -33,6 +33,9 @@ import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 // seats used by the recall tab. `SidebarRightTabDefinition` is the registry's real
 // definition type, so a tab type is checked against the framework, not our guess.
 import type { SidebarRightTabDefinition } from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
+// ...and the Plugins page's, which declares `plugins.row.config` — the seat the
+// configuration form registers into.
+import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 
 /** Every slot key the framework currently declares. */
 export type SlotName = keyof SlotMap & string

@@ -14,6 +14,7 @@ import { OpenVikingIcon } from './openviking-icon.tsx'
 import { StudioPanel } from './studio-panel.tsx'
 import { CommitStatusPill } from './commit-status.tsx'
 import { RecallPanel } from './recall-panel.tsx'
+import { ConfigPage } from './config-page.tsx'
 
 declare const slots: SlotService
 
@@ -29,6 +30,7 @@ slots.register(
   { name: 'sidebar.right.pane.tab', key: 'dsh-openviking-enhance:recall', inject: (sessionId: string) => ({ sessionId }) },
   RecallPanel,
 )
+slots.register({ name: 'plugins.row.config', key: 'dsh-openviking-enhance#openviking-enhance' }, ConfigPage)
 
 // --- and the mistakes each rule exists to catch ------------------------------
 
@@ -44,5 +46,7 @@ slots.register({ name: 'main', key: 'x', inject: (sessionId: string) => ({ sessi
 slots.register({ name: 'conversation.composer.dock', id: 'x' }, CommitStatusPill)
 // @ts-expect-error the right-Sidebar tab body is a session slot too: no inject means no session
 slots.register({ name: 'sidebar.right.pane.tab', key: 'x' }, RecallPanel)
+// @ts-expect-error the config seat is keyed, and its root scope forbids an inject factory
+slots.register({ name: 'plugins.row.config', key: 'x', inject: (sessionId: string) => ({ sessionId }) }, ConfigPage)
 // @ts-expect-error the component must accept the props its slot hands it
 slots.register({ name: 'sidebar.panellist', id: 'x' }, (props: { nope: number }) => null)

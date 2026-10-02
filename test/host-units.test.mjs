@@ -24,6 +24,7 @@ import {
   resolveSessionUri,
 } from '../src/host/commit-service.ts'
 import { OpenVikingApi, parseMaybeDoubleEncoded } from '../src/host/openviking-api.ts'
+import { parseLoopbackEndpoint } from '../src/host/index.ts'
 import {
   deriveClientPhase,
   describeFailure,
@@ -107,6 +108,20 @@ test('resolveSessionUri prefers the session record over the configured identity'
   assert.equal(resolveSessionUri({ uri: 'https://example.com/x' }, 'dsh-abc', 'default'), 'viking://user/default/sessions/dsh-abc')
   // The session directory, never the history directory: listHistory owns that suffix.
   assert.equal(resolveSessionUri({ uri }, 'dsh-abc', 'default').endsWith('/history'), false)
+})
+
+test('parseLoopbackEndpoint admits only this machine', () => {
+  // The configuration form sends what the user typed, so this is the check that
+  // keeps the plugin from becoming a URL fetcher for anything on the network.
+  assert.equal(parseLoopbackEndpoint('http://127.0.0.1:1933')?.origin, 'http://127.0.0.1:1933')
+  assert.equal(parseLoopbackEndpoint('http://localhost:1933/studio/')?.origin, 'http://localhost:1933')
+  assert.equal(parseLoopbackEndpoint('  http://[::1]:1933  ')?.hostname, '[::1]')
+  assert.equal(parseLoopbackEndpoint('https://127.0.0.1:8443')?.origin, 'https://127.0.0.1:8443')
+  assert.equal(parseLoopbackEndpoint('http://example.com:1933'), null)
+  assert.equal(parseLoopbackEndpoint('http://192.168.1.10:1933'), null)
+  assert.equal(parseLoopbackEndpoint('file:///etc/passwd'), null)
+  assert.equal(parseLoopbackEndpoint('not a url'), null)
+  assert.equal(parseLoopbackEndpoint(''), null)
 })
 
 test('listHistory appends exactly one /history segment', async () => {

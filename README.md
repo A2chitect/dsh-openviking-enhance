@@ -78,7 +78,12 @@ dsh plugin --profile desktop remove dsh-openviking-enhance
 ## Configuration
 
 Everything has a sensible default — a standard local setup needs no configuration
-at all. Settings go in your profile's patch file
+at all. To change something, open **Plugins** in the sidebar, pick this plugin, and
+use **Configure** on its row: the form carries the fields below, a **check**
+button that probes the address before you save, and a *default* button per field
+that clears the override instead of writing an empty value.
+
+The same settings can still be written by hand in your profile's patch file
 (`~/.dsh/profiles/desktop/cordis.patch.yml`), under the row `openviking-enhance`:
 
 ```yaml

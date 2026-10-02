@@ -64,7 +64,11 @@ dsh plugin --profile desktop remove dsh-openviking-enhance
 
 ## 配置
 
-默认值适配标准本地环境，**开箱无需配置**。如需调整，写在 profile 的 patch 文件
+默认值适配标准本地环境，**开箱无需配置**。要改的话，打开侧边栏的 **Plugins** 页，找到本插件，
+点它那一行的 **Configure**：表单包含下表的全部字段，地址旁边有 **检测** 按钮可以在保存前先试连，
+每个字段还有 **默认** 按钮——它是清除覆盖、恢复继承，而不是写入一个空值。
+
+同样的设置也仍然可以手写在 profile 的 patch 文件
 （`~/.dsh/profiles/desktop/cordis.patch.yml`）里 `openviking-enhance` 这一行下面：
 
 ```yaml
