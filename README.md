@@ -65,8 +65,19 @@ guide; it is per session, like the column itself.
 
 ## Install
 
+Install it from the Plugins page (Add plugin → package name or tarball), or:
+
 ```bash
-dsh plugin --profile desktop add link:/path/to/dsh-openviking-enhance
+# a published release
+dsh plugin --profile desktop add dsh-openviking-enhance
+```
+
+Installed from a source checkout instead — the client half is a prebuilt bundle,
+so the package must be installed from a published artifact rather than built in
+place:
+
+```bash
+pnpm pack && dsh plugin --profile desktop add ./dsh-openviking-enhance-<version>.tgz
 ```
 
 Then restart the DSH app once: the host half is loaded at startup. To remove it:

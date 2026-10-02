@@ -52,8 +52,17 @@ OpenViking 拉进上下文的记忆——检索用的那句话（默认是本会
 
 ## 安装
 
+从 Plugins 页安装（Add plugin → 填包名或 tarball），或：
+
 ```bash
-dsh plugin --profile desktop add link:/path/to/dsh-openviking-enhance
+# 已发布的版本
+dsh plugin --profile desktop add dsh-openviking-enhance
+```
+
+如果你是在源码目录里开发——客户端半部分是**预构建产物**，所以要从打好的包里装，而不是就地构建：
+
+```bash
+pnpm pack && dsh plugin --profile desktop add ./dsh-openviking-enhance-<版本>.tgz
 ```
 
 安装后**重启一次 DSH 应用**（宿主部分在启动时加载）。卸载：

@@ -5,9 +5,11 @@
 # One row covers both halves: the node half (exports ".") runs in the host
 # process and owns the OpenViking HTTP reads; the `dsh.client` declaration in
 # package.json makes the browser half (exports "./client", served at
-# /plugins/<id>/client.js) load in the web GUI and register the two slots:
+# /plugins/<id>/client.js) load in the web GUI and register five seats:
 #   - sidebar.panellist + keyed `main`  → the OpenViking Studio panel
 #   - conversation.composer.dock        → the per-session commit status pill
+#   - sidebar.right.pane.tab            → the recall tab in the right sidebar
+#   - plugins.row.config                → this plugin's settings form
 #
 # Reload the app (or the profile) after changing this row; the loader reads the
 # patch at boot.

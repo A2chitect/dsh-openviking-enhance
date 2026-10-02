@@ -105,12 +105,45 @@ import("dsh-openviking-enhance")
 所以**发布产物不可能缺构建结果**（实测：删掉 lib → pack → tarball 里 4 个 lib 条目）。
 副作用是 raw git 安装从"静默装坏"变成"响亮报错"，这比让用户装上一个坏插件好。
 
+### 8. 真装一次：`dsh plugin add` 到临时 profile ☑
+
+用官方 CLI（`npm install --prefix /tmp/dshcli @deepseek-ai/dsh@0.2.0-rc.2`）配
+`DSH_HOME=/tmp/dsh-home`（**完全不碰 `~/.dsh`**）走了一遍真实安装：
+
+```sh
+DSH_HOME=/tmp/dsh-home dsh plugin --profile probe add /tmp/dsh-openviking-enhance-0.1.0.tgz
+# -> dependencies: + dsh-openviking-enhance 0.1.0   （只有 peer 警告，没有构建授权拦截）
+# -> profile 记录: dsh.profile.bundles: ["dsh-openviking-enhance"]
+# -> 装出来的包里有 lib/
+DSH_HOME=/tmp/dsh-home dsh --profile probe --dump-config | grep -A 2 'dsh-openviking-enhance'
+# == dsh-openviking-enhance
+# - id: openviking-enhance
+#   name: dsh-openviking-enhance
+```
+
+最后那三行是关键：**Loader 读了我们的 `dsh.bundle.patch` 并把那一行插进了组合树**——这正是规范
+CI 要检查（`dsh.bundle`）和市场上"装上就能用"的那一步。tarball 路径全绿。
+
+### 9. 首次运行（没有 OpenViking）也验了 ☑
+
+原先冒烟的"服务端不可达"分支只打印 SKIP，**什么也没验**——而那正是陌生人装上插件后的第一次运行。
+现在该分支会逐个调用全部 7 条路由（config/status/commits/recall/diff/probe/content），断言：
+
+```
+[offline] ok   config   answers JSON          （7 条路由都要返回带 ok 字段的 JSON，不是抛异常）
+[offline] ok   config names the unreachable endpoint as a code
+[offline] ok   probe reports a dead address as unreachable
+```
+
+本地复现：`SMOKE_ENDPOINT=http://127.0.0.1:9 node scripts/smoke-host.mjs`；
+CI 上不需要任何参数——那里本来就没有 OpenViking，走的正是这条分支。
+
 ## 三、待办
 
 | # | 工作 | 说明 |
 | --- | --- | --- |
 | 1 | ~~i18n~~ | ☑ 已完成，见下面第 7 条 |
-| 2 | 可安装性实测（tarball 已验，profile 安装待办） | 已做：把 `pnpm pack` 的产物装进空工程，文件齐、**宿主半部分零依赖可加载**（见下）。待做：在干净 profile 里用 `dsh plugin add` 真装一次——那是"陌生人能不能装上"的最终证据 |
+| 2 | ~~可安装性实测~~ | ☑ 已完成，见下面第 5、6 条与第 8 条 |
 | 3 | 截图 + `screenshots.json` | 需要真机截图（左侧 Studio、提交胶囊+时间线、右侧召回面板、插件配置页） |
 | 4 | README 更新 | 加截图、市场安装方式、兼容性说明（依赖 `@openviking/dsh-memory-plugin` 的内部结构这件事要写明） |
 | 5 | 条目 yml | `data/plugins/<owner>__<repo>.yml`，一个文件 |
@@ -157,4 +190,6 @@ import("dsh-openviking-enhance")
 | 源码安装的四种形态 | 见上面第 6 条；重跑：`pnpm add git+file:///<clone>` |
 | 发布产物不会缺 lib/ | `rm -rf lib && pnpm pack --pack-destination /tmp && tar tzf /tmp/*.tgz \| grep lib/` |
 | 中英字典一致 / 无缺键 | `node --test test/locale.test.mjs` |
+| 真实安装 + 组合树 | 见上面第 8 条的三条命令（`DSH_HOME` 指向临时目录） |
+| 没有 OpenViking 时的降级 | `SMOKE_ENDPOINT=http://127.0.0.1:9 node scripts/smoke-host.mjs` |
 | 全量回归 | `pnpm test` |

@@ -36,7 +36,10 @@ const context = {
   logger: console,
 }
 
-apply(context)
+// A dead endpoint can be substituted to exercise a stranger's first run, where
+// OpenViking is not installed at all: every route must still answer.
+if (process.env.SMOKE_ENDPOINT) context.config = { endpoint: process.env.SMOKE_ENDPOINT }
+apply(context, context.config ?? {})
 
 const server = http.createServer((req, res) => {
   const { pathname } = new URL(req.url ?? '/', 'http://127.0.0.1')
@@ -79,6 +82,10 @@ if (sessionId) {
   } else {
     console.log(`[smoke] SKIP live data path: ${reason}`)
     console.log('[smoke]      (start OpenViking, or set SMOKE_REQUIRE_SERVER=1 to fail instead)')
+    // A skipped data path used to verify nothing. Someone who installs this
+    // plugin before OpenViking is the first run that matters most, so the
+    // no-server branch now asserts the degraded answers every route gives.
+    await checkDegraded(base)
   }
   await checkFence(base)
 }
@@ -96,6 +103,40 @@ function rawStatus(base, path, { method = 'GET', headers = {} } = {}) {
     request.on('error', () => resolve(0))
     request.end()
   })
+}
+
+/**
+ * Every route, with no OpenViking to talk to.
+ *
+ * The plugin must be inert, not broken: each route answers JSON with an `ok`
+ * field, `/config` says it is unhealthy and names why, and `/probe` reports the
+ * address as unreachable rather than throwing.
+ */
+async function checkDegraded(base) {
+  const prefix = '/api/openviking-enhance'
+  const routes = [
+    ['config', `${prefix}/config`],
+    ['status', `${prefix}/status?sessionId=probe`],
+    ['commits', `${prefix}/commits?sessionId=probe`],
+    ['recall', `${prefix}/recall?sessionId=probe`],
+    ['diff', `${prefix}/diff?sessionId=probe&archive=viking://x/history/archive_001`],
+    ['probe', `${prefix}/probe?endpoint=${encodeURIComponent('http://127.0.0.1:9')}`],
+    ['content', `${prefix}/recall/content?uri=${encodeURIComponent('viking://user/default/memories/x.md')}`],
+  ]
+  for (const [label, path] of routes) {
+    const body = await get(`${base}${path}`)
+    const answered = body !== null && body !== undefined && typeof body === 'object' && 'ok' in body
+    console.log(`[offline] ${answered ? 'ok  ' : 'FAIL'} ${label.padEnd(8)} answers JSON`)
+    if (!answered) process.exitCode = 1
+  }
+  const config = await get(`${base}${prefix}/config`)
+  const named = (config?.warnings ?? []).some((warning) => warning?.code === 'unreachable')
+  console.log(`[offline] ${named ? 'ok  ' : 'FAIL'} config names the unreachable endpoint as a code`)
+  if (!named) process.exitCode = 1
+  const probe = await get(`${base}${prefix}/probe?endpoint=${encodeURIComponent('http://127.0.0.1:9')}`)
+  const refused = probe?.ok === true && probe.reachable === false
+  console.log(`[offline] ${refused ? 'ok  ' : 'FAIL'} probe reports a dead address as unreachable`)
+  if (!refused) process.exitCode = 1
 }
 
 /**
