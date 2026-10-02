@@ -1,6 +1,6 @@
 {
   "name": "dsh-openviking-enhance",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "OpenViking in the DSH web GUI: a Studio panel, a per-session memory-commit status pill with its commit timeline, and a right-sidebar tab showing what the current session retrieves.",
   "type": "module",
   "icon": "./icon.svg",

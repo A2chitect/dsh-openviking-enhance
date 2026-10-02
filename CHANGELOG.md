@@ -9,6 +9,8 @@ promotes to a dated section — see [RELEASING.md](RELEASING.md).
 
 ## Unreleased
 
+## 0.2.0 — 2026-10-02
+
 ### Added
 
 - **Recall detail in the right sidebar** — a per-session *记忆召回* tab showing what
