@@ -163,7 +163,27 @@ function query(req: IncomingMessage): URLSearchParams {
   return new URL(req.url ?? '/', 'http://127.0.0.1').searchParams
 }
 
+/**
+ * A plugin entry that throws while activating does not just fail: it takes the
+ * whole profile with it, and the user gets "1 entry did not activate" plus an
+ * application that will not start. This plugin is a viewer for a local memory
+ * server — there is no version of that worth a dead boot — so activation is
+ * wrapped: a failure is logged in full and the plugin simply provides nothing.
+ *
+ * The logging is not decoration. The first time this happened the only visible
+ * symptom was the boot dialog, and the cause had to be reconstructed by hand.
+ */
 export function apply(ctx: Context, config: EnhanceConfigInput = {}): void {
+  try {
+    start(ctx, config)
+  } catch (error) {
+    const logger = (ctx as unknown as { logger?: { error?: (line: string) => void } }).logger
+    const detail = error instanceof Error ? (error.stack ?? error.message) : String(error)
+    logger?.error?.(`[openviking-enhance] failed to activate, so the plugin provides nothing: ${detail}`)
+  }
+}
+
+function start(ctx: Context, config: EnhanceConfigInput): void {
   const host = ctx as unknown as HostContext
   const connection = resolveConnection({
     endpoint: configText(config.endpoint),

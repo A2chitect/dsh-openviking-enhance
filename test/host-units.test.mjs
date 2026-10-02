@@ -155,6 +155,28 @@ test('an absurd config value cannot stop the plugin from activating', () => {
   assert.ok(routes.length >= 6)
 })
 
+test('a failure inside the plugin cannot stop the profile from booting', () => {
+  // What the user saw: "web boot: 1 entry did not activate / dsh-openviking-enhance:
+  // failed" — and an application that would not start. Whatever goes wrong in
+  // here, the boot has to survive it, and the cause has to reach the log.
+  const logged = []
+  const context = {
+    webServer: {
+      port: 0,
+      register: () => {
+        throw new Error('the service exploded')
+      },
+    },
+    effect: (callback) => (callback(), () => {}),
+    get: () => undefined,
+    logger: { info: () => {}, warn: () => {}, error: (line) => logged.push(line) },
+  }
+  assert.doesNotThrow(() => apply(context, Config({})))
+  assert.equal(logged.length, 1, 'the failure is reported exactly once')
+  assert.match(logged[0], /failed to activate/)
+  assert.match(logged[0], /the service exploded/, 'the cause is in the log, not just the symptom')
+})
+
 test('a plugin with no config at all still activates', () => {
   const routes = []
   const context = {

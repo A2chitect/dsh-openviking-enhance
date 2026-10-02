@@ -581,6 +581,35 @@ z.object({ studioPath: z.string().default('/studio/').volatile() })({})
 
 教训记在这里：**"能装"和"能被应用激活"是两件事**，而后者只有当参数形状与 Loader 一致时才算验过。
 
+### 26. 插件再也不会把应用搞挂（并顺带确认了它现在真的能起来）☑
+
+第 25 条那个 bug 让你重启后应用起不来（`web boot: 1 entry did not activate / dsh-openviking-enhance: failed`）。
+除了修根因，还补了一条**工程约束**：
+
+```ts
+export function apply(ctx, config = {}) {
+  try { start(ctx, config) }
+  catch (error) { logger?.error?.(`[openviking-enhance] failed to activate, so the plugin provides nothing: ${stack}`) }
+}
+```
+
+一个"看本地记忆服务的面板"没有资格让整个 profile 起不来。失败改为**完整落日志**——第一次出这事时，
+唯一可见的症状就是启动对话框，原因只能靠手工重建。测试里把那句 `the service exploded` 断言进了日志内容，
+不只是断言"没抛"。
+
+**复现方法**（比读日志靠谱，以后遇到同类问题直接用）：把你的 desktop profile 整个拷到 `/tmp`，
+改个 profile 名（CLI 拒绝启动 Electron 专属的 `desktop`），修掉指向本目录的相对软链，然后
+`dsh --profile diag --port 8799 --no-open`。实测：
+
+```
+copy composed of: ["@deepseek-ai/dsh-base","@deepseek-ai/dsh-web-app","dsh-openviking-enhance"]
+启动输出：没有任何 warning
+/config -> 200   /status -> 200   /probe -> 200     ← /probe 只有新宿主半部分才有
+```
+
+顺带发现：**web UI 的鉴权是启动时打印的 `?token=`**（`dsh web: http://127.0.0.1:8799/?token=…`），
+这就是裸 curl `GET /` 一直 401 的原因。
+
 ## 四、需要你拍板
 
 | # | 问题 | 影响 |
