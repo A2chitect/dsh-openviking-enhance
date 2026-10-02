@@ -292,6 +292,37 @@ description:
 市场会照这个顺序展示；不声明也行——它会从 README 里抽，但你这个 README 里目前没有图。
 图片进仓库时记得**别把隐私截进去**（会话标题、路径），必要时打码。
 
+### 15. 陌生人路径完整跑通 ☑
+
+把 CI 的五步在**全新 clone** 上逐条复现（不是在有 node_modules 的工作区里）：
+
+```
+git clone <repo> /tmp/ci-probe && cd /tmp/ci-probe
+ls                      → 只剩该跟踪的文件（docs/ 与 .scratch/ 已被 .gitignore 排除）
+pnpm install --frozen-lockfile   → exit 0
+pnpm test                        → exit 0：62 测试 + 20 项发布契约 + 客户端产物断言 + fence + 冒烟
+```
+
+也就是说，一个陌生人 clone 下来就能装、能跑、能验证——这正是收录页那句话（"装上他挑中的插件后，
+它确实做描述里写的那件事"）在本仓库这一侧对应的部分。
+
+### 16. PR 说明（英文，可直接粘贴）
+
+> Adds `data/plugins/<owner>__<repo>.yml` for **dsh-openviking-enhance**.
+>
+> It brings a local [OpenViking](https://docs.openviking.ai) memory server into the DSH
+> web GUI: a Studio panel in the left sidebar, a per-session memory-commit status pill
+> with its commit timeline under the message box, and a tab in the right sidebar showing
+> what the current session retrieves. The plugin is read-only — it never commits, writes
+> or deletes anything in OpenViking.
+>
+> The repository declares `dsh.bundle` with a `cordis.patch.yml`, ships a prebuilt client
+> bundle, has no runtime dependencies (the one official package it needs is bundled at
+> build time), and declares the harness as a peer. Settings are edited on the plugin's row
+> on the Plugins page. The interface follows the app's language (Chinese and English).
+
+（按你的偏好，公开 PR 一律英文。实际提交时把 `<owner>__<repo>` 换成真实文件名。）
+
 ## 四、需要你拍板
 
 | # | 问题 | 影响 |
