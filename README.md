@@ -55,6 +55,10 @@ opening a row loads that entry's whole text. The plan the server retrieved with 
 too. Open it from the right sidebar's `+`
 guide; it is per session, like the column itself.
 
+![The OpenViking Studio panel inside the DSH web GUI](assets/studio-panel.png)
+
+The Studio panel, the sidebar row that opens it, and the commit pill below the composer.
+
 ## Requirements
 
 | | |
