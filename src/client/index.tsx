@@ -98,14 +98,19 @@ export function apply(context: ClientContext): void {
   // The app's language, for every string this half renders. Read live by `t()`,
   // so switching the app's locale does not need a reload.
   //
-  // Read through `get`, NOT as `context.locale`. Cordis refuses an undeclared
-  // service property with `cannot get property "locale" without inject`, and
-  // because this line sits outside every `try` the throw took the whole entry
-  // with it: no sidebar row, no commit pill, no recall tab, and nothing in the
-  // host's log to say why. `get` is the optional accessor — the locale service is
-  // a convenience here, since every string already has an English default — so
-  // the entry must not wait for it either.
-  attachLocale(context.get('locale') as Parameters<typeof attachLocale>[0])
+  // Attached through a SCOPED injection, not a property read.
+  //
+  // Reading `context.locale` throws (`cannot get property "locale" without
+  // inject`) and, sitting outside every `try`, it took the whole entry down: no
+  // sidebar row, no commit pill, no recall tab. Reading it through the plain
+  // `get()` accessor is legal but does not reach it either — the form then fell
+  // back to `navigator.language`, so the plugin spoke the browser's language
+  // instead of the app's. This is the same two-stage pattern the recall tab uses
+  // for its registry, and for the same reason: the callback runs when the service
+  // exists and is never a dependency the entry waits on.
+  context.inject(['locale'], (scope) => {
+    attachLocale(scope.get('locale') as Parameters<typeof attachLocale>[0])
+  })
 
   try {
     installStyles()

@@ -44,21 +44,22 @@ function loadBundle(locale) {
       register: (options, Component) => (contributions.push({ options, Component }), () => {}),
     },
     effect: (callback) => (callback(), () => {}),
-    // The right Sidebar's tab type is contributed on the registry SERVICE, not on
-    // the slot declaration, so the stub has to hand one over.
-    inject: (_deps, callback) =>
+    // Two services arrive through a scoped injection rather than a property: the
+    // right Sidebar's tab registry (contributed on the SERVICE, not on the slot
+    // declaration) and the app's locale, which the plugin must read here or it
+    // silently falls back to the browser's language.
+    inject: (deps, callback) =>
       (
         callback({
-          get: (name) =>
-            name === 'sidebarRightTabs' ? { register: () => () => {} } : undefined,
+          get: (name) => {
+            if (name === 'sidebarRightTabs') return { register: () => () => {} }
+            if (name === 'locale' && deps.includes('locale')) return { getSnapshot: () => ({ active: locale }) }
+            return undefined
+          },
         }),
         { dispose() {} }
       ),
-    // The locale service is handed over the way the plugin is allowed to read it.
-    // It used to arrive as a `locale` PROPERTY here — the same illegal read that
-    // broke the shipped client half — and `get` returned nothing, so this file was
-    // rehearsing the bug instead of catching it.
-    get: (name) => (name === 'locale' ? { getSnapshot: () => ({ active: locale }) } : undefined),
+    get: () => undefined,
     logger: { warn: () => {}, info: () => {} },
   }))
 

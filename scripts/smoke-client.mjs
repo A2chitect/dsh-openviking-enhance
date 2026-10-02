@@ -100,6 +100,10 @@ const context = {
     awaited.push(deps.join(','))
     callback({
       get(name) {
+        // The locale service is reached the same way the tab registry is; the
+        // stub has to answer it, or the plugin silently speaks the browser's
+        // language instead of the app's.
+        if (name === 'locale') return { getSnapshot: () => ({ active: 'zh' }) }
         if (name !== 'sidebarRightTabs') return undefined
         return {
           register(definition) {
@@ -167,6 +171,7 @@ const pill = dock[0]
 check(pill?.id === 'openviking-commit', 'dock entry is the commit pill')
 check(typeof pill?.inject === 'function', 'status pill declares a session inject face')
 check(injectedKeys.length === 5, `all five slots are injected (saw ${injectedKeys.join(', ')})`)
+check(awaited.includes('locale'), 'the app locale is reached through a scoped injection, not the browser')
 
 // The configuration form. DSH renders no form for a plugin's Config on its own:
 // the Plugins page grows a Configure control only because this seat is taken, and
