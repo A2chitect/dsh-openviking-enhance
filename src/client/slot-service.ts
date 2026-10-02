@@ -24,7 +24,6 @@
  * loosens them fails the build instead of the GUI.
  */
 import type { ReactNode } from 'react'
-import type { LocaleServiceLike } from './locale.ts'
 import type { EntryKeyOf, KindOptions, PropsRuntime, SlotMap } from '@deepseek-ai/dsh-client-ui-slots'
 // Type-only imports for their SlotMap augmentations (see the note above).
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
@@ -106,8 +105,9 @@ export interface SlotService {
 /** The client-side service surface this plugin consumes. */
 export interface ClientContext {
   slots: SlotService
-  /** The app's locale service (`@deepseek-ai/dsh-client-locale`), for this half's copy. */
-  locale?: LocaleServiceLike
+  // Deliberately no `locale` property. Declaring one invites `ctx.locale`, which
+  // Cordis rejects unless the entry injects it — and the rejection is a thrown
+  // Error, not a warning. The locale service is reached through `get('locale')`.
   effect(callback: () => (() => void) | void, label?: string): () => void
   /**
    * Run a callback once a service exists (and again if it is replaced).

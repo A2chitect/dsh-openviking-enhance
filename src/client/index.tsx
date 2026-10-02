@@ -97,7 +97,15 @@ export function apply(context: ClientContext): void {
 
   // The app's language, for every string this half renders. Read live by `t()`,
   // so switching the app's locale does not need a reload.
-  attachLocale(context.locale)
+  //
+  // Read through `get`, NOT as `context.locale`. Cordis refuses an undeclared
+  // service property with `cannot get property "locale" without inject`, and
+  // because this line sits outside every `try` the throw took the whole entry
+  // with it: no sidebar row, no commit pill, no recall tab, and nothing in the
+  // host's log to say why. `get` is the optional accessor — the locale service is
+  // a convenience here, since every string already has an English default — so
+  // the entry must not wait for it either.
+  attachLocale(context.get('locale') as Parameters<typeof attachLocale>[0])
 
   try {
     installStyles()

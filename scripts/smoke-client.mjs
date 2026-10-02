@@ -117,9 +117,29 @@ const context = {
   logger: { warn: console.warn, info: () => {} },
 }
 
+// Cordis refuses an UNDECLARED service property: reading one throws
+// `cannot get property "x" without inject`. That is exactly how this half shipped
+// broken — one `ctx.locale` read threw, and because it happened before the
+// registrations, the sidebar row, the commit pill and the recall tab all vanished
+// while the host half stayed green. A plain object cannot catch that: it answers
+// `undefined` to anything. So the stand-in enforces the same rule, and only what
+// the entry actually injects, the optional `get()` accessor and the context's own
+// verbs are readable.
+const declared = new Set(['slots', 'effect', 'inject', 'get', 'logger'])
+const strictContext = new Proxy(context, {
+  get(target, key) {
+    if (typeof key === 'symbol') return Reflect.get(target, key)
+    const value = Reflect.get(target, key)
+    if (value === undefined && !declared.has(key)) {
+      throw new Error(`cannot get property "${key}" without inject`)
+    }
+    return value
+  },
+})
+
 let threw = null
 try {
-  exports.apply(context)
+  exports.apply(strictContext)
 } catch (error) {
   threw = error
 }

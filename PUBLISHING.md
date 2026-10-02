@@ -610,6 +610,37 @@ copy composed of: ["@deepseek-ai/dsh-base","@deepseek-ai/dsh-web-app","dsh-openv
 顺带发现：**web UI 的鉴权是启动时打印的 `?token=`**（`dsh web: http://127.0.0.1:8799/?token=…`），
 这就是裸 curl `GET /` 一直 401 的原因。
 
+### 27. 第二次真实事故：客户端半部分整个没注册 ☑
+
+症状：宿主半部分 `fiberPhase: active`（应用自己的插件管理器说的），但我读**当前页面**的实时 Slot 树，
+左侧边栏只有 4 行，没有我那一行；胶囊、召回 tab 同样不见。用户在 Plugins 页看到：
+
+```
+dsh-openviking-enhance: Error: cannot get property "locale" without inject
+```
+
+**根因**：Cordis 禁止读取**未声明注入**的服务属性——不是警告，是抛错。i18n 那轮我在客户端
+`apply` 开头写了 `attachLocale(context.locale)`，而客户端只声明了 `inject = ['slots']`。
+这一行**在所有 try 之外**，于是它一抛，整个 `apply` 就死了：侧边栏行、主面板、胶囊、召回 tab 全部
+注册不上，而宿主半部分照常 active、日志里什么都没有。
+
+**修法**：改用可选访问器 `context.get('locale')`（locale 只是便利——每个字符串本来就有英文兜底，
+所以也不该让条目为它等待）；并把 `ClientContext` 里那个 `locale?: LocaleServiceLike` 字段**删掉**，
+免得它继续诱导直接属性访问。
+
+**为什么冒烟没抓到（这次的真问题）**：假 context 是个普通对象，**对任何属性都返回 undefined**，
+从不模拟 Cordis 这条规则。已把冒烟改成 `Proxy`，只有 `inject` 声明过的、`get()` 以及 context 自身的
+动词可读，其余一律抛 `cannot get property "x" without inject`。换新断言跑**未重建的旧产物**：
+
+```
+[client] FAIL apply() does not throw: cannot get property "locale" without inject
+[client] FAIL registers the left-sidebar row (sidebar.panellist)
+[client] FAIL registers the matching centre panel (main)
+```
+
+与用户在界面上看到的那句逐字相同，并直接指出丢掉的注册。这类"假 context 太宽容"的坑，
+和前面"假配置形状太宽容"是同一个教训：**替身必须和真家伙一样挑剔，否则测试只验证了替身。**
+
 ## 四、需要你拍板
 
 | # | 问题 | 影响 |
