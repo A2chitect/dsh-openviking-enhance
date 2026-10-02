@@ -292,3 +292,66 @@ test('failedTasks and taskTime read the task list the way the popover needs', ()
   assert.equal(taskTime(failures[1]).startsWith('10-02 '), true)
   assert.equal(taskTime({ ...tasks[0], created_at_iso: 'nonsense' }), null)
 })
+
+// --- the timeline's summary cache ------------------------------------------
+
+test('summaries caches a written diff and re-probes a missing one on a delay', async () => {
+  let reads = 0
+  let payload = null
+  const api = {
+    user: 'default',
+    async getSession(id) {
+      return { ok: true, result: { session_id: id, uri: `viking://user/default/sessions/${id}`, commit_count: 1 } }
+    },
+    async listHistory(uri) {
+      return { ok: true, result: [{ uri: `${uri}/history/archive_001`, isDir: true, size: 0, modTime: '2026-10-02T02:00:00.000Z' }] }
+    },
+    async readJson() {
+      reads += 1
+      if (payload === null) return { ok: false, status: 404, result: null, error: 'not found' }
+      return { ok: true, status: 200, result: payload, error: null }
+    },
+  }
+  const service = new CommitService({ api, memoryRuntime: () => null, missingDiffRetryMs: 0 })
+  const archives = await service.status('abc')
+  assert.equal(archives.archives[0].modTime, '2026-10-02T02:00:00.000Z', 'archive modTime reaches the timeline')
+
+  // Extraction still running: no diff yet, and the poll must not re-read on every tick.
+  const pending = await service.summaries('abc', archives.archives, 3)
+  assert.equal(pending[0].summary, null)
+
+  // Once extraction writes the file the next probe caches it permanently.
+  payload = { operations: { adds: [{ uri: 'a' }, { uri: 'b' }], updates: [], deletes: [] }, summary: null }
+  const later = await service.summaries('abc', archives.archives, 3)
+  assert.deepEqual(later[0].summary, { totalAdds: 2, totalUpdates: 0, totalDeletes: 0, totalSkipped: 0 })
+  const readsAfterWrite = reads
+  await service.summaries('abc', archives.archives, 3)
+  assert.equal(reads, readsAfterWrite, 'a written diff is served from cache')
+})
+
+test('summaries returns newest first and honours the limit', async () => {
+  const seen = []
+  const api = {
+    user: 'default',
+    async getSession(id) {
+      return { ok: true, result: { session_id: id, uri: `viking://user/default/sessions/${id}`, commit_count: 5 } }
+    },
+    async listHistory(uri) {
+      return {
+        ok: true,
+        result: [1, 2, 3, 4, 5].map((n) => ({ uri: `${uri}/history/archive_00${n}`, isDir: true, size: 0, modTime: null })),
+      }
+    },
+    async readJson(uri) {
+      seen.push(uri)
+      return { ok: true, status: 200, result: { operations: { adds: [], updates: [], deletes: [] } }, error: null }
+    },
+  }
+  const service = new CommitService({ api, memoryRuntime: () => null })
+  const { archives } = await service.status('abc')
+  const summaries = await service.summaries('abc', archives, 2)
+  assert.equal(summaries.length, 2)
+  assert.equal(summaries[0].archiveUri.endsWith('/archive_005'), true, 'newest first')
+  assert.equal(summaries[1].archiveUri.endsWith('/archive_004'), true)
+  assert.equal(seen.length, 2, 'only the requested window is read')
+})

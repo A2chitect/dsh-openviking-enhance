@@ -15,7 +15,15 @@
  *     peer-scoped (git-repo) workspaces, else the memory listing comes back
  *     empty.
  */
-import type { CommitArchive, CommitPhase, CommitStatus, MemoryDiff, MemoryDiffEntry } from '../shared/protocol.ts'
+import type {
+  ArchiveSummary,
+  CommitArchive,
+  CommitPhase,
+  CommitStatus,
+  MemoryDiff,
+  MemoryDiffEntry,
+  MemoryDiffSummary,
+} from '../shared/protocol.ts'
 import type { OpenVikingApi, OvCommitTask } from './openviking-api.ts'
 
 /** The slice of `@openviking/dsh-memory-plugin`'s runtime this plugin reads. */
@@ -43,18 +51,32 @@ interface RawDiffEntry {
   deleted_content?: string
 }
 
+/** How long a missing `memory_diff.json` is left alone before being re-probed. */
+const MISSING_DIFF_RETRY_MS = 10_000
+
 export interface CommitServiceOptions {
   api: OpenVikingApi
   /** Resolve the mounted OpenViking plugin runtime, or null when absent. */
   memoryRuntime: () => OpenVikingMemoryRuntime | null
   /** Status cache TTL; the client polls, so this keeps the server calm. */
   cacheTtlMs?: number
+  /** How long a missing `memory_diff.json` is left alone before being re-probed. */
+  missingDiffRetryMs?: number
 }
 
 export class CommitService {
   private readonly cache = new Map<string, { at: number; value: CommitStatus }>()
+  /**
+   * `memory_diff.json` is immutable once written, so a read result is cached for
+   * the process lifetime. `diffRetryAt` is the other half: an archive whose diff
+   * does not exist yet (extraction still running, or failed) must be re-probed
+   * later, just not on every five-second poll.
+   */
+  private readonly diffCache = new Map<string, MemoryDiff>()
+  private readonly diffRetryAt = new Map<string, number>()
   private readonly options: CommitServiceOptions
   private readonly cacheTtlMs: number
+  private readonly missingDiffRetryMs: number
 
   // Plain field assignment rather than a constructor parameter property: the
   // latter is TypeScript-only syntax that Node's type stripping cannot erase,
@@ -62,6 +84,7 @@ export class CommitService {
   constructor(options: CommitServiceOptions) {
     this.options = options
     this.cacheTtlMs = options.cacheTtlMs ?? 2500
+    this.missingDiffRetryMs = options.missingDiffRetryMs ?? MISSING_DIFF_RETRY_MS
   }
 
   /** OpenViking session key for a DSH session. */
@@ -104,6 +127,7 @@ export class CommitService {
       .map<CommitArchive>((entry) => ({
         archiveId: entry.uri.split('/').pop() ?? entry.uri,
         archiveUri: entry.uri,
+        modTime: entry.modTime ?? null,
       }))
       .sort((a, b) => a.archiveId.localeCompare(b.archiveId))
 
@@ -140,22 +164,57 @@ export class CommitService {
    * Archives are the durable record — task records are pruned by the server, so
    * they are only consulted to label a commit that is still being extracted.
    */
-  async commits(sessionId: string): Promise<{ status: CommitStatus; tasks: OvCommitTask[] }> {
+  async commits(
+    sessionId: string,
+    summaryLimit: number,
+  ): Promise<{ status: CommitStatus; tasks: OvCommitTask[]; summaries: ArchiveSummary[] }> {
     const status = await this.status(sessionId)
     const tasks = await this.options.api.listCommitTasks(status.ovSessionId, {
       actorPeerId: this.peerId(sessionId),
     })
-    return { status, tasks: tasks.result ?? [] }
+    const summaries = await this.summaries(sessionId, status.archives, summaryLimit)
+    return { status, tasks: tasks.result ?? [], summaries }
   }
 
-  /** Read and normalize one archive's `memory_diff.json`. */
+  /** Read and normalize one archive's `memory_diff.json`, memoized once it exists. */
   async diff(sessionId: string, archiveUri: string): Promise<MemoryDiff | null> {
+    const cached = this.diffCache.get(archiveUri)
+    if (cached) return cached
     const uri = `${archiveUri.replace(/\/+$/, '')}/memory_diff.json`
     const response = await this.options.api.readJson<RawMemoryDiff>(uri, {
       actorPeerId: this.peerId(sessionId),
     })
     if (!response.ok || !response.result) return null
-    return normalizeDiff(archiveUri, response.result)
+    const diff = normalizeDiff(archiveUri, response.result)
+    this.diffCache.set(archiveUri, diff)
+    return diff
+  }
+
+  /**
+   * Counts for the newest `limit` archives, newest first — the timeline's data.
+   *
+   * Cached diffs make this cheap after the first poll; uncached ones are read in
+   * parallel (a handful of ~4 ms requests against a local server), and a missing
+   * diff is re-probed only after `MISSING_DIFF_RETRY_MS` so a 5 s status poll does
+   * not hammer an archive that is still being extracted.
+   */
+  async summaries(sessionId: string, archives: CommitArchive[], limit: number): Promise<ArchiveSummary[]> {
+    const wanted = archives.slice(-Math.max(0, limit)).reverse()
+    const now = Date.now()
+    return Promise.all(
+      wanted.map(async (archive): Promise<ArchiveSummary> => {
+        if (this.diffCache.has(archive.archiveUri)) {
+          return { archiveUri: archive.archiveUri, summary: this.diffCache.get(archive.archiveUri)?.summary ?? null }
+        }
+        if ((this.diffRetryAt.get(archive.archiveUri) ?? 0) > now) {
+          return { archiveUri: archive.archiveUri, summary: null }
+        }
+        const diff = await this.diff(sessionId, archive.archiveUri)
+        if (diff) return { archiveUri: archive.archiveUri, summary: diff.summary }
+        this.diffRetryAt.set(archive.archiveUri, Date.now() + this.missingDiffRetryMs)
+        return { archiveUri: archive.archiveUri, summary: null }
+      }),
+    )
   }
 }
 

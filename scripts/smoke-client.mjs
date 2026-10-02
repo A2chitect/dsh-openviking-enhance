@@ -151,6 +151,7 @@ check(
   'the pill has a warning state for a failed extraction',
 )
 check(injectedCss.includes('.ove-failure'), 'the popover has a failure block')
+check(injectedCss.includes('.ove-timeline'), 'the commit records render as a timeline')
 
 if (failures.length > 0) {
   console.error(`[client] ${failures.length} check(s) failed`)

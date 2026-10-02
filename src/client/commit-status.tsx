@@ -26,8 +26,8 @@
  * otherwise indistinguishable from a git commit's.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { CommitStatus, CommitTask, MemoryDiff, MemoryDiffEntry } from '../shared/protocol.ts'
-import { fetchCommits, fetchDiff } from './host-api.ts'
+import { TIMELINE_DEFAULT, TIMELINE_MAX, type CommitStatus, type CommitTask, type MemoryDiff, type MemoryDiffEntry, type MemoryDiffSummary } from '../shared/protocol.ts'
+import { fetchCommits, fetchDiff, type CommitsPayload } from './host-api.ts'
 import {
   deriveClientPhase,
   describeFailure,
@@ -47,24 +47,28 @@ const POLL_MS = 5000
 export function CommitStatusPill({ sessionId }: CommitStatusProps) {
   const [status, setStatus] = useState<CommitStatus | null>(null)
   const [tasks, setTasks] = useState<CommitTask[]>([])
+  const [summaries, setSummaries] = useState<CommitsPayload['summaries']>([])
   const [error, setError] = useState<string | null>(null)
   const [open, setOpen] = useState(false)
   const [diff, setDiff] = useState<MemoryDiff | null>(null)
   const [diffPending, setDiffPending] = useState(false)
   const [selected, setSelected] = useState<string | null>(null)
+  /** How many commit records to fetch counts for; the popover widens this on demand. */
+  const [summaryLimit, setSummaryLimit] = useState(TIMELINE_DEFAULT)
   const wrap = useRef<HTMLSpanElement | null>(null)
 
   const poll = useCallback(async () => {
     if (!sessionId) return
-    const result = await fetchCommits(sessionId)
+    const result = await fetchCommits(sessionId, summaryLimit)
     if (result.ok) {
       setStatus(result.status)
       setTasks(result.tasks)
+      setSummaries(result.summaries)
       setError(null)
     } else {
       setError(result.error)
     }
-  }, [sessionId])
+  }, [sessionId, summaryLimit])
 
   useEffect(() => {
     if (!sessionId) return
@@ -114,6 +118,9 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
   const phase = deriveClientPhase({ error, status, tasks })
   const text = phaseLabel(phase, status)
   const archives = status ? [...status.archives].reverse() : []
+  const summaryByUri = new Map(summaries.map((entry) => [entry.archiveUri, entry.summary]))
+  // Newest first; only the newest few until the user asks for the rest.
+  const visibleTimeline = summaryLimit > TIMELINE_DEFAULT ? archives : archives.slice(0, TIMELINE_DEFAULT)
 
   return (
     <span className="ove-dock" ref={wrap} data-dsh-plugin="openviking-enhance-status">
@@ -188,22 +195,39 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
           ) : null}
 
           <div className="ove-section">
-            <div className="ove-section-title">提交记录</div>
+            <div className="ove-section-title">
+              提交记录
+              {archives.length > visibleTimeline.length ? `（最近 ${visibleTimeline.length} / 共 ${archives.length} 次）` : `（${archives.length} 次）`}
+            </div>
             {archives.length === 0 ? (
               <div className="ove-empty">本会话尚无提交。达到 token 阈值或会话结束时自动提交。</div>
             ) : (
-              archives.map((archive) => (
-                <button
-                  key={archive.archiveId}
-                  type="button"
-                  className="ove-row"
-                  onClick={() => void openArchive(archive.archiveUri)}
-                >
-                  <span>{archive.archiveId}</span>
-                  <span className="ove-row-count">查看影响 →</span>
-                </button>
-              ))
+              <div className="ove-timeline">
+                {visibleTimeline.map((archive) => {
+                  const summary = summaryByUri.get(archive.archiveUri) ?? null
+                  const isNewest = archive.archiveUri === archives[archives.length - 1]?.archiveUri
+                  return (
+                    <button
+                      key={archive.archiveId}
+                      type="button"
+                      className="ove-tl-row"
+                      onClick={() => void openArchive(archive.archiveUri)}
+                    >
+                      <span className="ove-tl-dot" aria-hidden="true" />
+                      <span className="ove-tl-time">{formatShortTime(archive.modTime)}</span>
+                      <span className={`ove-tl-counts${summary ? '' : ' ove-muted'}`}>{timelineLabel(summary, isNewest && running.length > 0)}</span>
+                      <span className="ove-tl-open">影响 →</span>
+                    </button>
+                  )
+                })}
+              </div>
             )}
+            {archives.length > visibleTimeline.length ? (
+              <button type="button" className="ove-row ove-tl-more" onClick={() => setSummaryLimit(TIMELINE_MAX)}>
+                <span>显示全部 {archives.length} 次</span>
+                <span className="ove-row-count">↓</span>
+              </button>
+            ) : null}
           </div>
 
           {diffPending ? <div className="ove-section ove-empty">正在读取 {selected}…</div> : null}
@@ -250,6 +274,31 @@ function Group({ title, entries }: { title: string; entries: MemoryDiffEntry[] }
       ))}
     </details>
   )
+}
+
+/**
+ * One timeline row's right-hand text.
+ *
+ * A missing summary is not an error by itself: the extraction may still be
+ * running. The failure section below says when it actually failed.
+ */
+function timelineLabel(summary: MemoryDiffSummary | null, running: boolean): string {
+  if (!summary) return running ? '抽取中…' : '无明细'
+  const parts: string[] = []
+  if (summary.totalAdds > 0) parts.push(`${summary.totalAdds} 新增`)
+  if (summary.totalUpdates > 0) parts.push(`${summary.totalUpdates} 更新`)
+  if (summary.totalDeletes > 0) parts.push(`${summary.totalDeletes} 删除`)
+  if (parts.length === 0) return '未改变记忆'
+  return parts.join(' · ')
+}
+
+/** Archive timestamp, short form; the browser renders it in local time. */
+function formatShortTime(iso: string | null): string {
+  if (!iso) return '—'
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return '—'
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
 function phaseLabel(phase: string, status: CommitStatus | null): string {

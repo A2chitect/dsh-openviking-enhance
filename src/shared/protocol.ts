@@ -19,6 +19,28 @@ export interface CommitArchive {
   archiveId: string
   /** `viking://…/sessions/<id>/history/archive_001` */
   archiveUri: string
+  /** Directory modification time, i.e. when that commit archived. */
+  modTime: string | null
+}
+
+/** Counts from one commit's `memory_diff.json`. */
+export interface MemoryDiffSummary {
+  totalAdds: number
+  totalUpdates: number
+  totalDeletes: number
+  totalSkipped: number
+}
+
+/**
+ * One timeline row: an archive plus the counts of what it changed.
+ *
+ * `summary: null` means the extraction has not written `memory_diff.json` yet —
+ * either it is still running, or it failed. The popover's failure section says
+ * which; this only reports what exists.
+ */
+export interface ArchiveSummary {
+  archiveUri: string
+  summary: MemoryDiffSummary | null
 }
 
 /** Result of one memory-extraction phase, as recorded in `memory_diff.json`. */
@@ -28,7 +50,7 @@ export interface MemoryDiff {
   adds: MemoryDiffEntry[]
   updates: MemoryDiffEntry[]
   deletes: MemoryDiffEntry[]
-  summary: { totalAdds: number; totalUpdates: number; totalDeletes: number; totalSkipped: number }
+  summary: MemoryDiffSummary
 }
 
 export interface MemoryDiffEntry {
@@ -100,6 +122,11 @@ export interface CommitStatus {
   /** One entry per archive directory found on the server. */
   archives: CommitArchive[]
 }
+
+/** How many commit records the popover shows before the user asks for the rest. */
+export const TIMELINE_DEFAULT = 3
+/** Upper bound for one request, so a crafted query cannot fan out unboundedly. */
+export const TIMELINE_MAX = 50
 
 /** `/config` response: everything the client half needs to render a Studio panel. */
 export interface EnhanceConfig {

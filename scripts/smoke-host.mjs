@@ -126,7 +126,14 @@ async function report(base, sessionId) {
   console.log('[smoke] status     ', summarise(status))
 
   const commits = await get(`${base}/api/openviking-enhance/commits?sessionId=${encodeURIComponent(sessionId)}`)
-  console.log('[smoke] commits    ', summarise(commits))
+  console.log('[smoke] commits    ', summarise({ status: commits?.status, tasks: `${commits?.tasks?.length ?? 0} tasks` }))
+  console.log(`[smoke] timeline    newest ${commits?.summaries?.length ?? 0} of ${commits?.status?.archives?.length ?? 0} archives`)
+  for (const entry of commits?.summaries ?? []) {
+    const name = entry.archiveUri.split('/').at(-1)
+    const s = entry.summary
+    const counts = s ? `${s.totalAdds} adds / ${s.totalUpdates} updates / ${s.totalDeletes} deletes` : '(no diff yet)'
+    console.log(`[smoke]   ${name.padEnd(12)} ${counts}`)
+  }
 
   const archive = commits?.status?.archives?.at(-1)
   if (!archive) {

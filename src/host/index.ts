@@ -16,7 +16,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { API_PREFIX, type ApiResult, type EnhanceConfig } from '../shared/protocol.ts'
+import { API_PREFIX, TIMELINE_DEFAULT, TIMELINE_MAX, type ApiResult, type EnhanceConfig } from '../shared/protocol.ts'
 import { describeConnection, resolveConnection } from './config.ts'
 import { isTrustedLocalRequest } from './trust-fence.ts'
 import { CommitService, isArchiveUriForSession, type OpenVikingMemoryRuntime } from './commit-service.ts'
@@ -186,8 +186,12 @@ export function apply(ctx: Context, config: EnhanceConfigInput = {}): void {
           return
         }
         try {
-          const { status, tasks } = await service.commits(sessionId)
-          writeJson(res, 200, { ok: true, status, tasks })
+          // `summaries` bounds the timeline's fan-out: the popover asks for
+          // TIMELINE_DEFAULT on its poll and for more only when the user expands.
+          const requested = Number(query(req).get('summaries') ?? TIMELINE_DEFAULT)
+          const limit = Number.isFinite(requested) ? Math.min(Math.max(Math.trunc(requested), 0), TIMELINE_MAX) : TIMELINE_DEFAULT
+          const { status, tasks, summaries } = await service.commits(sessionId, limit)
+          writeJson(res, 200, { ok: true, status, tasks, summaries })
         } catch (error) {
           writeJson(res, 200, { ok: false, error: message(error) })
         }

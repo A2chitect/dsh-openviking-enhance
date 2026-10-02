@@ -7,8 +7,10 @@ inside the Web GUI:
    server's own Studio SPA in the centre column.
 2. **Per-session commit status** — a pill under the composer shows how close the
    current session is to an OpenViking commit, and clicking it lists the
-   memories that each commit actually added, updated or deleted. It renders as
-   the last item of that row, after the shell's own stats pills, and is styled
+   memories that each commit actually added, updated or deleted, as a timeline of
+   the most recent 3 commits (with a one-click "show all"), each row carrying its
+   time and how many memories it added, updated or deleted. It renders as the last
+   item of that row, after the shell's own stats pills, and is styled
    from them (same font metrics, colour tokens, capsule shape, icon size and
    tabular figures), so the row reads as one family. It carries the same glyph as
    the sidebar row and leads its label with **OV**, so it cannot be mistaken for a
@@ -189,7 +191,7 @@ data path.
 | `node --test` | 20 unit tests over the pure logic: trust fence, phase derivation, diff normalization, session-URI resolution, the archive-URI guard, double-encoded JSON, failed-extraction reporting |
 | type assertions | `src/client/type-assertions.ts` pins the slot contract with `@ts-expect-error`: an unknown slot key, `key`/`id` swapped, a root slot declaring `inject`, a session slot omitting it, or a component that cannot accept its slot's props each have to be compile errors |
 | `scripts/smoke-host.mjs` (fence) | Live route fence: forged `Host`, cross-origin `Origin` and `POST` are refused (403/405), plain loopback still 200 |
-| `scripts/smoke-host.mjs` (data) | SKIPs with a note when OpenViking is unreachable, so CI stays green; `SMOKE_REQUIRE_SERVER=1` turns that back into a failure |
+| `scripts/smoke-host.mjs` (data) | SKIPs with a note when OpenViking is unreachable, so CI stays green; `SMOKE_REQUIRE_SERVER=1` turns that back into a failure. When it does run it prints the commit timeline, so the counts are visible without the GUI |
 | `node build.mjs` | Both bundles emit, client wrapped in the loader contract |
 | `scripts/smoke-client.mjs` | The built `lib/client.js` registers `apply`/`inject`, keeps React external, and registers all three slots without throwing |
 | `scripts/smoke-host.mjs` | The built `lib/index.js` answers all four routes against the **live** OpenViking server and reads a real `memory_diff.json` |
@@ -225,6 +227,10 @@ configured in `~/.openviking/ov.conf`.
   requires an authenticated session for the client Inspect bridge).
 - **The status pill polls** (5 s) rather than subscribing; there is no push
   channel for commits.
+- **The timeline reads counts for the newest 3 archives** (a fourth request per new
+  commit, cached forever once written, since `memory_diff.json` is immutable).
+  Expanding to "show all" reads the rest in one pass; a diff that does not exist yet
+  is re-probed at most every 10 s.
 - **`memories_extracted` on the session object undercounts**: when an extraction
   task fails, its operations are still written to the archive's
   `memory_diff.json` but never counted. The panel trusts the diff, not the

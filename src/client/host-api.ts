@@ -12,6 +12,8 @@
  */
 import {
   CLIENT_API_PREFIX,
+  TIMELINE_DEFAULT,
+  type ArchiveSummary,
   type ApiResult,
   type CommitStatus,
   type CommitTask,
@@ -51,10 +53,13 @@ export function fetchStatus(sessionId: string, fresh = false): Promise<ApiResult
 export interface CommitsPayload {
   status: CommitStatus
   tasks: CommitTask[]
+  /** Counts for the newest archives, newest first — the timeline rows. */
+  summaries: ArchiveSummary[]
 }
 
-export function fetchCommits(sessionId: string): Promise<ApiResult<CommitsPayload>> {
-  return readJson<CommitsPayload>(`${BASE}/commits?sessionId=${encodeURIComponent(sessionId)}`)
+export function fetchCommits(sessionId: string, summaryLimit = TIMELINE_DEFAULT): Promise<ApiResult<CommitsPayload>> {
+  const query = `sessionId=${encodeURIComponent(sessionId)}&summaries=${summaryLimit}`
+  return readJson<CommitsPayload>(`${BASE}/commits?${query}`)
 }
 
 export interface DiffPayload {

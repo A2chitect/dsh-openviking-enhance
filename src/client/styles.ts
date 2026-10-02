@@ -152,6 +152,28 @@ button.ove-pill-errored:hover, button.ove-pill-errored[aria-expanded="true"] {
 .ove-entry { margin: 4px 0; padding: 2px 0 2px 10px; border-left: .5px solid var(--dsw-alias-border-l2); }
 .ove-entry .ove-uri { color: var(--dsw-alias-label-tertiary); overflow-wrap: anywhere; }
 .ove-entry .ove-type { color: var(--dsw-alias-label-caption); font-size: 11px; }
+/* ---- Commit timeline ---------------------------------------------------- */
+.ove-timeline { position: relative; margin-top: 2px; }
+.ove-timeline::before {
+  content: ''; position: absolute; left: 8.5px; top: 12px; bottom: 12px;
+  border-left: .5px solid var(--dsw-alias-border-l2);
+}
+.ove-tl-row {
+  position: relative; box-sizing: border-box; width: 100%; font: inherit; text-align: left;
+  cursor: pointer; color: var(--dsw-alias-label-secondary); background: 0 0; border: none;
+  border-radius: var(--dsw-radius-md); padding: 4px 8px 4px 20px;
+  display: flex; align-items: center; gap: 8px;
+}
+.ove-tl-row:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.ove-tl-dot {
+  position: absolute; left: 6px; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--dsw-alias-label-caption);
+}
+.ove-tl-time { flex: none; color: var(--dsw-alias-label-tertiary); font-variant-numeric: tabular-nums; }
+.ove-tl-counts { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ove-tl-open { flex: none; color: var(--dsw-alias-label-caption); }
+.ove-tl-more { justify-content: space-between; }
+
 .ove-empty { color: var(--dsw-alias-label-tertiary); }
 .ove-error { color: var(--dsw-alias-state-error-primary, #f85149); }
 .ove-failure {
