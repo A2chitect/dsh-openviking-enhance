@@ -1,7 +1,10 @@
 // Build both faces of the bundle with esbuild.
 //
 // Host half  -> lib/index.js   ESM for Node; every @deepseek-ai/* import stays
-//                               external because the profile provides it.
+//                               external because the profile provides it —
+//                               except schemastery, which is bundled (see
+//                               HOST_EXTERNAL) so the plugin carries the one
+//                               runtime dependency it cannot assume.
 // Client half -> lib/client.js The DSH web shell serves exactly this file at
 //                               /plugins/<id>/client.js and executes it as a
 //                               lazy-CJS factory registration:
@@ -24,6 +27,28 @@ import { dirname, join } from 'node:path'
 const root = dirname(fileURLToPath(import.meta.url))
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
 const watch = process.argv.includes('--watch')
+
+/**
+ * Host-half modules that stay external.
+ *
+ * Everything else, `@deepseek-ai/schemastery` included, is bundled.
+ * Schemastery is deliberately bundled rather than external: it is a real runtime
+ * import (the `Config` schema is built at module load), and whether a harness
+ * hands it to a bundle is not something a published plugin can assume. It is a real runtime
+ * import (the `Config` schema is built at module load), and whether a harness
+ * hands it to a bundle is not something a published plugin can assume: on this
+ * machine the profile only has it because this plugin pulled it in. Bundling
+ * roughly 90 kB of schema library removes the question entirely, and the
+ * alternative — declaring it a peer dependency — only moves the failure to a
+ * stranger's first install.
+ */
+const HOST_EXTERNAL = [
+  // Type-only today, but listed so a future runtime import of the framework
+  // cannot silently end up with a second copy of it. esbuild's `external` has no
+  // negation, which is why this is a list of what stays out rather than a
+  // wildcard with an exception.
+  '@deepseek-ai/cordis',
+]
 
 /** Modules the web shell seeds into its frozen table (see dsh-client-modules). */
 const PLATFORM_MODULES = [
@@ -63,7 +88,7 @@ const host = {
   logLevel: 'info',
   // The profile owns these; bundling them would duplicate the loader's own
   // service classes and break `instanceof` checks across the plugin boundary.
-  external: ['@deepseek-ai/*'],
+  external: HOST_EXTERNAL,
 }
 
 /** @type {import('esbuild').BuildOptions} */

@@ -1,8 +1,7 @@
 {
   "name": "dsh-openviking-enhance",
   "version": "0.1.0",
-  "private": true,
-  "description": "DSH bundle: an OpenViking Studio panel in the left sidebar plus a per-session memory-commit status indicator showing which memories a commit affected.",
+  "description": "OpenViking in the DSH web GUI: a Studio panel, a per-session memory-commit status pill with its commit timeline, and a right-sidebar tab showing what the current session retrieves.",
   "type": "module",
   "icon": "./icon.svg",
   "main": "lib/index.js",
@@ -18,7 +17,8 @@
     "lib/client.js.map",
     "cordis.patch.yml",
     "icon.svg",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "LICENSE"
   ],
   "dsh": {
     "manifestVersion": 1,
@@ -49,9 +49,6 @@
     "unit": "node --test",
     "release": "node scripts/release.mjs"
   },
-  "dependencies": {
-    "@deepseek-ai/schemastery": "^3.18.4"
-  },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.4",
     "@deepseek-ai/dsh-client-ui-conversation": "0.2.0-rc.2",
@@ -60,6 +57,7 @@
     "@deepseek-ai/dsh-client-ui-sidebar-right": "0.2.0-rc.2",
     "@deepseek-ai/dsh-client-ui-slots": "0.2.0-rc.2",
     "@deepseek-ai/dsh-host-webserver": "0.2.0-rc.2",
+    "@deepseek-ai/schemastery": "^3.18.4",
     "@types/node": "^22.20.0",
     "@types/react": "~18.3.1",
     "esbuild": "^0.28.0",
@@ -67,11 +65,20 @@
     "typescript": "~5.7.2"
   },
   "peerDependencies": {
+    "@deepseek-ai/dsh": "^0.2.0-rc.1",
     "react": "^18.2.0"
   },
   "engines": {
     "node": "^22.19.0 || >=24",
     "dsh": ">=0.2.0-rc.2"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "openviking",
+    "memory",
+    "observability"
+  ]
 }
