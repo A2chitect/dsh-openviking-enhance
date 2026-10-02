@@ -22,22 +22,29 @@
  *
  * ## Position
  *
- * The dock is `display:flex; justify-content:center; gap:12px`, and every slot
- * entry lands in it as a real flex item (the slot outlet wrapper is
- * `display:contents`, so it generates no box — verified in
- * `dsh-client-ui-renderer`). Two consequences shape the rules below:
+ * Three facts about that row decide the rules below, all read off the shipped
+ * CSS/source rather than guessed:
  *
- *   - `position:absolute` would escape to an unrelated ancestor, so the pill is
- *     positioned with flex properties instead;
- *   - pinning our pill with `margin-left:auto` alone would push the default
- *     pills to the far left, because that auto margin swallows all free space.
+ *  1. the slot outlet wrapper is `display:contents` (`dsh-client-ui-renderer`'s
+ *     `ANCHOR_STYLE`), so a slot entry is a real flex item of the dock — which
+ *     also means `position:absolute` would escape to an unrelated ancestor;
+ *  2. the dock is `justify-content:center` and, because its own parent is a
+ *     `flex-direction:column; align-items:center` box, it is **fit-content**:
+ *     there is no free space in it, so `margin-left:auto` alone does nothing;
+ *  3. pinning the pill with `margin-left:auto` once the row *is* wide enough
+ *     would otherwise shove the default pills to the far left, since the auto
+ *     margin swallows all of it.
  *
- * So the entry renders two elements: an invisible mirror of the pill carrying
- * `margin-right:auto`, and the pill itself carrying `margin-left:auto`. The two
- * auto margins split the free space evenly and the two side blocks are the same
- * width, so the default pills keep their exact centred position while ours stays
- * pinned to the right edge — and stays there no matter how wide the step/token
- * figures get.
+ * So the entry renders two elements — an invisible, equal-width mirror of the
+ * pill carrying `margin-right:auto`, and the pill carrying `margin-left:auto` —
+ * and a `:has()` rule widens the dock to the composer card's width. The two auto
+ * margins then split the free space evenly, which keeps the default pills
+ * exactly centred while ours is pinned right, however wide the figures get.
+ *
+ * The mirror's `display` is driven by a custom property that only the widening
+ * rule sets, so the two cannot diverge: if that selector ever stops matching
+ * (a shell DOM change), the mirror stays hidden and the row falls back to the
+ * plain centred cluster instead of sitting off-centre.
  */
 export const STYLE_ELEMENT_ID = 'dsh-openviking-enhance-styles'
 
@@ -66,13 +73,26 @@ const CSS = `
 .ove-dot-ok { background: var(--dsw-alias-state-success-primary, #3fb950); }
 .ove-dot-bad { background: var(--dsw-alias-state-warning-primary, #d29922); }
 
-/* ---- Composer dock: keep the default pills centred ---------------------- */
-/* Invisible mirror of the pill, same box. It carries the balancing
-   margin-right:auto; because its width equals the pill's, the free space on
-   both sides of the default pills is equal, so they stay exactly centred — no
-   JS measurement, no reflow, and it tracks the label as the figure changes. */
+/* ---- Composer dock: make room, then keep the default pills centred ------ */
+/* The dock is fit-content, so it must be widened before any auto margin can do
+   anything. The selector walks the DOM the renderer really produces — dock div >
+   div[data-slot] (the display:contents outlet anchor) > our element — so it hits
+   exactly that one row, and being element+attribute it also outranks the shell's
+   own .class max-width. The custom property enables the mirror, so these two
+   rules can never diverge. */
+div:has(> [data-slot="conversation.composer.dock"] > .ove-dock) {
+  width: 100%;
+  max-width: var(--dsh-composer-card-max-width, 100%);
+  box-sizing: border-box;
+  padding-right: 8px;
+  --ove-mirror-display: inline-flex;
+}
+/* Invisible mirror of the pill, same box, so the free space has an equal block
+   to absorb on the left. No JS measurement and no reflow: it tracks the label
+   as the figure changes. */
 .ove-dock-spacer {
-  display: inline-flex; align-items: center; flex: none;
+  display: var(--ove-mirror-display, none);
+  align-items: center; flex: none;
   order: -1; margin-right: auto; visibility: hidden; pointer-events: none;
 }
 .ove-pill-mirror {
