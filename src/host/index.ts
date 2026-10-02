@@ -401,7 +401,11 @@ export function apply(ctx: Context, config: EnhanceConfigInput = {}): void {
 }
 
 function normalizeStudioPath(path: string | undefined): string {
-  const raw = (path ?? '').trim() || '/studio/'
+  // Belt and braces at the one place that took the whole entry down: its
+  // parameter is typed, but a plugin that fails to activate over a settings value
+  // is a worse outcome than a default Studio path. Anything that is not a string
+  // is treated as unset.
+  const raw = (typeof path === 'string' ? path.trim() : '') || '/studio/'
   const withLeading = raw.startsWith('/') ? raw : `/${raw}`
   return withLeading.endsWith('/') ? withLeading : `${withLeading}/`
 }

@@ -138,6 +138,23 @@ test('the plugin activates with the config the Loader resolves for it', async ()
   assert.equal(answered.body.healthy, false, 'a dead port is reported, not thrown')
 })
 
+test('an absurd config value cannot stop the plugin from activating', () => {
+  // The incident: a config field the plugin could not read took the whole entry
+  // down, and the app showed "1 entry did not activate" instead of a plugin. A
+  // wrong type is not a reason to lose the feature.
+  const routes = []
+  const context = {
+    webServer: { port: 0, register: (route) => (routes.push(route), () => {}) },
+    effect: (callback) => (callback(), () => {}),
+    get: () => undefined,
+    logger: { info: () => {}, warn: () => {} },
+  }
+  assert.doesNotThrow(() =>
+    apply(context, { studioPath: 42, cacheTtlMs: 'soon', endpoint: { nope: true } }),
+  )
+  assert.ok(routes.length >= 6)
+})
+
 test('a plugin with no config at all still activates', () => {
   const routes = []
   const context = {
