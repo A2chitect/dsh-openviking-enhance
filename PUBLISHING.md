@@ -641,6 +641,33 @@ dsh-openviking-enhance: Error: cannot get property "locale" without inject
 与用户在界面上看到的那句逐字相同，并直接指出丢掉的注册。这类"假 context 太宽容"的坑，
 和前面"假配置形状太宽容"是同一个教训：**替身必须和真家伙一样挑剔，否则测试只验证了替身。**
 
+### 28. 截图：用一个空白 profile + 假服务器拍，不碰真实环境 ☑
+
+你要求"别泄露真实环境"，所以没有在你的 desktop profile 里截。做法：
+
+1. **全新临时 profile**：`DSH_HOME=/tmp/shots/dsh`，用官方 web 模板初始化（`--from-default-profile web`），
+   组成只有 base + web-app + 本插件——没有工作区历史、没有真实会话、没有你的其他插件。
+2. **假 OpenViking**：`scripts/screenshot-fixture.mjs`（已入库）在 loopback 上照真实端点与信封
+   （`/health`、`/api/v1/sessions/{id}`、`/fs/ls`、`/content/read`、`/tasks`、`/search/search`、`/studio/`）
+   应答**全部编造的内容**——记忆名、摘要、分数、图谱节点都是假的。临时 profile 的 patch 把插件指向它。
+3. **无头 Chrome + DevTools 协议**脚本化点击与截图：`HOME` 指到 /tmp（否则 Chrome 会去碰
+   `~/Library/Application Support/Google/Chrome` 被沙箱拦），`--headless=old`（新版 headless 在本机会挂），
+   `Emulation.setDeviceMetricsOverride` 给 2x 缩放。
+4. 逐张核对**没有出现任何真实信息**：工作区名是 "Default workspace"、账号是 `demo/demo`、
+   记忆内容全是编造的。
+
+产物：`assets/studio-panel.png`、`assets/recall-tab.png`、`assets/settings-form.png` +
+`screenshots.json`（市场按这个顺序展示），README 中英两份各嵌了 Studio 那张。
+
+**还缺一张：提交状态胶囊**。空白 profile 里没有模型，因此**不存在"有过一轮对话的会话"**，
+而 shell 只在那种会话里渲染输入框下方的 dock——胶囊没有容器可挂。这一张需要你补，或者下一轮我给临时
+profile 搭一个假的 OpenAI 兼容模型让它产生一轮真实交互。
+
+**顺带发现并修掉一个真 bug**：这次截图暴露出插件的界面语言跟随的是**浏览器**而不是**应用**——
+`ctx.locale` 会抛错（第 27 条），而 `get('locale')` 也拿不到那个服务，于是退回 `navigator.language`。
+改成作用域注入 `context.inject(['locale'], …)`（与召回 tab 取注册表同一套写法），并让两条测试的替身
+按真实路径提供该服务。你在真机上看着正常，是因为你的浏览器语言恰好与应用一致。
+
 ## 四、需要你拍板
 
 | # | 问题 | 影响 |
