@@ -293,7 +293,12 @@ name: A2chitect/dsh-openviking-enhance
 category: memory          # 备选 ui；规范说选得不准维护者会直接改，不会打回
 description:
   en: 'OpenViking in the DSH web GUI: a Studio panel, a per-session memory-commit status pill with its commit timeline, and a right-sidebar tab showing what the current session retrieves.'
+  zh: '把本地 OpenViking 记忆服务接进 DSH 界面：左侧边栏的 Studio 面板、输入框下方的会话提交状态胶囊与提交时间线，以及右侧边栏查看当前会话检索到哪些记忆的面板。'
 ```
+
+这份内容已经**用他们的真校验器验过**（见下面第 19 条）；本机也存了一份在
+`.scratch/A2chitect__dsh-openviking-enhance.yml`（该目录被 .gitignore 忽略，不会进我们的仓库），
+到时候直接复制过去即可。
 
 若最后选择发 npm 而不是挂 tarball，条目里**不要**写 `npm:` 字段——规范明确说会被校验拒绝，
 映射由 registry 自动采集（前提是 `repository` 指回本仓库，已填）。
@@ -395,6 +400,40 @@ tarball: https://github.com/A2chitect/dsh-openviking-enhance/releases/latest/dow
 ```
 
 （也可以钉住 tag、文件名带版本号：`.../releases/download/v0.2.0/dsh-openviking-enhance-0.2.0.tgz`。）
+
+### 19. 投稿文件已过他们的真校验器 ☑
+
+条目不能只靠读规范猜格式，所以我把收录仓库 clone 到 /tmp，放上我的条目，跑了他们 CI 用的那支
+`scripts/check-submission.mjs`（真实 token、真实 GitHub API）：
+
+```
+checking 1 entry
+::error file=data/plugins/A2chitect__dsh-openviking-enhance.yml::
+  https://github.com/A2chitect/dsh-openviking-enhance — repository is 0.0 days old (needs 1)
+  — nothing to do: this check re-runs by itself and should clear in about 24h.
+    No need to resubmit, push, or close and reopen; the age bar is the only thing failing here.
+```
+
+读法：条目**解析通过**、`dsh.bundle` 检查**通过**、仓库存在且未归档**通过**——
+**唯一没过的是年龄**（它自己算了是 0.0 天）。输出末尾那段 "A bundle manifest looks like…"
+是所有失败都会打印的页脚，不是 manifest 没过（`check-submission.mjs:572-575`）。
+
+顺带跑了他们的 `scripts/generate-readme.mjs`：我的条目在两个 README 里各生成一行，`: ` 处理正确，
+中文行也正常（补了 `zh` 描述后，README.zh.md 显示中文而不是回退英文）。
+
+**它还说年龄这项会自己重跑**——所以现在开 PR 也不会被拒，24 小时内自己变绿；
+不过更体面的做法还是过了门槛再提。
+
+复现命令（clone 后装个 js-yaml 即可，不需要 `npm ci`）：
+
+```bash
+git clone --depth 2 https://github.com/awesome-dsh-plugin/awesome-dsh-plugin /tmp/list-probe
+cd /tmp/list-probe && npm i js-yaml --no-save
+cp <我们的>.scratch/A2chitect__dsh-openviking-enhance.yml data/plugins/
+git add -A && git commit -m "add entry"
+GITHUB_TOKEN=$(gh auth token) node scripts/check-submission.mjs --base HEAD~1
+node scripts/generate-readme.mjs
+```
 
 ## 四、需要你拍板
 
