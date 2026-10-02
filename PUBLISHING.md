@@ -385,7 +385,36 @@ pnpm test                        → exit 0：62 测试 + 20 项发布契约 + �
 核对过：`package.json` = 0.2.0；CHANGELOG 顶部重新留了空的 `## Unreleased`，新段落中英两半都在
 （`### Added`/`### Changed` + `### 变更`/`### 新增`）；标签正文就是这段发布说明；工作区干净；CI 绿。
 
-## 三点八、剩下这一步（继续归你）
+## 三点八、已发布：GitHub Release 挂预构建 tarball ☑（2026-10-02）
+
+你在场时选择让我发布，但 **npm 端未登录**（`npm error code ENEEDAUTH`），我没有你的凭据，发不了 npm。
+于是改走规范里给的另一条官方路线——**预构建 tarball + GitHub Release**（规范原文：仓库若无法从源码安装，
+这一项是必需的；我们的 `prepack` 会让 git 安装被 pnpm 拒绝，正属此列）。
+
+发布物：**https://github.com/A2chitect/dsh-openviking-enhance/releases/tag/v0.2.0**，挂了两个资产名：
+
+| 资产 | 用途 |
+| --- | --- |
+| `dsh-openviking-enhance.tgz` | **稳定名**，给 `releases/latest/download/` 用——以后发新版本不会再改条目 |
+| `dsh-openviking-enhance-0.2.0.tgz` | 带版本号，与 tag 对应，便于人工核对 |
+
+两个 URL 都实测下载到**完整 137729 字节**的包。条目 yml 已加上 `tarball:` 字段（用稳定名那个），
+并**再次用他们的校验器验过**——仍未过的只有"仓库满 1 天"，约 23 小时后自动放行。
+
+**端到端验证**（照 README 里那条命令，在全新 `DSH_HOME` 里跑）：
+
+```
+dsh plugin --profile check add https://github.com/A2chitect/dsh-openviking-enhance/releases/latest/download/dsh-openviking-enhance.tgz
+  → + dsh-openviking-enhance 0.2.0   (4.5s)
+  → 装进去的文件齐全：lib/index.js、lib/client.js、cordis.patch.yml、icon.svg、两份 README、LICENSE
+  → 清单正确：version 0.2.0、private false、dependencies {}、dsh.bundle.patch、dsh.client.platform = web
+  → --dump-config 里出现该行：- id: openviking-enhance  name: dsh-openviking-enhance
+```
+
+两份 README 的安装命令已从"npm 包名"改成这条**真实可用**的 Release 地址（npm 上目前没有包，
+不能指向它）。若你以后想发 npm：`npm login` 后 `pnpm publish` 即可，条目里的 `tarball:` 可留可删。
+
+## 三点九、npm 路线（可选，归你）
 
 **版本与标签已经就位**，下面只剩分发那一步。
 

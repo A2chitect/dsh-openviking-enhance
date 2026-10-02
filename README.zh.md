@@ -60,8 +60,8 @@ Studio 面板、打开它的侧边栏行，以及输入框下方的提交状态�
 从 Plugins 页安装（Add plugin → 填包名或 tarball），或：
 
 ```bash
-# 已发布的版本
-dsh plugin --profile desktop add dsh-openviking-enhance
+# 最新 release 里的预构建 tarball
+dsh plugin --profile desktop add https://github.com/A2chitect/dsh-openviking-enhance/releases/latest/download/dsh-openviking-enhance.tgz
 ```
 
 直接用 Git 地址安装会被 pnpm 拒绝（这个包声明了构建脚本，pnpm 在得到允许前一律不放行），

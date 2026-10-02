@@ -72,8 +72,8 @@ The Studio panel, the sidebar row that opens it, and the commit pill below the c
 Install it from the Plugins page (Add plugin → package name or tarball), or:
 
 ```bash
-# a published release
-dsh plugin --profile desktop add dsh-openviking-enhance
+# the prebuilt tarball from the latest release
+dsh plugin --profile desktop add https://github.com/A2chitect/dsh-openviking-enhance/releases/latest/download/dsh-openviking-enhance.tgz
 ```
 
 Installing straight from a Git URL is refused by pnpm — the package asks to run a
