@@ -17,7 +17,7 @@
  * `localStorage` and relative `/api/v1` calls. If a sandbox is ever required,
  * mirror the shell's token list, which includes `allow-same-origin`.
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { EnhanceConfig } from '../shared/protocol.ts'
 import { fetchConfig } from './host-api.ts'
 
@@ -44,11 +44,14 @@ export function StudioIcon({ size }: { size: number }) {
   )
 }
 
+/**
+ * The panel page. `nonce` forces the iframe to remount on refresh, which is the
+ * only way to reload a cross-origin frame without touching its `src`.
+ */
 export function StudioPanel() {
   const [config, setConfig] = useState<EnhanceConfig | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [nonce, setNonce] = useState(0)
-  const frame = useRef<HTMLIFrameElement | null>(null)
 
   const load = useCallback(async () => {
     const result = await fetchConfig()
@@ -112,7 +115,6 @@ export function StudioPanel() {
       ) : null}
       <iframe
         key={nonce}
-        ref={frame}
         className="ove-iframe"
         src={config.studioUrl}
         title="OpenViking Studio"

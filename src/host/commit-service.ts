@@ -99,6 +99,18 @@ export class CommitService {
       }))
       .sort((a, b) => a.archiveId.localeCompare(b.archiveId))
 
+    let phase = derivePhase({ metaOk: meta.ok, commitCount, pendingTokens, archiveCount: archives.length })
+    if (phase === 'extracting') {
+      // The counter lags an archive in two different situations: extraction is
+      // still running, or its task failed and the counter will never catch up
+      // (the operations are written to the archive regardless). Ask the archive
+      // itself: `memory_diff.json` appears exactly when extraction finished, so
+      // this settles the ambiguity instead of leaving the pill spinning forever.
+      const newest = archives[archives.length - 1]
+      const probe = await this.options.api.readText(`${newest?.archiveUri}/memory_diff.json`, request)
+      phase = probe.ok && probe.result !== null ? 'done' : 'extracting'
+    }
+
     const value: CommitStatus = {
       sessionId,
       ovSessionId,
@@ -107,7 +119,7 @@ export class CommitService {
       ratio: threshold && threshold > 0 ? Math.min(1, pendingTokens / threshold) : 0,
       commitCount,
       lastCommitAt: meta.result?.last_commit_at ?? null,
-      phase: derivePhase({ metaOk: meta.ok, commitCount, pendingTokens, archiveCount: archives.length }),
+      phase,
       archives,
     }
     this.cache.set(sessionId, { at: Date.now(), value })
@@ -143,8 +155,8 @@ export class CommitService {
  * Phase rules, in order:
  *  - no server / no answer        → 'failed'
  *  - an archive exists that the server has not counted yet → 'extracting'
- *    (the archive directory is written first; `memory_diff.json` lands only
- *    when the background extraction finishes)
+ *    (`status()` then probes that archive's `memory_diff.json`: present means
+ *    the counter merely lags, so the phase settles to 'done')
  *  - nothing committed, tokens accumulating → 'pending'
  *  - otherwise                    → 'done' or 'idle'
  */

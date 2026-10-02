@@ -58,7 +58,7 @@ Full reasoning, evidence and rejected alternatives: [`docs/`](docs/).
 | --- | --- |
 | `src/host/index.ts` | Cordis plugin: config, routes, lifecycle |
 | `src/host/openviking-api.ts` | OpenViking HTTP client (no dependencies, never throws) |
-| `src/host/commit-service.ts` | Commit status + memory-diff assembly |
+| `src/host/commit-service.ts` | Commit status (incl. the archive-vs-counter phase probe) + memory-diff assembly |
 | `src/host/config.ts` | Connection resolution from env / `~/.openviking` |
 | `src/client/index.tsx` | Client entry: three slot registrations |
 | `src/client/studio-panel.tsx` | Sidebar icon + Studio iframe page |
