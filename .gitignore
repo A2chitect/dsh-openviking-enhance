@@ -11,6 +11,11 @@ dist/
 # local-only backup of the profile manifests taken before installing
 .backup/
 
+# Working notes: feasibility, design, plan and research kept locally for
+# reference. They are deliberately untracked — the user-facing docs are the two
+# READMEs — but must not be deleted from the working tree.
+docs/
+
 # scratch / local experiments
 .scratch/
 *.local.mjs
