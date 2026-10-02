@@ -290,7 +290,7 @@ pnpm add git+https://github.com/A2chitect/dsh-openviking-enhance
 ```yaml
 url: https://github.com/A2chitect/dsh-openviking-enhance
 name: A2chitect/dsh-openviking-enhance
-category: memory          # 备选 ui；规范说选得不准维护者会直接改，不会打回
+category: ui              # 见第 21 条：它不提供记忆能力，只是把 OpenViking 的状态画进界面
 description:
   en: 'OpenViking in the DSH web GUI: a Studio panel, a per-session memory-commit status pill with its commit timeline, and a right-sidebar tab showing what the current session retrieves.'
   zh: '把本地 OpenViking 记忆服务接进 DSH 界面：左侧边栏的 Studio 面板、输入框下方的会话提交状态胶囊与提交时间线，以及右侧边栏查看当前会话检索到哪些记忆的面板。'
@@ -349,6 +349,12 @@ pnpm test                        → exit 0：62 测试 + 20 项发布契约 + �
 ### 16. PR 说明（英文，可直接粘贴）
 
 > Adds `data/plugins/<owner>__<repo>.yml` for **dsh-openviking-enhance**.
+>
+> The list already carries three OpenViking entries — the official memory plugin, a tool-surface
+> plugin, and a configuration UI for the official plugin. This one is none of those: it provides no
+> memory capability and writes nothing. It is the visibility surface — the server's own Studio inside
+> the left sidebar, a per-session commit pill with its timeline of what each commit changed, and a
+> right-sidebar tab showing which memories the current session retrieves.
 >
 > It brings a local [OpenViking](https://docs.openviking.ai) memory server into the DSH
 > web GUI: a Studio panel in the left sidebar, a per-session memory-commit status pill
@@ -446,11 +452,38 @@ node scripts/generate-readme.mjs
 同时补齐 npm 元数据清单里剩下三项：`author`、`homepage`、`bugs`（此前只有 `repository` 与
 `keywords`）。`check-package.mjs` 已断言 `repository` 是 URL，`pnpm test` 仍全绿。
 
+### 21. 分类从 `memory` 改成 `ui`，以及一次竞品扫描 ☑
+
+规范第 4 条是"是否已被现有条目覆盖"，所以投稿前把列表扫了一遍：
+
+**列表里已有三个 OpenViking 条目**，都在 `memory`：
+- `volcengine/OpenViking#examples/dsh-memory-plugin`——官方记忆插件本体；
+- `Rxiain/dsh-openviking`——`memsearch`/`memfind`/`memcommit` 等一堆**工具面**；
+- `xbzbing/dsh-openviking-manager`——"**Configuration UI** for the official OpenViking memory plugin：
+  连接与用户 Key 配置、本机连接诊断、会话级记忆开关、召回调优"。
+
+第三个和我在这一轮加的**配置页 + 连接检测**功能面重叠。但整体不构成覆盖：我没有提供任何记忆能力、
+也不写任何东西，我做的是另外三件列表里没有的——**服务端 Studio 内嵌进左侧边栏**、
+**会话提交状态胶囊 + 提交时间线（含每次提交改了哪些记忆）**、**右侧边栏的召回可视化**。
+
+**分类因此改判**：`memory` 类 206 条、全部是"提供记忆"的后端插件；`ui` 类 764 条里正是我这种形态
+（"HUD status panel"、"Anatomy panel"、"sidebar entry opens a note panel"——把某种状态画进界面）。
+按规范那句"选贴合插件**实际做的事**的分类，而不是你希望它出现在哪里"，想跟另外三个做邻居正是后半句，
+所以定为 `ui`。已用他们的校验器重验通过，README 生成器把条目放进了 **### UI Enhancements** 段。
+
+PR 说明里补了一段主动说明差异（评审第 4 条正是看这个）：
+
+> The list already carries three OpenViking entries — the official memory plugin, a tool-surface
+> plugin, and a configuration UI for the official plugin. This one is none of those: it provides no
+> memory capability and writes nothing. It is the visibility surface — the server's own Studio inside
+> the left sidebar, a per-session commit pill with its timeline of what each commit changed, and a
+> right-sidebar tab showing which memories the current session retrieves.
+
 ## 四、需要你拍板
 
 | # | 问题 | 影响 |
 | --- | --- | --- |
-| 1 | ~~分类~~ | 已按 `memory` 写进条目并用他们的校验器验过；规范说选得不准维护者会直接改 |
+| 1 | ~~分类~~ | 定为 **`ui`**（第 21 条有理由），已用他们的校验器验过；规范说选得不准维护者会直接改 |
 | 2 | ~~GitHub owner / 仓库名~~ | 已建：`A2chitect/dsh-openviking-enhance`（见第 17 条） |
 | 3 | npm 包名 | `dsh-openviking-enhance` 在 registry 上 404（未被占用）；是否加 scope |
 | 4 | 分发方式 | **推荐 npm + GitHub Release tarball**（第 6 条已实测：源码安装要么静默装坏、要么被 `allowBuilds` 拦住）。另一个选项是**把 `lib/` 提交进仓库**——raw git 安装就能直接可用，代价是每次改 src 都要重新提交构建产物（可以用 CI 校验 `lib/` 是否与 `src/` 同步来兜底）。这条会改变仓库的跟踪内容，所以留给你定 |
