@@ -24,11 +24,22 @@ const code = readFileSync(join(root, 'lib/client.js'), 'utf8')
 const require = createRequire(import.meta.url)
 
 let handoff = null
+// Minimal document stub: enough for `installStyles()` to run and hand us the
+// text it would inject, which is how the style-parity checks below are made.
+let injectedCss = null
+const fakeDocument = {
+  getElementById: () => null,
+  createElement: () => ({ id: '', textContent: '' }),
+  head: {
+    append(node) {
+      injectedCss = node.textContent
+    },
+  },
+}
 const sandbox = {
   window: { __ModuleLoader__: { load: (value) => (handoff = value) } },
   console,
-  // `installStyles()` must no-op outside a document; assert that it does.
-  document: undefined,
+  document: fakeDocument,
 }
 vm.createContext(sandbox)
 vm.runInContext(code, sandbox, { filename: 'lib/client.js' })
@@ -97,6 +108,34 @@ const pill = dock[0]
 check(pill?.id === 'openviking-commit', 'dock entry is the commit pill')
 check(typeof pill?.inject === 'function', 'status pill declares a session inject face')
 check(injectedKeys.length === 3, `all three slots are injected (saw ${injectedKeys.join(', ')})`)
+
+// Style parity with the shell's own stats pills is the whole point of the pill's
+// CSS, and a template-literal slip silently ships invalid declarations, so assert
+// the resolved text rather than trusting a visual check.
+check(typeof injectedCss === 'string' && injectedCss.length > 500, 'installs its stylesheet')
+check(!injectedCss.includes('${'), 'stylesheet has no unresolved template expression')
+check(
+  injectedCss.includes('font-size: calc(var(--dsh-content-font-size-secondary, 13px) - 1px)'),
+  'pill font size matches StatsPills.module.css',
+)
+check(
+  injectedCss.includes('line-height: calc(20px + var(--dsh-content-font-delta-secondary, 0px))'),
+  'pill line height matches StatsPills.module.css',
+)
+check(injectedCss.includes('color: var(--dsw-alias-label-tertiary)'), 'pill label colour matches')
+check(
+  injectedCss.includes('background: var(--dsw-alias-interactive-bg-hover)'),
+  'pill hover background matches',
+)
+check(injectedCss.includes('border-radius: 999px'), 'pill capsule shape matches')
+check(
+  injectedCss.includes('.ove-pill svg { flex: none; width: 14px; height: 14px; }'),
+  'pill icon box matches the primitives (14x14)',
+)
+check(
+  injectedCss.includes("font-variant-numeric: tabular-nums"),
+  'pill figures are tabular like the default pills',
+)
 
 if (failures.length > 0) {
   console.error(`[client] ${failures.length} check(s) failed`)
