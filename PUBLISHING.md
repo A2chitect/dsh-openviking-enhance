@@ -73,12 +73,31 @@ names the row*。
 `[smoke] probe guard ok non-loopback endpoint refused`；客户端冒烟断言配置座位被注册且 key 与
 manifest 的包名一致（浏览器半部分读不到 package.json，所以包名是写死的，靠断言防漂移）。
 
+### 5. 可安装性：tarball 路径已验证 ☑
+
+把 `pnpm pack` 产物装进一个空工程（`/tmp/install-test`）：
+
+```
+node_modules/            -> 只有 dsh-openviking-enhance（peer 没有被真实安装）
+dsh-openviking-enhance/  -> lib/ cordis.patch.yml icon.svg LICENSE README*.md CHANGELOG.md
+import("dsh-openviking-enhance")
+  -> exports: Config, apply, inject, name
+  -> Config fields: endpoint apiKey account user studioPath cacheTtlMs recallCacheTtlMs
+```
+
+也就是说：**宿主半部分在完全没有依赖的树里也能加载**（这正是第 3 条把它做成自包含的意义），
+而 `@deepseek-ai/dsh` 这个 peer 在 pnpm 下只是提示、不会被拉进来（profile 里也确实没有它）。
+
+仍未验证的是**源码安装**（`dsh plugin add <github-url>`）：clone 出来没有 `lib/`，且没有
+`prepare` 脚本，所以按现状是装不起来一个能用的插件的——这也是为什么要把"发 npm / 挂 tarball"
+作为主路径。等你定了仓库名，再用一个干净 profile 把这条走完。
+
 ## 三、待办
 
 | # | 工作 | 说明 |
 | --- | --- | --- |
 | 1 | i18n | 界面文字目前全中文（面板、胶囊、召回面板、配置页）。规范面向英文读者；同类插件都带 `locale/`。宿主侧的消息（`warnings`）也要从"中文句子"改成"码 + 参数"，由客户端翻译 |
-| 2 | 可安装性实测 | 在干净 profile 里真装一次，确认 `lib/` 到位、插件能挂上。**这是"陌生人能不能装上"的唯一证据**，也是验证 `prepare` 到底跑不跑的唯一办法 |
+| 2 | 可安装性实测（tarball 已验，profile 安装待办） | 已做：把 `pnpm pack` 的产物装进空工程，文件齐、**宿主半部分零依赖可加载**（见下）。待做：在干净 profile 里用 `dsh plugin add` 真装一次——那是"陌生人能不能装上"的最终证据 |
 | 3 | 截图 + `screenshots.json` | 需要真机截图（左侧 Studio、提交胶囊+时间线、右侧召回面板、插件配置页） |
 | 4 | README 更新 | 加截图、市场安装方式、兼容性说明（依赖 `@openviking/dsh-memory-plugin` 的内部结构这件事要写明） |
 | 5 | 条目 yml | `data/plugins/<owner>__<repo>.yml`，一个文件 |
@@ -103,4 +122,5 @@ manifest 的包名一致（浏览器半部分读不到 package.json，所以包�
 | 宿主半部分自包含 | `grep -oE 'from "[^"]+"' lib/index.js \| sort -u` |
 | 配置页座位已注册 | `node scripts/smoke-client.mjs`（`plugins.row.config` 那两条） |
 | probe 只认 loopback | `node --test test/host-units.test.mjs`（`parseLoopbackEndpoint` 那条） |
+| tarball 装得上且零依赖可加载 | 见上面第 5 条的三条命令 |
 | 全量回归 | `pnpm test` |
