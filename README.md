@@ -2,6 +2,8 @@
 
 English | [中文](README.zh.md)
 
+**v0.1.0** · [Changelog](CHANGELOG.md)
+
 Brings your local [OpenViking](https://docs.openviking.ai) memory server into the
 DeepSeek Harness (DSH) Web GUI: a Studio panel in the left sidebar, and a commit
 status pill under the message box that shows what each session commit did to your
@@ -133,3 +135,7 @@ pnpm run watch      # rebuild on change
 The smoke harness prints the commit timeline without needing the GUI, and skips the
 live-data part when OpenViking is not running (`SMOKE_REQUIRE_SERVER=1` makes that a
 failure instead). The code comments explain how the pieces fit together.
+
+The version lives in `package.json` and is tagged `vX.Y.Z` in git; while it is `0.x`
+the internals may still change. See [CHANGELOG.md](CHANGELOG.md) for what each
+release contains.

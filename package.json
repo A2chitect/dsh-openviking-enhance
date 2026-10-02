@@ -17,7 +17,8 @@
     "lib/client.js",
     "lib/client.js.map",
     "cordis.patch.yml",
-    "icon.svg"
+    "icon.svg",
+    "CHANGELOG.md"
   ],
   "dsh": {
     "manifestVersion": 1,

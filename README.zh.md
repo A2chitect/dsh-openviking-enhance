@@ -2,6 +2,8 @@
 
 [English](README.md) | 中文
 
+**v0.1.0** · [更新记录](CHANGELOG.md)
+
 把本地 [OpenViking](https://docs.openviking.ai) 记忆服务接进 DeepSeek Harness
 （DSH）的 Web 界面：左侧边栏多一个 OpenViking Studio 面板，输入框下方多一个
 commit 状态胶囊，随时能看到每次提交对本会话记忆做了什么。
@@ -117,3 +119,6 @@ pnpm run watch      # 改动后自动重建
 
 冒烟脚本不需要开界面就能打印提交时间线；OpenViking 没在跑时它会跳过实时数据部分
 （`SMOKE_REQUIRE_SERVER=1` 可让跳过变成失败）。各部分的实现细节见源码注释。
+
+版本号写在 `package.json`，每次发布在 git 里打 `vX.Y.Z` 标签；`0.x` 期间内部实现
+仍可能调整。每个版本包含什么见 [CHANGELOG.md](CHANGELOG.md)。
