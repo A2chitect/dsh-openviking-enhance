@@ -13,7 +13,7 @@
 // Defaults to this machine's most recently committed DSH session when one is
 // given, else it lists candidates from the OpenViking session index.
 import http from 'node:http'
-import { apply } from '../lib/index.js'
+import { Config, apply } from '../lib/index.js'
 
 const routes = []
 const context = {
@@ -36,10 +36,20 @@ const context = {
   logger: console,
 }
 
-// A dead endpoint can be substituted to exercise a stranger's first run, where
-// OpenViking is not installed at all: every route must still answer.
-if (process.env.SMOKE_ENDPOINT) context.config = { endpoint: process.env.SMOKE_ENDPOINT }
-apply(context, context.config ?? {})
+// The config is RESOLVED FROM THE SCHEMA, exactly as the Loader hands it over.
+// Calling `apply(ctx)` with nothing is what let a released build ship broken:
+// `volatile()` fields resolve to references rather than values, so the plugin died
+// on activation in the app while every test here passed. Passing `{}` proves
+// nothing about the shape the app actually uses.
+const resolved = Config(process.env.SMOKE_ENDPOINT ? { endpoint: process.env.SMOKE_ENDPOINT } : {})
+if (process.env.SMOKE_ENDPOINT) {
+  const live = resolved.endpoint?.get?.()
+  if (live !== process.env.SMOKE_ENDPOINT) {
+    console.error('[smoke] FAIL the resolved endpoint did not carry the override')
+    process.exitCode = 1
+  }
+}
+apply(context, resolved)
 
 const server = http.createServer((req, res) => {
   const { pathname } = new URL(req.url ?? '/', 'http://127.0.0.1')

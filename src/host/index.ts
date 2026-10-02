@@ -64,14 +64,51 @@ export const Config = z.object({
   recallCacheTtlMs: z.number().default(15000).volatile(),
 })
 
+/**
+ * One `Config` field as the Loader actually hands it over.
+ *
+ * A field marked `.volatile()` — which is what makes it editable on the Plugins
+ * page — does NOT arrive as its value: schemastery resolves it to a reference
+ * whose `get()` reads the current one, so a change made in the form is visible
+ * without a reload. Reading such a field directly is exactly how this plugin
+ * failed to activate the first time it shipped a settings form:
+ * `config.studioPath` was a reference, `(path ?? '').trim` threw from inside
+ * `apply`, and the whole entry went down with it.
+ *
+ * Ordinary fields arrive as plain values, so this accepts both — and typing the
+ * parameter this way is the point: the compiler now refuses a raw read.
+ */
+export type ConfigField<T> = T | { get(): T }
+
 export interface EnhanceConfigInput {
-  endpoint?: string
-  apiKey?: string
-  account?: string
-  user?: string
-  studioPath?: string
-  cacheTtlMs?: number
-  recallCacheTtlMs?: number
+  endpoint?: ConfigField<string>
+  apiKey?: ConfigField<string>
+  account?: ConfigField<string>
+  user?: ConfigField<string>
+  studioPath?: ConfigField<string>
+  cacheTtlMs?: ConfigField<number>
+  recallCacheTtlMs?: ConfigField<number>
+}
+
+/** The value behind a field, whether it is a reference or the value itself. */
+export function configField<T>(value: ConfigField<T> | undefined): T | undefined {
+  if (value === null || value === undefined) return undefined
+  if (typeof value === 'object' && typeof (value as { get?: unknown }).get === 'function') {
+    return (value as { get(): T }).get()
+  }
+  return value as T
+}
+
+/** A string field, or `''` for anything that is not one. */
+function configText(value: ConfigField<string> | undefined): string {
+  const plain = configField(value)
+  return typeof plain === 'string' ? plain : ''
+}
+
+/** A numeric field, or the fallback. */
+function configNumber(value: ConfigField<number> | undefined, fallback: number): number {
+  const plain = configField(value)
+  return typeof plain === 'number' && Number.isFinite(plain) ? plain : fallback
 }
 
 /** Structural view of the host services this plugin uses. */
@@ -129,16 +166,16 @@ function query(req: IncomingMessage): URLSearchParams {
 export function apply(ctx: Context, config: EnhanceConfigInput = {}): void {
   const host = ctx as unknown as HostContext
   const connection = resolveConnection({
-    endpoint: config.endpoint,
-    apiKey: config.apiKey,
-    account: config.account,
-    user: config.user,
+    endpoint: configText(config.endpoint),
+    apiKey: configText(config.apiKey),
+    account: configText(config.account),
+    user: configText(config.user),
   })
   const logger = host.logger
   logger?.info?.(`[openviking-enhance] ${JSON.stringify(describeConnection(connection))}`)
 
   const api = new OpenVikingApi(connection)
-  const studioPath = normalizeStudioPath(config.studioPath)
+  const studioPath = normalizeStudioPath(configText(config.studioPath))
 
   const memoryRuntime = (): OpenVikingMemoryRuntime | null => {
     try {
@@ -152,13 +189,13 @@ export function apply(ctx: Context, config: EnhanceConfigInput = {}): void {
   const service = new CommitService({
     api,
     memoryRuntime,
-    cacheTtlMs: config.cacheTtlMs ?? 2500,
+    cacheTtlMs: configNumber(config.cacheTtlMs, 2500),
   })
 
   const recall = new RecallService({
     api,
     commit: service,
-    cacheTtlMs: config.recallCacheTtlMs ?? 15000,
+    cacheTtlMs: configNumber(config.recallCacheTtlMs, 15000),
   })
 
   const configPayload = async (): Promise<ApiResult<EnhanceConfig>> => {

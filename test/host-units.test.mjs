@@ -24,7 +24,7 @@ import {
   resolveSessionUri,
 } from '../src/host/commit-service.ts'
 import { OpenVikingApi, parseMaybeDoubleEncoded } from '../src/host/openviking-api.ts'
-import { parseLoopbackEndpoint } from '../src/host/index.ts'
+import { Config, apply, parseLoopbackEndpoint } from '../src/host/index.ts'
 import {
   deriveClientPhase,
   describeFailure,
@@ -109,6 +109,70 @@ test('resolveSessionUri prefers the session record over the configured identity'
   // The session directory, never the history directory: listHistory owns that suffix.
   assert.equal(resolveSessionUri({ uri }, 'dsh-abc', 'default').endsWith('/history'), false)
 })
+
+test('the plugin activates with the config the Loader resolves for it', async () => {
+  // This is the shape that broke the released plugin: `volatile()` fields — the
+  // ones a settings form can edit — do not resolve to their values but to
+  // references with a `get()`, so `config.studioPath` was an object and
+  // `(path ?? '').trim` threw from inside `apply`, taking the entry down with it
+  // ("1 entry did not activate openviking-enhance").
+  const resolved = Config({ endpoint: 'http://127.0.0.1:9' })
+  assert.equal(typeof resolved.endpoint?.get, 'function', 'a volatile field arrives as a reference')
+  assert.equal(resolved.endpoint.get(), 'http://127.0.0.1:9')
+
+  const routes = []
+  const context = {
+    webServer: { port: 0, register: (route) => (routes.push(route), () => {}) },
+    effect: (callback) => (callback(), () => {}),
+    get: () => undefined,
+    logger: { info: () => {}, warn: () => {} },
+  }
+  assert.doesNotThrow(() => apply(context, resolved), 'apply() must survive a resolved config')
+  assert.ok(routes.length >= 6, `every route is registered (saw ${routes.length})`)
+
+  // And the value has to be READ through the reference, not merely tolerated.
+  const route = routes.find((candidate) => candidate.path === '/api/openviking-enhance/config')
+  const answered = await callRoute(route)
+  assert.equal(answered.status, 200)
+  assert.equal(answered.body.endpoint, 'http://127.0.0.1:9')
+  assert.equal(answered.body.healthy, false, 'a dead port is reported, not thrown')
+})
+
+test('a plugin with no config at all still activates', () => {
+  const routes = []
+  const context = {
+    webServer: { port: 0, register: (route) => (routes.push(route), () => {}) },
+    effect: (callback) => (callback(), () => {}),
+    get: () => undefined,
+    logger: { info: () => {}, warn: () => {} },
+  }
+  assert.doesNotThrow(() => apply(context))
+  assert.ok(routes.length >= 6)
+})
+
+/** Call one registered route with a trusted loopback request and read its JSON. */
+function callRoute(route) {
+  return new Promise((resolve) => {
+    const chunks = []
+    const req = {
+      method: 'GET',
+      url: route.path,
+      socket: { remoteAddress: '127.0.0.1' },
+      headers: { host: '127.0.0.1:19387' },
+    }
+    const res = {
+      writeHead(status, headers) {
+        this.status = status
+        this.headers = headers
+      },
+      end(payload) {
+        chunks.push(payload)
+        resolve({ status: this.status, headers: this.headers, body: JSON.parse(chunks.join('')) })
+      },
+    }
+    void route.handler(req, res)
+  })
+}
 
 test('parseLoopbackEndpoint admits only this machine', () => {
   // The configuration form sends what the user typed, so this is the check that

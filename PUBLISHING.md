@@ -553,6 +553,34 @@ exit=0
 也就是说你那条命令的行为已被完整验证，包括"发布后不会误发第二次"。剩下的只有 `git push --follow-tags`
 与 npm 发布本身，那两步按约定归你。
 
+### 25. 一次真实的线上事故：插件重启后起不来 ☑
+
+你重启应用后插件激活失败：`TypeError: (path ?? "").trim is not a function at normalizeStudioPath`。
+
+**根因**（现场实测，不是推测）：schemastery 的 `.volatile()`——我为了让配置字段出现在 Plugins 页的
+表单里而加的那个标记——**让字段解析成引用对象而不是值**：
+
+```
+z.object({ studioPath: z.string().default('/studio/').volatile() })({})
+  → { studioPath: {} }        // 只有一个 get()，.trim 自然不存在
+未加 volatile 的字段 → '/studio/'（原值）
+```
+
+`apply()` 里 `config.studioPath` 拿到的是 `{ get }`，`(path ?? '').trim` 立刻抛，整个条目激活失败。
+
+**修法**：`ConfigField<T> = T | { get(): T }` 作为**参数类型**（让编译器以后挡住原始读取），
+所有 5 处读取都走 `configText()` / `configNumber()` 解包；非 volatile 的普通值同样接受。
+
+**证据链**（这次事故暴露的真正问题是"测试没覆盖应用实际走的那条路"）：
+
+| 检查 | 结果 |
+| --- | --- |
+| 新增激活回归测试（用 schema 解析出的配置调 `apply`） | 拿掉修复→**如实报出与你截图逐字相同的** `(path ?? "").trim is not a function`；装回→通过 |
+| 为什么原先没抓到 | 冒烟调的是 `apply(context)`（**不传配置**）——从未走过 Loader 真实传参的形状。已改为 `Config({...})` 解析后再传，并对覆盖值做断言 |
+| 全量 | 64 测试 + 发布契约 + 客户端断言 + fence + 实时冒烟 + 降级，全绿 |
+
+教训记在这里：**"能装"和"能被应用激活"是两件事**，而后者只有当参数形状与 Loader 一致时才算验过。
+
 ## 四、需要你拍板
 
 | # | 问题 | 影响 |
