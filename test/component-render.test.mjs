@@ -38,7 +38,7 @@ function loadBundle(locale) {
   const exportsObject = handoff.factory(require)
 
   const contributions = []
-  exportsObject.apply({
+  exportsObject.apply(strict({
     slots: {
       inject: (_key, callback) => (callback(), () => {}),
       register: (options, Component) => (contributions.push({ options, Component }), () => {}),
@@ -54,13 +54,38 @@ function loadBundle(locale) {
         }),
         { dispose() {} }
       ),
-    get: () => undefined,
-    locale: { getSnapshot: () => ({ active: locale }) },
+    // The locale service is handed over the way the plugin is allowed to read it.
+    // It used to arrive as a `locale` PROPERTY here — the same illegal read that
+    // broke the shipped client half — and `get` returned nothing, so this file was
+    // rehearsing the bug instead of catching it.
+    get: (name) => (name === 'locale' ? { getSnapshot: () => ({ active: locale }) } : undefined),
     logger: { warn: () => {}, info: () => {} },
-  })
+  }))
 
   const find = (name) => contributions.find((entry) => entry.options.name === name)
   return { find, contributions }
+}
+
+/**
+ * The shell's context, refusing what Cordis refuses.
+ *
+ * Reading an undeclared service property is a thrown Error there
+ * (`cannot get property "x" without inject`), not a warning — the exact mistake
+ * that shipped. Only the injected services, the optional `get()` accessor and the
+ * context's own verbs are readable here.
+ */
+const DECLARED = new Set(['slots', 'effect', 'inject', 'get', 'logger'])
+function strict(context) {
+  return new Proxy(context, {
+    get(target, key) {
+      if (typeof key === 'symbol') return Reflect.get(target, key)
+      const value = Reflect.get(target, key)
+      if (value === undefined && !DECLARED.has(key)) {
+        throw new Error(`cannot get property "${key}" without inject`)
+      }
+      return value
+    },
+  })
 }
 
 /** The configuration snapshot the Plugins page hands a row's form. */
