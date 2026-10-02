@@ -43,7 +43,8 @@
     "typecheck": "tsc --noEmit",
     "check": "pnpm run typecheck && pnpm run build",
     "smoke": "node scripts/smoke-client.mjs && node scripts/smoke-host.mjs",
-    "test": "pnpm run check && pnpm run smoke"
+    "test": "pnpm run check && pnpm run unit && pnpm run smoke",
+    "unit": "node --test"
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.4"

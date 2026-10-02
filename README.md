@@ -84,6 +84,18 @@ pnpm test             # typecheck + build + both smoke tests
 
 `pnpm run watch` rebuilds on change.
 
+The two halves reload differently, which matters while developing:
+
+- the **client half** is served from `lib/client.js` by revision, so a rebuild plus
+  a page reload picks it up;
+- the **host half** is a Node module already imported into the running process.
+  HMR does not follow the profile's `link:` symlink back into this repository, so
+  a rebuild needs an app restart before the host changes take effect.
+
+`pnpm test` runs type check, build, unit tests and both smoke harnesses. The host
+smoke needs a running OpenViking; the fence cases are the part that is worth
+watching in CI-friendly runs.
+
 Two build details are load-bearing:
 
 - The client half **must** be prebuilt. The shell serves `lib/client.js` as-is;
@@ -126,6 +138,34 @@ reads, so the panel always shows the memory space the sessions write to.
 Precedence is plugin config → `OPENVIKING_*` environment → `~/.openviking` conf
 files → built-in defaults.
 
+## Security
+
+Plugin routes are **not** covered by the DSH web authentication gate: `GET /`
+answers 401 without the launch token, while `GET /api/openviking-enhance/config`
+answers 200 to a bare `curl`. On loopback that adds no exposure worth worrying
+about — anything on the machine can read `~/.openviking` directly — but these
+routes return memory metadata and `/diff` returns memory bodies, so a UI bound to
+a non-loopback interface, a tunnel, or a reverse proxy would turn them into an
+unauthenticated read API over a personal memory store.
+
+Every route therefore requires the request to be what it claims to be
+([`src/host/trust-fence.ts`](src/host/trust-fence.ts)):
+
+| Check | Blocks |
+| --- | --- |
+| socket address is loopback | any off-machine connection, including via a proxy elsewhere |
+| `Host` names a loopback authority | a proxy or tunnel reaching us over loopback but fronting a public name |
+| `sec-fetch-site` is not `cross-site` | a page on another site targeting a loopback port |
+| `Origin`, when present, equals `Host` | a same-machine different-port caller, and `Origin: null` |
+
+`X-Forwarded-For` is never consulted — a client-settable header must not be able
+to assert its own trustworthiness. A reverse proxy that needs these routes has to
+be allowlisted in code, which is a deliberate change rather than a config toggle.
+Non-`GET` methods answer 405.
+
+The plugin performs **no writes** to OpenViking: it never commits, writes or
+deletes anything.
+
 ## Verification
 
 `pnpm test` runs everything below; the smoke tests are the ones that prove the
@@ -134,6 +174,8 @@ data path.
 | Check | What it proves |
 | --- | --- |
 | `tsc --noEmit` | Host and client compile against DSH `0.2.0-rc.2` types |
+| `node --test` | 15 unit tests over the pure logic: trust fence, phase derivation, diff normalization, session-URI resolution, the archive-URI guard, double-encoded JSON |
+| `scripts/smoke-host.mjs` (fence) | Live route fence: forged `Host`, cross-origin `Origin` and `POST` are refused (403/405), plain loopback still 200 |
 | `node build.mjs` | Both bundles emit, client wrapped in the loader contract |
 | `scripts/smoke-client.mjs` | The built `lib/client.js` registers `apply`/`inject`, keeps React external, and registers all three slots without throwing |
 | `scripts/smoke-host.mjs` | The built `lib/index.js` answers all four routes against the **live** OpenViking server and reads a real `memory_diff.json` |

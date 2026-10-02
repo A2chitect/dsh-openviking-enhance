@@ -62,6 +62,41 @@ if (!sessionId) {
 }
 
 /** Ask the plugin for status of the given session and print a compact report. */
+/** One raw request, so the Host/Origin/method can be shaped exactly. */
+function rawStatus(base, path, { method = 'GET', headers = {} } = {}) {
+  const url = new URL(base)
+  return new Promise((resolve) => {
+    const request = http.request({ host: url.hostname, port: url.port, path, method, headers }, (response) => {
+      response.resume()
+      response.on('end', () => resolve(response.statusCode))
+    })
+    request.on('error', () => resolve(0))
+    request.end()
+  })
+}
+
+/**
+ * The fence, end to end: these routes are outside the DSH web auth gate, so the
+ * only thing standing between the memory store and a tunneled port is this.
+ */
+async function checkFence(base) {
+  const path = '/api/openviking-enhance/config'
+  const cases = [
+    ['plain loopback request', {}, 200],
+    ['public Host header', { headers: { host: 'dsh.example.com' } }, 403],
+    ['cross-origin Origin', { headers: { origin: 'http://evil.example.com' } }, 403],
+    ['same-origin Origin', { headers: { origin: new URL(base).origin } }, 200],
+    ['cross-site fetch marker', { headers: { 'sec-fetch-site': 'cross-site' } }, 403],
+    ['POST instead of GET', { method: 'POST' }, 405],
+  ]
+  for (const [label, options, expected] of cases) {
+    const actual = await rawStatus(base, path, options)
+    const ok = actual === expected
+    console.log(`[fence] ${ok ? 'ok  ' : 'FAIL'} ${label}: ${actual} (expected ${expected})`)
+    if (!ok) process.exitCode = 1
+  }
+}
+
 async function report(base, sessionId) {
   const config = await get(`${base}/api/openviking-enhance/config`)
   console.log('[smoke] config     ', summarise(config))
@@ -89,6 +124,8 @@ async function report(base, sessionId) {
       console.log(`[smoke]   ${entry.memoryType.padEnd(12)} ${entry.uri}`)
     }
   }
+
+  await checkFence(base)
 }
 
 /** Find a DSH session that already has commits, by asking OpenViking directly. */

@@ -29,6 +29,15 @@ export interface OvResult<T> {
 
 export interface OvSessionMeta {
   session_id: string
+  /**
+   * Canonical `viking://` path of the session. The server's own answer, so it is
+   * the only reliable source for the history directory: a session may live under
+   * another user or peer than the identity this plugin reads as.
+   */
+  uri?: string
+  /** Owner of the session; the fallback when `uri` is absent. */
+  created_by_user_id?: string
+  user?: { account_id?: string; user_id?: string }
   message_count: number
   commit_count: number
   memories_extracted: { total: number; memory_write: number; memory_edit: number }
@@ -69,7 +78,12 @@ interface RequestOptions {
 const DEFAULT_TIMEOUT_MS = 8000
 
 export class OpenVikingApi {
-  constructor(private readonly connection: OvConnection) {}
+  private readonly connection: OvConnection
+
+  /** Plain field assignment: parameter properties cannot be type-stripped. */
+  constructor(connection: OvConnection) {
+    this.connection = connection
+  }
 
   private headers(options: RequestOptions): Record<string, string> {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
@@ -131,9 +145,20 @@ export class OpenVikingApi {
     })
   }
 
-  /** List the `history/archive_00N` directories of a session. */
-  async listHistory(ovSessionId: string, options: RequestOptions = {}): Promise<OvResult<OvFsEntry[]>> {
-    const uri = `viking://user/${this.connection.user}/sessions/${ovSessionId}/history`
+  /** The identity this client reads as. Only a last-resort path fallback. */
+  get user(): string {
+    return this.connection.user
+  }
+
+  /**
+   * List the `history/archive_00N` directories under a session.
+   *
+   * Takes the session's own `viking://` URI rather than an id: building the path
+   * from this client's configured user silently returned nothing for sessions
+   * owned by another user or peer, which then looked like "never committed".
+   */
+  async listHistory(sessionUri: string, options: RequestOptions = {}): Promise<OvResult<OvFsEntry[]>> {
+    const uri = `${sessionUri.replace(/\/+$/, '')}/history`
     return this.request<OvFsEntry[]>(`/api/v1/fs/ls?uri=${encodeURIComponent(uri)}`, {
       timeoutMs: 5000,
       ...options,

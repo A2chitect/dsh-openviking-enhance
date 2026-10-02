@@ -53,9 +53,14 @@ export interface CommitServiceOptions {
 
 export class CommitService {
   private readonly cache = new Map<string, { at: number; value: CommitStatus }>()
+  private readonly options: CommitServiceOptions
   private readonly cacheTtlMs: number
 
-  constructor(private readonly options: CommitServiceOptions) {
+  // Plain field assignment rather than a constructor parameter property: the
+  // latter is TypeScript-only syntax that Node's type stripping cannot erase,
+  // which would make this module unimportable from the unit tests.
+  constructor(options: CommitServiceOptions) {
+    this.options = options
     this.cacheTtlMs = options.cacheTtlMs ?? 2500
   }
 
@@ -83,10 +88,13 @@ export class CommitService {
 
     const ovSessionId = this.ovSessionId(sessionId)
     const request = { actorPeerId: this.peerId(sessionId) }
-    const [meta, history] = await Promise.all([
-      this.options.api.getSession(ovSessionId, request),
-      this.options.api.listHistory(ovSessionId, request),
-    ])
+    // Sequential, not parallel: the history path must be derived from the
+    // session's own `uri`, which only the first call can answer. It costs one
+    // round trip (~7 ms) and removes a whole class of "never committed" lies for
+    // sessions owned by another user or peer.
+    const meta = await this.options.api.getSession(ovSessionId, request)
+    const historyUri = resolveSessionUri(meta.result, ovSessionId, this.options.api.user)
+    const history = await this.options.api.listHistory(historyUri, request)
 
     const pendingTokens = meta.result?.pending_tokens ?? 0
     const commitCount = meta.result?.commit_count ?? 0
@@ -149,6 +157,42 @@ export class CommitService {
     if (!response.ok || !response.result) return null
     return normalizeDiff(archiveUri, response.result)
   }
+}
+
+/**
+ * Guard for the `archive` parameter of the diff route: the browser half may only
+ * ask for a diff under this session's own history tree. Anything else is refused,
+ * so the route cannot be turned into a generic `viking://` file reader.
+ */
+export function isArchiveUriForSession(uri: string, ovSessionId: string): boolean {
+  if (!uri.startsWith('viking://')) return false
+  const marker = `/sessions/${ovSessionId}/history/archive_`
+  return uri.includes(marker) && !uri.includes('..')
+}
+
+/**
+ * The session's canonical `viking://` path, according to the server's own answer.
+ * It returns the *session* directory: `OpenVikingApi.listHistory` owns the
+ * `/history` suffix, and appending it here too was a real bug (the request went
+ * to `history/history` and every session reported zero archives).
+ *
+ * Preference order:
+ *  1. the session's canonical `uri` — correct for any user or peer namespace;
+ *  2. its `created_by_user_id`, for servers that omit `uri` on the detail route;
+ *  3. the identity this plugin reads as, which is right for the common case and
+ *     wrong exactly when another user or peer owns the session.
+ */
+export function resolveSessionUri(
+  meta: { uri?: string; created_by_user_id?: string } | null | undefined,
+  ovSessionId: string,
+  fallbackUser: string,
+): string {
+  const uri = typeof meta?.uri === 'string' ? meta.uri.trim() : ''
+  if (uri.startsWith('viking://')) return uri.replace(/\/+$/, '')
+  const owner = typeof meta?.created_by_user_id === 'string' && meta.created_by_user_id.length > 0
+    ? meta.created_by_user_id
+    : fallbackUser
+  return `viking://user/${owner}/sessions/${ovSessionId}`
 }
 
 /**

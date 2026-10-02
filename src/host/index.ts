@@ -18,7 +18,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { API_PREFIX, type ApiResult, type EnhanceConfig } from '../shared/protocol.ts'
 import { describeConnection, resolveConnection } from './config.ts'
-import { CommitService, type OpenVikingMemoryRuntime } from './commit-service.ts'
+import { isTrustedLocalRequest } from './trust-fence.ts'
+import { CommitService, isArchiveUriForSession, type OpenVikingMemoryRuntime } from './commit-service.ts'
 import { OpenVikingApi } from './openviking-api.ts'
 
 /** Cordis plugin name used by loader diagnostics. */
@@ -83,17 +84,6 @@ function query(req: IncomingMessage): URLSearchParams {
   return new URL(req.url ?? '/', 'http://127.0.0.1').searchParams
 }
 
-/**
- * Guard for the archive parameter: the browser half may only ask for a diff
- * that lives under this session's own history tree. Anything else is refused,
- * so the route cannot be turned into a generic `viking://` file reader.
- */
-export function isArchiveUriForSession(uri: string, ovSessionId: string): boolean {
-  if (!uri.startsWith('viking://')) return false
-  const marker = `/sessions/${ovSessionId}/history/archive_`
-  return uri.includes(marker) && !uri.includes('..')
-}
-
 export function apply(ctx: Context, config: EnhanceConfigInput = {}): void {
   const host = ctx as unknown as HostContext
   const connection = resolveConnection({
@@ -142,11 +132,28 @@ export function apply(ctx: Context, config: EnhanceConfigInput = {}): void {
     }
   }
 
+  /**
+   * Refuse anything that is not a same-origin request from the loopback
+   * interface. These routes are not covered by the DSH web auth gate, and
+   * `/diff` returns memory bodies — see `trust-fence.ts` for what each check
+   * buys. Read-only is not a reason to skip this: the payload is private.
+   */
+  const guard = (req: IncomingMessage, res: ServerResponse): boolean => {
+    if (req.method !== 'GET') {
+      writeJson(res, 405, { ok: false, error: 'method-not-allowed' } satisfies ApiResult<never>)
+      return false
+    }
+    if (isTrustedLocalRequest(req)) return true
+    writeJson(res, 403, { ok: false, error: 'forbidden' } satisfies ApiResult<never>)
+    return false
+  }
+
   const routes: WebRoute[] = [
     {
       kind: 'exact',
       path: `${API_PREFIX}/config`,
-      handler: async (_req, res) => {
+      handler: async (req, res) => {
+        if (!guard(req, res)) return
         writeJson(res, 200, await configPayload())
       },
     },
@@ -154,6 +161,7 @@ export function apply(ctx: Context, config: EnhanceConfigInput = {}): void {
       kind: 'exact',
       path: `${API_PREFIX}/status`,
       handler: async (req, res) => {
+        if (!guard(req, res)) return
         const sessionId = query(req).get('sessionId') ?? ''
         if (!sessionId) {
           writeJson(res, 400, { ok: false, error: 'sessionId is required' } satisfies ApiResult<never>)
@@ -171,6 +179,7 @@ export function apply(ctx: Context, config: EnhanceConfigInput = {}): void {
       kind: 'exact',
       path: `${API_PREFIX}/commits`,
       handler: async (req, res) => {
+        if (!guard(req, res)) return
         const sessionId = query(req).get('sessionId') ?? ''
         if (!sessionId) {
           writeJson(res, 400, { ok: false, error: 'sessionId is required' } satisfies ApiResult<never>)
@@ -188,6 +197,7 @@ export function apply(ctx: Context, config: EnhanceConfigInput = {}): void {
       kind: 'exact',
       path: `${API_PREFIX}/diff`,
       handler: async (req, res) => {
+        if (!guard(req, res)) return
         const params = query(req)
         const sessionId = params.get('sessionId') ?? ''
         const archiveUri = params.get('archive') ?? ''
