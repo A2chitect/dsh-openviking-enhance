@@ -26,6 +26,22 @@ export const inject = ['slots']
 const PANEL_ID = 'openviking'
 
 /**
+ * Sort key of our sidebar row.
+ *
+ * The sidebar orders `sidebar.panellist` ascending by `order` and, on a tie, falls
+ * back to registration order — which is plugin load order and therefore differs
+ * between boots. That is exactly what made this row drift: it shared `order: 30`
+ * with the skill-explorer row, so it sometimes sat before it and sometimes after.
+ *
+ * The values in use are 0 and 10 (the shell's own plugin and schedule rows), 20
+ * (task board), 30 (skill explorer), and the framework's own contract doc shows
+ * `order: 100` for a third-party panel row. This row is meant to be last, so it
+ * sits well above all of those; a plain "just above the current maximum" value
+ * would collide again with the next plugin that picks it.
+ */
+const SIDEBAR_ORDER = 1000
+
+/**
  * Sidebar row glyph. The shell hands a list occupant only `{ size, active }` and
  * draws the button, title and highlight itself, so this adds just the marker the
  * panel row carries and defers the artwork to the shared mark — the same one the
@@ -59,7 +75,7 @@ export function apply(context: ClientContext): void {
     disposers.push(
       slots.inject('sidebar.panellist', () =>
         slots.register(
-          { name: 'sidebar.panellist', id: PANEL_ID, order: 30, label: () => 'OpenViking' },
+          { name: 'sidebar.panellist', id: PANEL_ID, order: SIDEBAR_ORDER, label: () => 'OpenViking' },
           SidebarIcon,
         ),
       ),

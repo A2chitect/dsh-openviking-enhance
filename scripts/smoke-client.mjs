@@ -98,6 +98,13 @@ const dock = registrations.filter((entry) => entry.name === 'conversation.compos
 check(byName.has('sidebar.panellist'), 'registers the left-sidebar row (sidebar.panellist)')
 check(byName.has('main'), 'registers the matching centre panel (main)')
 check(byName.get('sidebar.panellist')?.id === byName.get('main')?.key, 'panel row id and main key agree')
+// The sidebar sorts rows by `order` and breaks ties by registration order, which
+// varies per boot — a shared order is what made this row drift between startups.
+// Every row shipped today is <= 30.
+check(
+  (byName.get('sidebar.panellist')?.order ?? 0) > 100,
+  `sidebar row sorts after every shipped row (order ${byName.get('sidebar.panellist')?.order})`,
+)
 
 // One dock entry. It renders two elements (an invisible mirror + the pill)
 // whose auto margins and equal widths are what keep the default pills centred

@@ -18,7 +18,7 @@ declare const slots: SlotService
 
 // --- the shapes the plugin actually registers: these must type-check ---------
 
-slots.register({ name: 'sidebar.panellist', id: 'openviking', order: 30, label: () => 'OpenViking' }, OpenVikingIcon)
+slots.register({ name: 'sidebar.panellist', id: 'openviking', order: 1000, label: () => 'OpenViking' }, OpenVikingIcon)
 slots.register({ name: 'main', key: 'openviking' }, StudioPanel)
 slots.register(
   { name: 'conversation.composer.dock', id: 'openviking-commit', order: 1, inject: (sessionId: string) => ({ sessionId }) },
