@@ -1,11 +1,11 @@
 // Cut a release: promote the changelog, write the version, run the gate, tag.
 //
-//   pnpm run release -- patch          0.1.0 -> 0.1.1
-//   pnpm run release -- minor          0.1.1 -> 0.2.0
-//   pnpm run release -- major          0.2.0 -> 1.0.0
-//   pnpm run release -- 0.2.0          an explicit version
-//   pnpm run release -- minor --dry-run   check the preconditions, change nothing
-//   pnpm run release -- minor --no-live   do not require a running OpenViking
+//   pnpm run release patch          0.1.0 -> 0.1.1
+//   pnpm run release minor          0.1.1 -> 0.2.0
+//   pnpm run release major          0.2.0 -> 1.0.0
+//   pnpm run release 0.2.0          an explicit version
+//   pnpm run release minor --dry-run   check the preconditions, change nothing
+//   pnpm run release minor --no-live   do not require a running OpenViking
 //
 // The process this enforces is written down in RELEASING.md; the short version is
 // that the notes go under `## Unreleased` in CHANGELOG.md *first*, and this script
@@ -150,7 +150,7 @@ function localDate() {
 
 function usage() {
   return [
-    'usage: pnpm run release -- <patch|minor|major|x.y.z> [--dry-run] [--no-live]',
+    'usage: pnpm run release <patch|minor|major|x.y.z> [--dry-run] [--no-live]',
     '',
     '  --dry-run  check every precondition and print the plan, change nothing',
     '  --no-live  do not require a running OpenViking server for the smoke step',
@@ -159,9 +159,13 @@ function usage() {
   ].join('\n')
 }
 
-function parseArgs(argv) {
-  const flags = new Set(argv.filter((part) => part.startsWith('-')))
-  const positional = argv.filter((part) => !part.startsWith('-'))
+export function parseArgs(argv) {
+  // pnpm forwards the `--` separator to the script (`pnpm run release -- patch`
+  // arrives as `-- patch`), npm strips it. Accept both spellings rather than
+  // documenting which runner does what.
+  const parts = argv.filter((part) => part !== '--')
+  const flags = new Set(parts.filter((part) => part.startsWith('-')))
+  const positional = parts.filter((part) => !part.startsWith('-'))
   if (flags.has('-h') || flags.has('--help')) return { help: true }
   const unknown = [...flags].filter((flag) => !['-h', '--help', '--dry-run', '--no-live'].includes(flag))
   if (unknown.length > 0) throw new Error(`unknown option: ${unknown.join(', ')}`)

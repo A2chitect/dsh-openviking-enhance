@@ -18,6 +18,7 @@ import {
   UNRELEASED_HEADING,
   bumpVersion,
   compareVersions,
+  parseArgs,
   parseVersion,
   promoteUnreleased,
 } from '../scripts/release.mjs'
@@ -113,4 +114,23 @@ test('promoteUnreleased refuses an empty or missing section', () => {
   const empty = ['## Unreleased', '', '## 0.1.0 — 2026-01-01', '', '- first', ''].join('\n')
   assert.throws(() => promoteUnreleased(empty, '0.2.0', '2026-02-02'), /is empty/)
   assert.throws(() => promoteUnreleased('# Changelog\n', '0.2.0', '2026-02-02'), /has no/)
+})
+
+// pnpm forwards the `--` separator verbatim while npm strips it, so the same
+// command has two spellings depending on the runner. This used to reject `--`
+// with "unknown option", which made the command documented in RELEASING.md fail.
+test('parseArgs accepts both the bare and the `--` spelling', () => {
+  const expected = { target: 'patch', dryRun: false, live: true }
+  assert.deepEqual(parseArgs(['patch']), expected)
+  assert.deepEqual(parseArgs(['--', 'patch']), expected)
+  assert.deepEqual(parseArgs(['patch', '--dry-run']), { target: 'patch', dryRun: true, live: true })
+  assert.deepEqual(parseArgs(['--', 'patch', '--dry-run']), { target: 'patch', dryRun: true, live: true })
+  assert.deepEqual(parseArgs(['0.2.0', '--no-live']), { target: '0.2.0', dryRun: false, live: false })
+  assert.deepEqual(parseArgs(['--help']), { help: true })
+})
+
+test('parseArgs refuses what it cannot act on', () => {
+  assert.throws(() => parseArgs([]), /exactly one version argument/)
+  assert.throws(() => parseArgs(['patch', 'minor']), /exactly one version argument/)
+  assert.throws(() => parseArgs(['patch', '--wat']), /unknown option/)
 })

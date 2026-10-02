@@ -25,8 +25,10 @@
 ### 第 2 步：跑命令
 
 ```bash
-pnpm run release -- patch     # 或 minor / major，也可以直接写 0.2.0
+pnpm run release patch     # 或 minor / major，也可以直接写 0.2.0
 ```
+
+（`pnpm run release -- patch` 这种写法同样认：pnpm 会把 `--` 原样传给脚本，npm 会把它吃掉，脚本两种都接受。）
 
 它按顺序做这些事：
 
@@ -43,8 +45,8 @@ pnpm run release -- patch     # 或 minor / major，也可以直接写 0.2.0
 ### 排练与逃生口
 
 ```bash
-pnpm run release -- minor --dry-run    # 只做检查、打印计划，不写任何东西
-pnpm run release -- minor --no-live    # 服务不在线时跳过实时冒烟
+pnpm run release minor --dry-run    # 只做检查、打印计划，不写任何东西
+pnpm run release minor --no-live    # 服务不在线时跳过实时冒烟
 ```
 
 `--no-live` 是例外而非常态：它意味着这个标签**没有真实服务的验证证据**，脚本会把这句话写进标签说明里。
