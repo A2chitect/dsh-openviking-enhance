@@ -23,7 +23,7 @@
  */
 import { useCallback, useState } from 'react'
 import type { PluginConfigViewProps } from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
-import type { SettingsPathOpView } from '@deepseek-ai/dsh-api-remotes/client'
+import { configOps } from './config-ops.ts'
 import { probeEndpoint } from './host-api.ts'
 import { t } from './locale.ts'
 
@@ -104,34 +104,20 @@ function ConfigForm({ form }: { form: PluginConfigViewProps['form'] }) {
     setNote(null)
   }
 
-  /** Every staged edit as one atomic operation list. */
-  const operations = (): SettingsPathOpView[] | string => {
-    const ops: SettingsPathOpView[] = []
-    for (const [key, staged] of Object.entries(draft)) {
-      const field = FIELDS.find((candidate) => candidate.key === key)
-      if (field === undefined) continue
-      if (staged.length === 0) {
-        ops.push({ op: 'unset', path: [key] })
-        continue
-      }
-      if (field.numeric === true) {
-        const parsed = Number(staged)
-        if (!Number.isFinite(parsed)) return t('config.needNumber', { label: t(field.label) })
-        ops.push({ op: 'set', path: [key], value: parsed })
-        continue
-      }
-      ops.push({ op: 'set', path: [key], value: staged })
-    }
-    return ops
-  }
-
   const save = async () => {
     if (form === undefined) return
-    const ops = operations()
-    if (typeof ops === 'string') {
-      setNote({ tone: 'bad', text: ops })
+    // Staging → operations is pure and tested on its own (`config-ops.ts`); this
+    // only words the refusal.
+    const result = configOps(FIELDS, draft)
+    if (!result.ok) {
+      const field = FIELDS.find((candidate) => candidate.key === result.field)
+      setNote({
+        tone: 'bad',
+        text: t('config.needNumber', { label: field === undefined ? result.field : t(field.label) }),
+      })
       return
     }
+    const ops = result.ops
     if (ops.length === 0) {
       setNote({ tone: 'ok', text: t('config.noChanges') })
       return
