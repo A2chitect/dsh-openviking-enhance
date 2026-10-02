@@ -88,14 +88,13 @@ check(byName.has('sidebar.panellist'), 'registers the left-sidebar row (sidebar.
 check(byName.has('main'), 'registers the matching centre panel (main)')
 check(byName.get('sidebar.panellist')?.id === byName.get('main')?.key, 'panel row id and main key agree')
 
-// The dock gets two entries on purpose: `order: -1` spacer + `order: 1` pill.
-// Their auto margins are what keep the default pills centred while the pill is
-// pinned right, so both the order and the pairing are load-bearing.
-check(dock.length === 2, `registers two dock entries (saw ${dock.length})`)
-const spacer = dock.find((entry) => entry.id === 'openviking-commit-spacer')
-const pill = dock.find((entry) => entry.id === 'openviking-commit')
-check(spacer?.order === -1, 'dock spacer renders first (order -1)')
-check(pill?.order === 1, 'status pill renders last (order 1)')
+// One dock entry. It renders two elements (an invisible mirror + the pill)
+// whose auto margins and equal widths are what keep the default pills centred
+// while the pill sits at the right edge — the CSS owns that, so here we only
+// assert the single registration and its session inject face.
+check(dock.length === 1, `registers one dock entry (saw ${dock.length})`)
+const pill = dock[0]
+check(pill?.id === 'openviking-commit', 'dock entry is the commit pill')
 check(typeof pill?.inject === 'function', 'status pill declares a session inject face')
 check(injectedKeys.length === 3, `all three slots are injected (saw ${injectedKeys.join(', ')})`)
 

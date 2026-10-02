@@ -32,11 +32,12 @@
  *   - pinning our pill with `margin-left:auto` alone would push the default
  *     pills to the far left, because that auto margin swallows all free space.
  *
- * So the dock receives two of our entries: an invisible zero-size spacer
- * carrying `margin-right:auto`, and the pill carrying `margin-left:auto`. The
- * two auto margins split the free space evenly, which keeps the default pills
- * centred while ours stays pinned to the right edge — and stays there no matter
- * how wide the step/token figures get.
+ * So the entry renders two elements: an invisible mirror of the pill carrying
+ * `margin-right:auto`, and the pill itself carrying `margin-left:auto`. The two
+ * auto margins split the free space evenly and the two side blocks are the same
+ * width, so the default pills keep their exact centred position while ours stays
+ * pinned to the right edge — and stays there no matter how wide the step/token
+ * figures get.
  */
 export const STYLE_ELEMENT_ID = 'dsh-openviking-enhance-styles'
 
@@ -66,7 +67,19 @@ const CSS = `
 .ove-dot-bad { background: var(--dsw-alias-state-warning-primary, #d29922); }
 
 /* ---- Composer dock: keep the default pills centred ---------------------- */
-.ove-dock-spacer { width: 0; height: 0; flex: none; order: -1; margin-right: auto; }
+/* Invisible mirror of the pill, same box. It carries the balancing
+   margin-right:auto; because its width equals the pill's, the free space on
+   both sides of the default pills is equal, so they stay exactly centred — no
+   JS measurement, no reflow, and it tracks the label as the figure changes. */
+.ove-dock-spacer {
+  display: inline-flex; align-items: center; flex: none;
+  order: -1; margin-right: auto; visibility: hidden; pointer-events: none;
+}
+.ove-pill-mirror {
+  box-sizing: border-box; corner-shape: round;
+  align-items: center; gap: 6px; padding: 1px 8px; display: inline-flex;
+}
+.ove-pill-mirror svg { flex: none; width: 14px; height: 14px; }
 
 /* ---- Commit status pill (mirrors StatsPills.module.css) ------------------ */
 .ove-dock {

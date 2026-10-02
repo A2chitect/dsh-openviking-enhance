@@ -61,17 +61,6 @@ function CommitIcon() {
   )
 }
 
-/**
- * Zero-size flex item that balances the pill's `margin-left:auto`.
- *
- * The dock centres its children; without this, pinning the pill right would push
- * the default pills to the far left. Two auto margins split the free space, so
- * the default pills stay centred and only the pill moves.
- */
-export function DockSpacer() {
-  return <span className="ove-dock-spacer" aria-hidden="true" />
-}
-
 export function CommitStatusPill({ sessionId }: CommitStatusProps) {
   const [status, setStatus] = useState<CommitStatus | null>(null)
   const [tasks, setTasks] = useState<CommitTaskSummary[]>([])
@@ -139,7 +128,18 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
   const archives = status ? [...status.archives].reverse() : []
 
   return (
-    <span className="ove-dock" ref={wrap} data-dsh-plugin="openviking-enhance-status">
+    <>
+      {/* Layout mirror. The dock centres its children, so pinning the pill right
+          needs an equal-width block on the left or the default pills slide over.
+          Same box, same content, invisible: `visibility:hidden` keeps the layout
+          box, so the centring stays exact without measuring anything in JS. */}
+      <span className="ove-dock-spacer" aria-hidden="true">
+        <span className="ove-pill-mirror">
+          <CommitIcon />
+          <span className="ove-label">{text}</span>
+        </span>
+      </span>
+      <span className="ove-dock" ref={wrap} data-dsh-plugin="openviking-enhance-status">
       <button
         type="button"
         className="ove-pill"
@@ -209,7 +209,8 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
           ) : null}
         </div>
       ) : null}
-    </span>
+      </span>
+    </>
   )
 }
 
