@@ -1,9 +1,11 @@
 # 发版流程
 
-面向维护者。这个仓库只有一条发版路径：**先把变更写清楚，再跑一条命令。**
+面向维护者。版本和标签只有一条路径：**先把变更写清楚，再跑一条命令。**
 
-本包是 `private: true`，以 `link:` / 路径方式装进 DSH profile，所以"发布"不是 `npm publish`：
-一次发布 = 一个 git 标签 + 一条 changelog 记录，没有上传步骤。
+本包在本地是以 `link:` 装进 `desktop` profile 的，但对外有两条真实的分发路线：npm
+（`pnpm publish`）和 GitHub Release 上挂预构建 tarball。`pnpm run release` 只管到
+"版本号 + changelog + 门禁 + 标签"，**它既不推送也不上传**——推送和上传是标签打完之后
+的事，见第二节第 3 步。
 
 ## 一、版本号怎么定
 
@@ -39,7 +41,7 @@ pnpm run release patch     # 或 minor / major，也可以直接写 0.2.0
 5. **跑门禁**：`pnpm test`（类型检查 + 构建 + 单测 + 客户端产物断言 + 两条冒烟），并且**要求真实 OpenViking 在线**（自动带上 `SMOKE_REQUIRE_SERVER=1`）——否则实时冒烟会静默跳过，等于没验；
 6. **提交并打标签**：`git commit -m "release <版本>"`，再打注解标签 `v<版本>`，标签正文就是本次 changelog 说明。
 
-第 3 步之后、提交之前的任何失败，都会把 `package.json` 和 `CHANGELOG.md` 还原回 HEAD：
+上面列表第 3 项做完之后、提交之前的任何失败，都会把 `package.json` 和 `CHANGELOG.md` 还原回 HEAD：
 **一次失败的发布不会留下半成品**，工作区还是它原来的样子。
 
 ### 排练与逃生口
@@ -51,7 +53,31 @@ pnpm run release minor --no-live    # 服务不在线时跳过实时冒烟
 
 `--no-live` 是例外而非常态：它意味着这个标签**没有真实服务的验证证据**，脚本会把这句话写进标签说明里。
 
-### 第 3 步：验收
+### 第 3 步：分发（脚本不碰这一步）
+
+`pnpm run release` 走到本地标签为止。要真的发出去，接着跑：
+
+```bash
+git push --follow-tags                # 提交和标签一起推
+
+pnpm publish                          # 路线 A：npm（先 npm login；2FA 验证码要你本人输）
+
+pnpm pack --pack-destination /tmp     # 路线 B：GitHub Release 挂预构建 tarball
+gh release create v0.2.0 /tmp/dsh-openviking-enhance-0.2.0.tgz \
+  --title "v0.2.0" --notes-from-tag   # 版本号换成这次的
+```
+
+两条路线互不冲突，也可以都发（`0.2.0` 就是都发的）。三个已经踩过的点：
+
+- **npm 上的 README 是发布那一刻的快照**——要改 README 就在 `pnpm publish` 之前改完，
+  之后再改只对下一个版本生效；
+- Release 资产如果要给 `releases/latest/download/` 用，**文件名必须去掉版本号**
+  （`latest` 只在请求时解析，文件名是照字面取的：带版本号的话链接提交当天有效、下一个版本
+  就 404，而且没人会发现）；钉死 tag 的写法才可以带版本号；
+- 投稿到插件市场时**条目里不要加 `npm:` 字段**（会被他们的校验拒绝），包与仓库的映射由
+  registry 依据 `package.json` 的 `repository` 自动采集。
+
+### 第 4 步：验收
 
 见第四节。
 
@@ -97,11 +123,15 @@ git tag -a v<版本> -m "<版本> — <日期>（说明写这里）"
 
 ## 六、发布之后
 
-- **远端**：仓库目前没有 remote，所以没有 push 这一步。将来加了远端就是 `git push --follow-tags`。
+- **远端**：origin 是公开仓库 https://github.com/A2chitect/dsh-openviking-enhance ，推送用
+  `git push --follow-tags`（提交和标签一起走）。
 - **不需要重装**：插件以 `link:` 装在 `desktop` profile 里，版本号不参与依赖解析。
 - **要重启**：宿主半部分的改动只有重启 DSH 应用才生效（客户端半部分重载窗口即可）。
 - **下一次**：把新内容写回 `## Unreleased`，重复第二节。
 
 ## 附：本文件为什么只有中文
 
-它是维护者文档，读者只有你；面向最终用户的两份 `README` 才是中英双语（`README.md` / `README.zh.md`）。
+它是维护者文档，所以只有中文；面向最终用户的两份 `README` 才是中英双语（`README.md` / `README.zh.md`）。
+
+但**它并不保密**：两份 `README` 和 `CHANGELOG.md` 都链到这里，而仓库本身是公开的。所以按
+"读者可能是陌生人"来写——内部代号、私人路径、只对你有意义的上下文，都不该出现在这里。

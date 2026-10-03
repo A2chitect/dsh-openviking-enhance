@@ -3,7 +3,8 @@
  *
  * The Plugins page gives a row a **Configure** control only while something
  * registers here, so without this file the plugin's settings existed for the
- * Loader and for agents but not for a person in the GUI (see PUBLISHING.md).
+ * Loader and for agents but not for a person in the GUI: without a registration
+ * here the page renders no **Configure** control to open.
  * The page itself owns the values: it reads the entry's volatile fields and
  * hands this component a snapshot plus one atomic write — nothing here talks to
  * the Host directly, and a write is validated against the plugin's `Config`

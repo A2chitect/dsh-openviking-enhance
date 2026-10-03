@@ -25,8 +25,9 @@
 // committed, so a failure anywhere rolls package.json and CHANGELOG.md back to
 // HEAD: a failed release leaves the tree exactly as it found it.
 //
-// This package is `private: true` and installed from a path or link, so a release
-// is a git tag plus a documented changelog entry. There is no `npm publish` step.
+// A release is a git tag plus a documented changelog entry, and this script stops
+// at the local tag: it neither pushes nor uploads. Pushing the tag, `pnpm publish`
+// and the GitHub Release tarball are the separate distribution step in RELEASING.md.
 //
 // The pure helpers below are exported for `test/release-meta.test.mjs`, which also
 // checks that the current version and the newest changelog section agree.
