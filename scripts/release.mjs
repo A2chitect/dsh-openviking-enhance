@@ -15,15 +15,16 @@
 //      greater than the current one and not already tagged;
 //   2. refuse unless `## Unreleased` exists and has something under it — a release
 //      with no notes is a release nobody can interpret later;
-//   3. write the version into package.json and promote the changelog section;
+//   3. write the version into package.json, both README version lines and the
+//      promoted changelog section;
 //   4. run the full gate, `pnpm test`, with the live OpenViking smoke *required*
 //      so it cannot silently skip (--no-live drops that requirement and the tag
 //      message records the omission);
 //   5. commit and create the annotated tag, whose message is the release notes.
 //
 // Steps 3-5 all happen after the version is written but before anything is
-// committed, so a failure anywhere rolls package.json and CHANGELOG.md back to
-// HEAD: a failed release leaves the tree exactly as it found it.
+// committed, so a failure anywhere rolls package.json, CHANGELOG.md and both
+// READMEs back to HEAD: a failed release leaves the tree exactly as it found it.
 //
 // A release is a git tag plus a documented changelog entry, and this script stops
 // at the local tag: it neither pushes nor uploads. Pushing the tag, `pnpm publish`
@@ -41,6 +42,8 @@ export const UNRELEASED_HEADING = '## Unreleased'
 const repoRoot = fileURLToPath(new URL('..', import.meta.url))
 const changelogPath = join(repoRoot, 'CHANGELOG.md')
 const packagePath = join(repoRoot, 'package.json')
+const readmeNames = ['README.md', 'README.zh.md']
+const readmePaths = readmeNames.map((name) => join(repoRoot, name))
 
 const log = (...parts) => console.log('[release]', ...parts)
 const fail = (message) => {
@@ -133,6 +136,22 @@ export function promoteUnreleased(changelog, version, date) {
   return { text: promoted.join('\n'), notes }
 }
 
+/**
+ * Move the `**vX.Y.Z**` line both READMEs carry to the next version.
+ *
+ * `check-package.mjs` asserts that line equals `package.json`'s version, so a
+ * release that only rewrites package.json fails its own gate. That is why this
+ * lives here: the script used to bump the version and then fail on a check it
+ * could have satisfied. Refuse to guess — the marker must appear exactly once.
+ */
+export function updateReadmeVersion(readme, currentVersion, nextVersion) {
+  const marker = `**v${currentVersion}**`
+  const occurrences = readme.split(marker).length - 1
+  if (occurrences === 0) throw new Error(`README does not state ${marker}`)
+  if (occurrences > 1) throw new Error(`README states ${marker} ${occurrences} times`)
+  return readme.replace(marker, `**v${nextVersion}**`)
+}
+
 function git(args, { allowFailure = false } = {}) {
   const result = spawnSync('git', args, { cwd: repoRoot, encoding: 'utf8' })
   if (result.error) throw result.error
@@ -157,6 +176,8 @@ function usage() {
     '  --no-live  do not require a running OpenViking server for the smoke step',
     '',
     'Write the release notes under "## Unreleased" in CHANGELOG.md first.',
+    '',
+    'The `**vX.Y.Z**` line in both READMEs is updated to the new version too.',
   ].join('\n')
 }
 
@@ -209,6 +230,7 @@ function main(argv) {
   const date = localDate()
   let next
   let promotion
+  let readmes = []
   try {
     next = resolveNextVersion(current, options.target)
     if (compareVersions(next, current) <= 0) {
@@ -218,12 +240,20 @@ function main(argv) {
       throw new Error(`tag v${next} already exists`)
     }
     promotion = promoteUnreleased(readFileSync(changelogPath, 'utf8'), next, date)
+    readmes = readmePaths.map((path) => {
+      try {
+        return { path, text: updateReadmeVersion(readFileSync(path, 'utf8'), current, next) }
+      } catch (error) {
+        throw new Error(`${readmeNames[readmePaths.indexOf(path)]}: ${error.message}`)
+      }
+    })
   } catch (error) {
     fail(error.message)
   }
 
   log(`${current} -> ${next}${options.dryRun ? '  (dry run)' : ''}`)
   log(`notes       ${promotion.notes.split('\n').length} line(s) from "${UNRELEASED_HEADING}"`)
+  log(`readme      ${readmeNames.join(' + ')} v${current} -> v${next}`)
   log(`gate        pnpm test${options.live ? ' with SMOKE_REQUIRE_SERVER=1' : ' (live OpenViking not required)'}`)
   if (options.dryRun) {
     log('dry run: nothing written, nothing committed, no tag created')
@@ -238,14 +268,16 @@ function main(argv) {
 
   let committed = false
   const rollback = () => {
-    git(['checkout', '--', 'package.json', 'CHANGELOG.md'])
-    log('rolled back package.json and CHANGELOG.md')
+    git(['checkout', '--', 'package.json', 'CHANGELOG.md', ...readmeNames])
+    log('rolled back package.json, CHANGELOG.md and both READMEs')
   }
 
   try {
     writeFileSync(packagePath, readFileSync(packagePath, 'utf8').replace(versionLine, `$1${next}$2`))
     writeFileSync(changelogPath, promotion.text)
+    for (const readme of readmes) writeFileSync(readme.path, readme.text)
     log(`changelog   "${UNRELEASED_HEADING}" promoted to "## ${next} — ${date}"`)
+    log(`readme      ${readmeNames.join(' + ')} v${current} -> v${next}`)
 
     const env = { ...process.env }
     if (options.live) env.SMOKE_REQUIRE_SERVER = '1'
@@ -253,7 +285,7 @@ function main(argv) {
     if (gate.error) throw gate.error
     if (gate.status !== 0) throw new Error(`the gate failed (exit ${gate.status})`)
 
-    git(['add', 'package.json', 'CHANGELOG.md'])
+    git(['add', 'package.json', 'CHANGELOG.md', ...readmeNames])
     git(['commit', '-m', `release ${next}`])
     committed = true
 

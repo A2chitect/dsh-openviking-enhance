@@ -37,11 +37,11 @@ pnpm run release patch     # 或 minor / major，也可以直接写 0.2.0
 1. **前置检查**：工作区干净、新版本号严格大于当前、`v<新版本>` 标签不存在；
 2. **检查变更说明**：`## Unreleased` 必须存在且有内容；
 3. **改 changelog**：把 `## Unreleased` 改名成 `## <版本> — <日期>`，并在最上面重新放回一个空的 `## Unreleased`；
-4. **写版本号**：更新 `package.json` 的 `version`；
+4. **写版本号**：更新 `package.json` 的 `version`，以及两份 README 顶部的 `**v<版本>**` 行——`check:package` 会断言这三处一致，脚本现在一起改；
 5. **跑门禁**：`pnpm test`（类型检查 + 构建 + 单测 + 客户端产物断言 + 两条冒烟），并且**要求真实 OpenViking 在线**（自动带上 `SMOKE_REQUIRE_SERVER=1`）——否则实时冒烟会静默跳过，等于没验；
 6. **提交并打标签**：`git commit -m "release <版本>"`，再打注解标签 `v<版本>`，标签正文就是本次 changelog 说明。
 
-上面列表第 3 项做完之后、提交之前的任何失败，都会把 `package.json` 和 `CHANGELOG.md` 还原回 HEAD：
+上面列表第 3 项做完之后、提交之前的任何失败，都会把 `package.json`、`CHANGELOG.md` 和两份 README 的版本行还原回 HEAD：
 **一次失败的发布不会留下半成品**，工作区还是它原来的样子。
 
 ### 排练与逃生口
@@ -88,6 +88,8 @@ gh release create v0.2.0 /tmp/dsh-openviking-enhance-0.2.0.tgz \
 - `package.json` 的版本是合法 semver；
 - `CHANGELOG.md` 必须有该版本的段落，且**最新一段的版本号等于 `package.json`**；
 - 顶部必须留着 `## Unreleased` 落点；
+- 两份 README 顶部的 `**v<版本>**` 行必须等于 `package.json` 的版本（`check-package.mjs` 断言），
+  发布脚本会一起移动这三处；`updateReadmeVersion` 本身也有测试，行丢了或重复出现时发布会停下；
 - 版本号推算（`bumpVersion`）和 changelog 改名（`promoteUnreleased`）这两个函数本身也有测试——它们一次发布才跑一次，不测就等于从没跑过。
 
 也就是说："改了版本忘了写 changelog"会直接让 CI 变红。CI 在 push、PR 以及 `v*` 标签上跑同一套 `pnpm test`。
@@ -112,9 +114,10 @@ gh release create v0.2.0 /tmp/dsh-openviking-enhance-0.2.0.tgz \
 ```bash
 # 1. 改 package.json 的 version
 # 2. 把 CHANGELOG.md 的 ## Unreleased 改名成 ## <版本> — <日期>，并补回空的 ## Unreleased
+# 3. 把两份 README 顶部的 **v<旧版本>** 改成 **v<新版本>**
 pnpm test                                # 门禁必须全绿
 SMOKE_REQUIRE_SERVER=1 pnpm run smoke    # 确认实时通路真的跑了，而不是 SKIP
-git add package.json CHANGELOG.md
+git add package.json CHANGELOG.md README.md README.zh.md
 git commit -m "release <版本>"
 git tag -a v<版本> -m "<版本> — <日期>（说明写这里）"
 ```

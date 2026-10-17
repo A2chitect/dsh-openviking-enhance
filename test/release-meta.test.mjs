@@ -21,6 +21,7 @@ import {
   parseArgs,
   parseVersion,
   promoteUnreleased,
+  updateReadmeVersion,
 } from '../scripts/release.mjs'
 
 const repoRoot = new URL('..', import.meta.url)
@@ -114,6 +115,29 @@ test('promoteUnreleased refuses an empty or missing section', () => {
   const empty = ['## Unreleased', '', '## 0.1.0 — 2026-01-01', '', '- first', ''].join('\n')
   assert.throws(() => promoteUnreleased(empty, '0.2.0', '2026-02-02'), /is empty/)
   assert.throws(() => promoteUnreleased('# Changelog\n', '0.2.0', '2026-02-02'), /has no/)
+})
+
+test('both READMEs state the current version, so the release script can move it', () => {
+  for (const name of ['README.md', 'README.zh.md']) {
+    const text = readFileSync(new URL(name, repoRoot), 'utf8')
+    assert.ok(text.includes(`**v${pkg.version}**`), `${name} does not state **v${pkg.version}**`)
+  }
+})
+
+test('updateReadmeVersion moves the one version line a README carries', () => {
+  const readme = '# x\n\n**v0.2.0** · [Changelog](CHANGELOG.md)\n'
+  assert.equal(
+    updateReadmeVersion(readme, '0.2.0', '0.2.1'),
+    '# x\n\n**v0.2.1** · [Changelog](CHANGELOG.md)\n',
+  )
+})
+
+test('updateReadmeVersion refuses a missing or duplicated version line', () => {
+  assert.throws(() => updateReadmeVersion('# x\n', '0.2.0', '0.2.1'), /does not state/)
+  assert.throws(
+    () => updateReadmeVersion('**v0.2.0** and **v0.2.0**', '0.2.0', '0.2.1'),
+    /2 times/,
+  )
 })
 
 // pnpm forwards the `--` separator verbatim while npm strips it, so the same
