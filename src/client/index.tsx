@@ -8,13 +8,15 @@
  * be able to take the GUI down. Every registration is owned by `ctx.effect`, so
  * an unload (or an HMR reload) collapses both mounts cleanly.
  *
- * Slot map, all verified against `@deepseek-ai/dsh-client-ui-{slots,sidebar,layout,conversation}@0.2.0-rc.2`:
+ * Slot map, all verified against `@deepseek-ai/dsh-client-ui-{slots,sidebar,layout,conversation}@0.2.0-rc.2`
+ * and re-verified on 0.2.1-rc.2:
  *   sidebar.panellist          list, root      owner {size, active}  → panel icon
  *   main                       keyed, root     key must equal the panellist id
  *   conversation.composer.dock list, session   inject(sessionId)     → status pill
  *
  * Plus one tab type in the right Sidebar
- * (`@deepseek-ai/dsh-client-ui-sidebar-right@0.2.0-rc.2`), registered in two
+ * (`@deepseek-ai/dsh-client-ui-sidebar-right@0.2.0-rc.2`, re-verified on
+ * 0.2.1-rc.2), registered in two
  * stages because that is the only contract the framework offers:
  *   ctx.sidebarRightTabs.register({id, kind, title, guide})   stage one: a page type
  *   sidebar.right.pane.tab     keyed, session, key = that id → stage two: the body

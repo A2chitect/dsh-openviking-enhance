@@ -9,6 +9,23 @@ promotes to a dated section — see [RELEASING.md](RELEASING.md).
 
 ## Unreleased
 
+### Changed
+
+- **Declared compatibility with DSH 0.2.1-rc.2.** The development dependencies
+  now track the 0.2.1 line (`0.2.1-rc.2`, `@deepseek-ai/cordis` 4.0.5,
+  `@deepseek-ai/schemastery` 3.18.5), and both the peer range and `engines.dsh`
+  name that prerelease line as well as 0.2.0's. No plugin code changed: the same
+  sources type-check against both versions, and the full suite — including the
+  live OpenViking smoke — passes on 0.2.1-rc.2.
+
+### 变更
+
+- **声明支持 DSH 0.2.1-rc.2。** 开发依赖升到 0.2.1 线（`0.2.1-rc.2`、
+  `@deepseek-ai/cordis` 4.0.5、`@deepseek-ai/schemastery` 3.18.5），peer 范围与
+  `engines.dsh` 同时标出 0.2.1 预发布线与 0.2.0 线。插件代码没有改动：同一份
+  源码在两套类型下都通过类型检查，并在 0.2.1-rc.2 上跑完整套测试（含真实
+  OpenViking 在线冒烟）。
+
 ## 0.2.0 — 2026-10-02
 
 ### Added

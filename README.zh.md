@@ -51,7 +51,7 @@ Studio 面板、打开它的侧边栏行，以及输入框下方的提交状态�
 
 | | |
 | --- | --- |
-| DSH | 0.2.0-rc.2 或更新（desktop / web profile 均可） |
+| DSH | 0.2.0-rc.2 或更新（desktop / web profile 均可；已在 0.2.1-rc.2 实测） |
 | OpenViking | 需要一个本地服务，实测 0.4.22。Studio 由同一端口的 `/studio/` 提供 |
 | 记忆插件 | 建议装 `@openviking/dsh-memory-plugin`——会话提交由它完成。不装也能用，只是看不到提交阈值进度 |
 
