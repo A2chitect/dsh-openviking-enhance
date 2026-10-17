@@ -9,6 +9,8 @@ promotes to a dated section — see [RELEASING.md](RELEASING.md).
 
 ## Unreleased
 
+## 0.2.1 — 2026-10-18
+
 ### Changed
 
 - **Declared compatibility with DSH 0.2.1-rc.2.** The development dependencies
