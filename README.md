@@ -63,8 +63,8 @@ The Studio panel, the sidebar row that opens it, and the commit pill below the c
 
 | | |
 | --- | --- |
-| DSH | 0.2.0-rc.2 or newer (desktop or web profile; verified on 0.2.1-rc.2) |
-| OpenViking | A local server; 0.4.22 tested. Studio is served at `/studio/` on the same port |
+| DSH | 0.2.0-rc.2 or newer (desktop or web profile; verified on 0.2.1-rc.3) |
+| OpenViking | A local server; 0.5.1.1 tested. Studio is served at `/studio/` on the same port |
 | Memory plugin | `@openviking/dsh-memory-plugin` recommended — it is what commits sessions. Without it the panel still works, but pending-token thresholds are unknown |
 
 ## Install

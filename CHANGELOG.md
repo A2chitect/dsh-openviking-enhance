@@ -9,6 +9,32 @@ promotes to a dated section — see [RELEASING.md](RELEASING.md).
 
 ## Unreleased
 
+### Changed
+
+- **Verified against DSH 0.2.1-rc.3.** The desktop app moved one prerelease
+  forward on the 0.2.1 line. No plugin code changed: the same sources type-check
+  against the 0.2.1-rc.3 type packages and the whole suite passes on rc.3 — 69
+  unit/component tests, 58 client-smoke checks, 24 packaging-contract checks, the
+  live OpenViking smoke (status, commits, timeline, probe, recall, diff) and the
+  six-request route fence. The development dependencies now pin 0.2.1-rc.3; the
+  peer range and both `engines.dsh` entries already admitted that release (same
+  0.2.1 tuple), so no new range branch was needed. The running app confirms it:
+  the sidebar row, Studio panel, commit pill and recall tab all mount on the rc.3
+  GUI, and the host routes answer `ok: true` / `healthy: true`. The requirements
+  table now names OpenViking 0.5.1.1, the server the live smoke ran against.
+
+### 变更
+
+- **已在 DSH 0.2.1-rc.3 上验证。** 桌面端在 0.2.1 线上又前进一个预发布版本。
+  插件代码没有改动：同一份源码对 0.2.1-rc.3 类型包通过类型检查，整套测试也在
+  rc.3 上全绿——69 项单测/组件测试、58 项客户端冒烟、24 项打包契约、真实
+  OpenViking 在线冒烟（状态、提交、时间线、探测、召回、差异）与 6 项路由 fence。
+  开发依赖现在钉到 `0.2.1-rc.3`；peer 范围与两处 `engines.dsh` 本就覆盖该版本
+  （同为 0.2.1 元组），无需新增范围分支。运行中的 app 也确认：左侧栏行、
+  Studio 面板、提交状态胶囊与召回 tab 都在 rc.3 界面上正常挂载，宿主路由返回
+  `ok: true` / `healthy: true`。前置条件表里的 OpenViking 实测版本更新为
+  0.5.1.1（本次在线冒烟所用服务端）。
+
 ## 0.2.1 — 2026-10-18
 
 ### Changed

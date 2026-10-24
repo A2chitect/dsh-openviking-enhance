@@ -5,7 +5,7 @@
 # which is the part a change in this repository can actually regress. Locally, run
 # `SMOKE_REQUIRE_SERVER=1 pnpm run smoke` to make that skip a failure instead.
 #
-# The DSH UI packages are pinned to the runtime generation (0.2.1-rc.2) on purpose:
+# The DSH UI packages are pinned to the runtime generation (0.2.1-rc.3) on purpose:
 # the type check validates our slot names and props against their `SlotMap`
 # augmentations, so a range would silently validate against the wrong generation.
 name: ci
