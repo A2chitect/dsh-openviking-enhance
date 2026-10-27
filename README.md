@@ -119,12 +119,32 @@ The same settings can still be written by hand in your profile's patch file
 | `account` / `user` | `default` / `default` | Identity the panel reads under |
 | `studioPath` | `/studio/` | Where Studio is served on that origin |
 | `cacheTtlMs` | `2500` | How long a status answer is reused |
+| `recallCacheTtlMs` | `15000` | How long one retrieval answer is reused |
+| `showSidebarEntry` | `true` | Interface switch: the OpenViking entry in the left sidebar |
+| `showCommitStatus` | `true` | Interface switch: the commit status pill under the message box |
+| `showRecallPanel` | `true` | Interface switch: the Memory recall tab in the right sidebar |
+
+The three **interface switches** control the three surfaces independently. They
+take effect as soon as you save — the GUI mounts or unmounts the surface without
+a reload or a restart. The **Configure** form itself is never hidden, so a
+surface switched off can always be switched back on there. Hiding the sidebar
+entry also unmounts the Studio page (it loads fresh when shown again), and hiding
+the recall tab closes an open recall page as soon as the conversation is back
+on screen — a page that is open in a background pane has to be closed by hand,
+because the harness exposes no way to enumerate tabs.
 
 ## Troubleshooting
 
 **No OpenViking row in the sidebar, or no pill under the message box.**
-The client half is served as a file and picked up on page load. Reload the window
-(⌘R). If it is still missing, restart the app.
+First check the plugin's own switches (Plugins → this plugin → **Configure** →
+*Interface*): a surface may be switched off, and the switches are independent.
+Otherwise the client half is served as a file and picked up on page load. Reload
+the window (⌘R). If it is still missing, restart the app.
+
+**I hid the OpenViking row / pill / recall tab and want it back.**
+Open **Plugins** → *dsh-openviking-enhance* → **Configure** on its row and switch
+it back on, then save. That form is always available, even with all three
+surfaces hidden.
 
 **The panel says it cannot reach OpenViking.**
 Start the server and check it directly: `curl http://127.0.0.1:1933/health`. The

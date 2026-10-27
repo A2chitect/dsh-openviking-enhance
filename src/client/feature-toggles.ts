@@ -1,0 +1,164 @@
+/**
+ * The plugin's three interface switches, read live from the settings form.
+ *
+ * The values live in the host `Config` as `.volatile()` booleans and are edited
+ * on the Plugins page; this module is how the browser half hears about an edit.
+ * It deliberately owns no React state: `watchFeatureFlags` is a subscription,
+ * and `index.tsx` turns each emission into slot registrations or their disposal.
+ *
+ * Two rules make the wiring upgrade-safe:
+ *
+ *  - **The settings service is optional.** A composition without
+ *    `@deepseek-ai/dsh-client-ui-settings` (or a Host that serves no form for
+ *    this entry) must keep the plugin working. Nothing here throws: an absent
+ *    service, an unavailable namespace, or a malformed value all fall back to
+ *    "show everything", which is what the plugin did before these switches
+ *    existed.
+ *  - **Only a `ready` snapshot is an answer.** A snapshot that has not arrived
+ *    yet is not permission to hide a surface: the initial mount happens with
+ *    the defaults, and a later answer with `false` disposes the surface then.
+ */
+import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
+import type { ClientContext } from './slot-service.ts'
+
+/** Which surfaces the plugin currently draws. */
+export interface FeatureFlags {
+  /** The Studio entry in the left sidebar (and its main panel). */
+  readonly sidebarEntry: boolean
+  /** The per-session commit status pill under the composer. */
+  readonly commitStatus: boolean
+  /** The Memory recall tab in the right sidebar. */
+  readonly recallPanel: boolean
+}
+
+/** The state before any settings answer, and the fallback when there is none. */
+export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
+  sidebarEntry: true,
+  commitStatus: true,
+  recallPanel: true,
+}
+
+/**
+ * The Config field behind each surface.
+ *
+ * One table, so the watcher and the settings form cannot drift: the form renders
+ * the same keys, and a renamed field fails to compile here instead of silently
+ * making a switch dead.
+ */
+export const FEATURE_CONFIG_FIELDS = {
+  sidebarEntry: 'showSidebarEntry',
+  commitStatus: 'showCommitStatus',
+  recallPanel: 'showRecallPanel',
+} as const satisfies Record<keyof FeatureFlags, string>
+
+/** The surfaces in the order they are mounted (and reverse order for disposal). */
+export const FEATURE_ORDER: readonly (keyof FeatureFlags)[] = [
+  'sidebarEntry',
+  'commitStatus',
+  'recallPanel',
+]
+
+/** One boolean, or the default when the field is missing or not a boolean. */
+function flagOf(config: Record<string, unknown>, field: string): boolean {
+  const value = config[field]
+  return typeof value === 'boolean' ? value : true
+}
+
+/**
+ * Read the three switches out of a settings value.
+ *
+ * `undefined` (no value yet), a missing field, or a non-boolean all mean "on":
+ * hiding a surface is the exceptional state, and it must come from a real
+ * `false` the user saved.
+ */
+export function featureFlagsFrom(value: unknown): FeatureFlags {
+  const config =
+    typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {}
+  return {
+    sidebarEntry: flagOf(config, FEATURE_CONFIG_FIELDS.sidebarEntry),
+    commitStatus: flagOf(config, FEATURE_CONFIG_FIELDS.commitStatus),
+    recallPanel: flagOf(config, FEATURE_CONFIG_FIELDS.recallPanel),
+  }
+}
+
+/** Whether two flag sets describe the same surfaces. */
+export function sameFeatureFlags(left: FeatureFlags, right: FeatureFlags): boolean {
+  return (
+    left.sidebarEntry === right.sidebarEntry &&
+    left.commitStatus === right.commitStatus &&
+    left.recallPanel === right.recallPanel
+  )
+}
+
+/** The slice of the settings domain service this module consumes. */
+interface ConfigFormsService {
+  get<T>(entryId: string): ConfigForm<T>
+}
+
+/**
+ * Observe the three switches for as long as the plugin lives.
+ *
+ * `namespace` is the Loader row id (`openviking-enhance`), which is what DSH
+ * serves a row's form under (`plugins.row.config` is keyed by
+ * `<package>#<row id>`, and the page hands the row id to `configForms.get`).
+ *
+ * The callback runs once per distinct state: immediately when a ready snapshot
+ * is already held, then after every edit that changes one of the three values.
+ * The returned disposer removes the listener and the optional service injection.
+ */
+export function watchFeatureFlags(
+  context: ClientContext,
+  namespace: string,
+  onChange: (flags: FeatureFlags) => void,
+): () => void {
+  let unsubscribe: (() => void) | undefined
+  let last: FeatureFlags | undefined
+
+  const publish = (form: ConfigForm<Record<string, unknown>>): void => {
+    const snapshot = form.getSnapshot()
+    // A pending or unavailable form is not an answer: keep whatever the caller
+    // already drew rather than resetting a hidden surface to visible.
+    if (snapshot.status !== 'ready') return
+    const next = featureFlagsFrom(snapshot.value)
+    if (last !== undefined && sameFeatureFlags(last, next)) return
+    last = next
+    onChange(next)
+  }
+
+  const handle = context.inject(['configForms'], (scope) => {
+    const forms = scope.get('configForms') as ConfigFormsService | undefined
+    if (forms === undefined) return
+
+    let form: ConfigForm<Record<string, unknown>>
+    try {
+      form = forms.get<Record<string, unknown>>(namespace)
+    } catch (error) {
+      const logger = context.logger
+      const detail = error instanceof Error ? error.message : String(error)
+      if (typeof logger?.warn === 'function') {
+        logger.warn(`[openviking-enhance] settings form unavailable: ${detail}`, error)
+      }
+      return
+    }
+
+    // An earlier callback (the service was replaced) must not leave a listener
+    // behind; the framework disposes the previous returned effect, but being
+    // explicit here keeps a double emission impossible.
+    unsubscribe?.()
+    unsubscribe = form.subscribe(() => publish(form))
+    publish(form)
+
+    return () => {
+      unsubscribe?.()
+      unsubscribe = undefined
+    }
+  })
+
+  return () => {
+    try {
+      handle.dispose()
+    } catch {
+      // Disposal is best effort: an unload must not throw.
+    }
+  }
+}

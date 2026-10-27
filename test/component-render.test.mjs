@@ -104,11 +104,41 @@ const FORM = {
       studioPath: '/studio/',
       cacheTtlMs: 2500,
       recallCacheTtlMs: 15000,
+      showSidebarEntry: true,
+      showCommitStatus: true,
+      showRecallPanel: true,
     },
     base: { endpoint: '', studioPath: '/studio/', cacheTtlMs: 2500, recallCacheTtlMs: 15000 },
     user: { endpoint: 'http://127.0.0.1:1933' },
   },
   mutate: () => Promise.resolve(true),
+}
+
+/** Every `<input type="checkbox">` tag in a rendered form, in document order. */
+function checkboxes(markup) {
+  return [...markup.matchAll(/<input[^>]*type="checkbox"[^>]*>/g)].map((match) => match[0])
+}
+
+/**
+ * Whether React's server renderer wrote a boolean attribute as present.
+ *
+ * `renderToStaticMarkup` writes `checked=""` / `disabled=""` for a true prop and
+ * omits the attribute for a false one, so presence is the state.
+ */
+const hasAttribute = (tag, attribute) => new RegExp(`\\b${attribute}(="")?(?=[\\s/>])`).test(tag)
+
+/** The one `.ove-config-toggle` label block wrapping each switch, in order. */
+function toggleBlocks(markup) {
+  return [...markup.matchAll(/<label class="ove-config-toggle">([\s\S]*?)<\/label>/g)].map(
+    (match) => match[1],
+  )
+}
+
+/** Render the plugin's configuration page with one form snapshot. */
+function renderPage(find, form) {
+  return renderToStaticMarkup(
+    createElement(find('plugins.row.config').Component, { view: 'page', form }),
+  )
 }
 
 test('the bundle registers every seat, and all of them render', () => {
@@ -126,7 +156,20 @@ test('the bundle registers every seat, and all of them render', () => {
   const markup = renderToStaticMarkup(
     createElement(find('plugins.row.config').Component, { view: 'page', form: FORM }),
   )
-  for (const label of ['OpenViking address', 'API key', 'Account', 'User', 'Studio path', 'Status cache (ms)', 'Recall cache (ms)']) {
+  for (const label of [
+    'OpenViking address',
+    'API key',
+    'Account',
+    'User',
+    'Studio path',
+    'Status cache (ms)',
+    'Recall cache (ms)',
+    // The three interface switches that mount/unmount the surfaces live.
+    'Interface',
+    'Sidebar entry',
+    'Commit status pill',
+    'Memory recall tab',
+  ]) {
     assert.ok(markup.includes(label), `the form shows ${label}`)
   }
   assert.ok(markup.includes('Save'), 'the form has its own save control')
@@ -158,12 +201,97 @@ test('the same components render in Chinese when the app is set to it', () => {
   const markup = renderToStaticMarkup(
     createElement(find('plugins.row.config').Component, { view: 'page', form: FORM }),
   )
-  for (const label of ['OpenViking 地址', 'API Key', 'Account', 'User', 'Studio 路径', '状态缓存（毫秒）', '召回缓存（毫秒）']) {
+  for (const label of [
+    'OpenViking 地址',
+    'API Key',
+    'Account',
+    'User',
+    'Studio 路径',
+    '状态缓存（毫秒）',
+    '召回缓存（毫秒）',
+    // The three interface switches are translated too, not left in English.
+    '界面开关',
+    '左侧边栏入口',
+    '提交状态胶囊',
+    '记忆召回标签页',
+  ]) {
     assert.ok(markup.includes(label), `the form shows ${label}`)
   }
   assert.ok(markup.includes('保存'), 'and its own save control')
   assert.ok(markup.includes('已覆盖'), 'and the overridden badge')
   assert.ok(!markup.includes('Save'), 'nothing falls back to English')
+})
+
+test('the form renders the three interface switches as checkboxes that follow the saved values', () => {
+  const { find } = loadBundle('en')
+  const markup = renderPage(find, FORM)
+
+  const boxes = checkboxes(markup)
+  assert.equal(boxes.length, 3, 'exactly three checkbox inputs, one per switch')
+  assert.deepEqual(
+    boxes.map((tag) => hasAttribute(tag, 'checked')),
+    [true, true, true],
+    'all three are checked when the saved values are on',
+  )
+  assert.deepEqual(
+    boxes.map((tag) => hasAttribute(tag, 'disabled')),
+    [false, false, false],
+    'a writable form leaves them enabled',
+  )
+
+  // The three switches have their own rows, in the order the sidebar, the
+  // composer and the right sidebar appear.
+  const blocks = toggleBlocks(markup)
+  assert.equal(blocks.length, 3, 'each switch is its own labelled row')
+  for (const [index, label] of ['Sidebar entry', 'Commit status pill', 'Memory recall tab'].entries()) {
+    assert.ok(blocks[index].includes(label), `switch ${index + 1} is the ${label} row`)
+    assert.equal(checkboxes(blocks[index]).length, 1, `the ${label} row has exactly one checkbox`)
+  }
+
+  // A saved `false` reaches its own checkbox as unchecked, and does not leak into
+  // the other two. This is the whole point of the form: the switch reflects what
+  // the browser half will do with the surface.
+  const off = renderPage(find, {
+    ...FORM,
+    state: {
+      ...FORM.state,
+      value: { ...FORM.state.value, showCommitStatus: false },
+      user: { ...FORM.state.user, showCommitStatus: false },
+    },
+  })
+  const offBlocks = toggleBlocks(off)
+  assert.equal(checkboxes(off).length, 3)
+  assert.equal(
+    hasAttribute(checkboxes(offBlocks[0])[0], 'checked'),
+    true,
+    'the sidebar switch stays on',
+  )
+  assert.equal(
+    hasAttribute(checkboxes(offBlocks[1])[0], 'checked'),
+    false,
+    'the saved-off commit switch is unchecked',
+  )
+  assert.equal(
+    hasAttribute(checkboxes(offBlocks[2])[0], 'checked'),
+    true,
+    'the recall switch stays on',
+  )
+  // An override is marked where it is edited, the same as every other field.
+  assert.ok(offBlocks[1].includes('overridden'), 'the overridden switch carries the override badge')
+})
+
+test('a read-only form disables the three switches instead of pretending they can be edited', () => {
+  const { find } = loadBundle('en')
+  const readOnly = { ...FORM, state: { ...FORM.state, writable: false } }
+  const markup = renderPage(find, readOnly)
+  const boxes = checkboxes(markup)
+  assert.equal(boxes.length, 3)
+  assert.deepEqual(
+    boxes.map((tag) => hasAttribute(tag, 'disabled')),
+    [true, true, true],
+    'every switch is disabled when the profile cannot be written',
+  )
+  assert.ok(markup.includes('read-only'), 'the form also explains why it cannot be edited')
 })
 
 test('a deployment that cannot write says so instead of offering a dead save', () => {

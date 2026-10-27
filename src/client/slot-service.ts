@@ -137,3 +137,53 @@ export interface SidebarRightTabRegistry {
 export interface SidebarRightNavigation {
   openTab(kind: string, options?: { params?: unknown }): void
 }
+
+/**
+ * One open tab as the right Sidebar's own controller reports it.
+ *
+ * The live 0.2.1-rc.3 record is `{ id, kind, contentId, title }`: a page tab's
+ * address (`sidebar://<kind>`) lives in `contentId`, not in `address`. An earlier
+ * build of this plugin compared only `address` and therefore never closed the
+ * open recall page — keep all three shapes here so the check cannot silently go
+ * back to a field the framework does not send.
+ */
+export interface SidebarRightTabRecord {
+  readonly id: string
+  /** The registered type's kind (`openviking-recall` for this plugin's tab). */
+  readonly kind?: string
+  /** The tab's content identity: for a page tab, `sidebar://<kind>`. */
+  readonly contentId?: string
+  /** Legacy name for the content identity; not sent by the current framework. */
+  readonly address?: string
+}
+
+/**
+ * The observable that names the Session the right Sidebar is mounted for, or
+ * `undefined` while the conversation (and therefore the column) is off screen —
+ * e.g. while a Plugins page fills the main column. Used to retry a pending tab
+ * close once the surface is back.
+ */
+export interface SidebarRightMounted {
+  getSnapshot?(): unknown
+  subscribe(listener: () => void): () => void
+}
+
+/**
+ * The outward right-Sidebar face, narrowed to what hiding the recall surface
+ * needs: identify the tab it is showing and close it before its body and type
+ * go away. Both members are optional because a composition older than this use
+ * case must not make the plugin fail; the switch still unmounts the surface,
+ * and the framework's own fallback covers the rare open tab.
+ *
+ * The public face exposes only the ACTIVE tab, so a recall page that is open but
+ * not selected cannot be found here; hiding the surface leaves that one tab
+ * unrendered until the user closes it (re-enabling the switch restores it).
+ */
+export interface SidebarRightService {
+  /** The active tab of the active pane, or undefined with no session on screen. */
+  active?(): SidebarRightTabRecord | undefined
+  /** Close one tab of the on-screen session. */
+  close?(tabId: string): void
+  /** The mounted-Session observable; a change means a surface came back. */
+  readonly mounted?: SidebarRightMounted
+}

@@ -62,6 +62,21 @@ export const Config = z.object({
   cacheTtlMs: z.number().default(2500).volatile(),
   /** How long one retrieval answer is reused, in milliseconds. */
   recallCacheTtlMs: z.number().default(15000).volatile(),
+  /**
+   * Interface switch: the Studio entry in the left sidebar.
+   *
+   * The three `show*` fields are *client-only* preferences: they exist here so the
+   * Plugins page's configuration form can render and persist them (the settings
+   * service projects `.volatile()` fields only), and the host half never reads
+   * them. The browser half watches them through `ctx.configForms` and mounts or
+   * unmounts each surface live, so flipping one takes effect on the next save
+   * without a reload.
+   */
+  showSidebarEntry: z.boolean().default(true).volatile(),
+  /** Interface switch: the per-session commit status pill under the composer. */
+  showCommitStatus: z.boolean().default(true).volatile(),
+  /** Interface switch: the Memory recall tab in the right sidebar. */
+  showRecallPanel: z.boolean().default(true).volatile(),
 })
 
 /**

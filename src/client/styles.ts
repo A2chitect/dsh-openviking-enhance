@@ -411,6 +411,23 @@ button.ove-pill-errored:hover, button.ove-pill-errored[aria-expanded="true"] {
 .ove-config-note { margin: 0; font-size: 12px; color: var(--dsw-alias-label-secondary); }
 .ove-config-error { margin: 0; font-size: 12px; color: var(--dsw-alias-state-error-primary, #f85149); }
 .ove-config-actions { display: flex; gap: 8px; align-items: center; }
+/* Interface switches: a separated group of rows, each label+hint on the left and
+   the 16px checkbox with its small "default" button on the right. The group is
+   split from the connection fields by the same hairline the page uses. */
+.ove-config-group {
+  display: flex; flex-direction: column; gap: 10px;
+  border-top: .5px solid var(--dsw-alias-border-l3); padding-top: 14px;
+}
+.ove-config-group-title { font-size: 13px; color: var(--dsw-alias-label-primary); }
+.ove-config-toggle { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.ove-config-toggle-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.ove-config-toggle-control { display: flex; align-items: center; gap: 8px; flex: none; }
+.ove-config-check {
+  width: 16px; height: 16px; margin: 0; cursor: pointer;
+  accent-color: var(--dsw-alias-state-business-primary);
+}
+.ove-config-check:disabled { opacity: .4; cursor: not-allowed; }
+.ove-config-button-sm { height: 24px; padding: 0 8px; font-size: 12px; }
 `
 
 /** Install the stylesheet once per document. */

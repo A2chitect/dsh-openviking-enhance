@@ -15,6 +15,12 @@ export interface ConfigOpField {
   readonly key: string
   /** A field the schema declares as a number. */
   readonly numeric?: boolean
+  /**
+   * A field the schema declares as a boolean. The form stages the two strings
+   * `'true'`/`'false'` and an empty string for "default"; anything else is a bug
+   * in the caller's table rather than a value to guess at.
+   */
+  readonly boolean?: boolean
 }
 
 export type ConfigOpsResult =
@@ -44,6 +50,14 @@ export function configOps(
     if (field === undefined) continue
     if (staged.length === 0) {
       ops.push({ op: 'unset', path: [key] })
+      continue
+    }
+    if (field.boolean === true) {
+      // A checkbox has two values; these two strings are the only shapes the
+      // form produces for one, so anything else is refused rather than coerced
+      // (`Boolean('false')` would be true — the trap this branch exists for).
+      if (staged !== 'true' && staged !== 'false') return { ok: false, field: key }
+      ops.push({ op: 'set', path: [key], value: staged === 'true' })
       continue
     }
     if (field.numeric === true) {

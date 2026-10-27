@@ -21,10 +21,17 @@
  *    silently overwriting it, and a refusal keeps the draft for a retry;
  *  - clearing a field is an `unset`, which restores inheritance rather than
  *    writing an empty string.
+ *
+ * The form has two halves: the connection values the host half reads, and three
+ * **interface switches** (`showSidebarEntry` / `showCommitStatus` /
+ * `showRecallPanel`). The switches are client-only preferences — the host serves
+ * them so this form can persist them, and the browser half applies them live
+ * through `ctx.configForms`, so saving one immediately mounts or unmounts the
+ * surface without a reload.
  */
 import { useCallback, useState } from 'react'
 import type { PluginConfigViewProps } from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
-import { configOps } from './config-ops.ts'
+import { configOps, type ConfigOpField } from './config-ops.ts'
 import { probeEndpoint } from './host-api.ts'
 import { t } from './locale.ts'
 
@@ -51,6 +58,42 @@ const FIELDS: readonly FieldSpec[] = [
   { key: 'studioPath', label: 'config.studioPath', hint: 'config.studioPathHint', placeholder: '/studio/' },
   { key: 'cacheTtlMs', label: 'config.cacheTtl', hint: 'config.cacheTtlHint', numeric: true, placeholder: '2500' },
   { key: 'recallCacheTtlMs', label: 'config.recallCacheTtl', hint: 'config.recallCacheTtlHint', numeric: true, placeholder: '15000' },
+]
+
+/**
+ * The interface switches, in the order they appear inside the left sidebar, the
+ * composer and the right sidebar. Their Config keys match
+ * `feature-toggles.ts`'s `FEATURE_CONFIG_FIELDS`, and their values are staged as
+ * the strings `'true'`/`'false'` (see `config-ops.ts`).
+ */
+interface ToggleSpec {
+  readonly key: string
+  readonly label: string
+  readonly hint: string
+}
+
+const FEATURE_TOGGLES: readonly ToggleSpec[] = [
+  {
+    key: 'showSidebarEntry',
+    label: 'config.showSidebarEntry',
+    hint: 'config.showSidebarEntryHint',
+  },
+  {
+    key: 'showCommitStatus',
+    label: 'config.showCommitStatus',
+    hint: 'config.showCommitStatusHint',
+  },
+  {
+    key: 'showRecallPanel',
+    label: 'config.showRecallPanel',
+    hint: 'config.showRecallPanelHint',
+  },
+]
+
+/** Every field `configOps` has to understand, text and switches alike. */
+const CONFIG_OP_FIELDS: readonly ConfigOpField[] = [
+  ...FIELDS.map((field) => ({ key: field.key, numeric: field.numeric === true })),
+  ...FEATURE_TOGGLES.map((toggle) => ({ key: toggle.key, boolean: true })),
 ]
 
 const SECRET_PLACEHOLDER = '••••••••'
@@ -95,6 +138,22 @@ function ConfigForm({ form }: { form: PluginConfigViewProps['form'] }) {
     [draft, overrides, resolved],
   )
 
+  /**
+   * A switch's current state: the staged edit while there is one, else the
+   * resolved value. A missing value means on — the schema default, and the
+   * plugin's behaviour before these switches existed. An empty staged value is
+   * the form's "default" (an `unset`), so it also shows the resolved state.
+   */
+  const toggleValue = useCallback(
+    (toggle: ToggleSpec): boolean => {
+      const staged = draft[toggle.key]
+      if (staged === 'true') return true
+      if (staged === 'false') return false
+      return resolved[toggle.key] !== false
+    },
+    [draft, resolved],
+  )
+
   const stage = (key: string, value: string) => {
     setDraft((current) => ({ ...current, [key]: value }))
     setNote(null)
@@ -109,9 +168,9 @@ function ConfigForm({ form }: { form: PluginConfigViewProps['form'] }) {
     if (form === undefined) return
     // Staging → operations is pure and tested on its own (`config-ops.ts`); this
     // only words the refusal.
-    const result = configOps(FIELDS, draft)
+    const result = configOps(CONFIG_OP_FIELDS, draft)
     if (!result.ok) {
-      const field = FIELDS.find((candidate) => candidate.key === result.field)
+      const field = [...FIELDS, ...FEATURE_TOGGLES].find((candidate) => candidate.key === result.field)
       setNote({
         tone: 'bad',
         text: t('config.needNumber', { label: field === undefined ? result.field : t(field.label) }),
@@ -200,6 +259,45 @@ function ConfigForm({ form }: { form: PluginConfigViewProps['form'] }) {
           <span className="ove-config-hint">{t(field.hint)}</span>
         </label>
       ))}
+
+      {/*
+        The interface switches are a separate group on purpose: they are saved in
+        the same atomic write, but they take effect immediately (the browser half
+        observes the settings form), unlike the connection values above.
+      */}
+      <div className="ove-config-group">
+        <span className="ove-config-group-title">{t('config.features')}</span>
+        <span className="ove-config-hint">{t('config.featuresHint')}</span>
+        {FEATURE_TOGGLES.map((toggle) => (
+          <label className="ove-config-toggle" key={toggle.key}>
+            <span className="ove-config-toggle-text">
+              <span className="ove-config-label">
+                {t(toggle.label)}
+                {toggle.key in overrides && <span className="ove-config-badge">{t('config.overridden')}</span>}
+              </span>
+              <span className="ove-config-hint">{t(toggle.hint)}</span>
+            </span>
+            <span className="ove-config-toggle-control">
+              <input
+                className="ove-config-check"
+                type="checkbox"
+                checked={toggleValue(toggle)}
+                disabled={!writable || busy}
+                onChange={(event) => stage(toggle.key, event.target.checked ? 'true' : 'false')}
+              />
+              <button
+                type="button"
+                className="ove-config-button ove-config-button-sm"
+                title={t('config.defaultHint')}
+                onClick={() => clear(toggle.key)}
+                disabled={!writable || busy}
+              >
+                {t('config.default')}
+              </button>
+            </span>
+          </label>
+        ))}
+      </div>
 
       {probe !== null && <p className="ove-config-note">{probe}</p>}
       {note !== null && (

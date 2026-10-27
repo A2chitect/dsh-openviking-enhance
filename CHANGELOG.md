@@ -9,12 +9,46 @@ promotes to a dated section — see [RELEASING.md](RELEASING.md).
 
 ## Unreleased
 
+### Added
+
+- **Three interface switches on the plugin's settings form.** `showSidebarEntry`,
+  `showCommitStatus` and `showRecallPanel` (all default `true`) independently hide
+  the Studio entry in the left sidebar, the per-session commit pill under the
+  composer, and the Memory recall tab in the right sidebar. They are persisted by
+  the same **Configure** form and applied live through `ctx.configForms` — saving
+  mounts or unmounts the surface with no reload or restart. The form itself is
+  never hidden: a switched-off surface can always be switched back on there.
+  Hiding the sidebar entry unmounts the Studio page (it loads fresh when shown
+  again); hiding the recall tab closes an open recall page once the conversation
+  is back on screen (a page open in a background pane has to be closed by hand,
+  because the harness exposes no tab enumeration). A deployment
+  without the settings client keeps every surface visible, exactly as before the
+  switches existed. The release was exercised in the running desktop GUI: the host
+  Config was hot-reloaded without an app restart, each surface disappeared and
+  returned on save, and switching the recall tab off closed an already-open recall
+  page once the conversation came back; the test-written overrides were then
+  removed, so the defaults are in force.
+
+### 新增
+
+- **插件设置里新增三个界面开关。** `showSidebarEntry`、`showCommitStatus`、
+  `showRecallPanel`（默认都是 `true`）分别控制左侧边栏的 Studio 入口、输入框下方的
+  提交状态胶囊、右侧边栏的「记忆召回」tab。开关与连接参数在同一个 **Configure** 表单里
+  保存，客户端通过 `ctx.configForms` 实时生效——保存即挂载或卸载对应界面，不需要重载
+  窗口或重启应用。配置表单本身永远可见，关掉的入口随时能在这里开回来。隐藏左侧入口会
+  一并卸载 Studio 页面（重新打开后重新加载）；隐藏召回 tab 后不再提供该页，已打开的召回页
+  会在回到对话时自动收起（若它在后台分屏里、不是激活页，则需手动关闭——框架没有提供枚举
+  标签页的接口）。没有 settings 客户端的部署保持三个入口全部显示，与加开关之前完全一致。
+  本版本在运行中的桌面 GUI 里实测过：宿主 Config 无需重启 App 即热重载，三个入口在保存后
+  当场消失/恢复，关掉召回开关后已打开的召回页会在回到对话时自动关闭；随后清除了测试写入的
+  覆盖值，默认值（全开）生效。
+
 ### Changed
 
 - **Verified against DSH 0.2.1-rc.3.** The desktop app moved one prerelease
   forward on the 0.2.1 line. No plugin code changed: the same sources type-check
-  against the 0.2.1-rc.3 type packages and the whole suite passes on rc.3 — 69
-  unit/component tests, 58 client-smoke checks, 24 packaging-contract checks, the
+  against the 0.2.1-rc.3 type packages and the whole suite passes on rc.3 — 88
+  unit/component tests, 160 client-smoke checks, 24 packaging-contract checks, the
   live OpenViking smoke (status, commits, timeline, probe, recall, diff) and the
   six-request route fence. The development dependencies now pin 0.2.1-rc.3; the
   peer range and both `engines.dsh` entries already admitted that release (same
@@ -27,7 +61,7 @@ promotes to a dated section — see [RELEASING.md](RELEASING.md).
 
 - **已在 DSH 0.2.1-rc.3 上验证。** 桌面端在 0.2.1 线上又前进一个预发布版本。
   插件代码没有改动：同一份源码对 0.2.1-rc.3 类型包通过类型检查，整套测试也在
-  rc.3 上全绿——69 项单测/组件测试、58 项客户端冒烟、24 项打包契约、真实
+  rc.3 上全绿——88 项单测/组件测试、160 项客户端冒烟、24 项打包契约、真实
   OpenViking 在线冒烟（状态、提交、时间线、探测、召回、差异）与 6 项路由 fence。
   开发依赖现在钉到 `0.2.1-rc.3`；peer 范围与两处 `engines.dsh` 本就覆盖该版本
   （同为 0.2.1 元组），无需新增范围分支。运行中的 app 也确认：左侧栏行、

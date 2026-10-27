@@ -103,11 +103,26 @@ dsh plugin --profile desktop remove dsh-openviking-enhance
 | `account` / `user` | `default` / `default` | 读取记忆所用的身份 |
 | `studioPath` | `/studio/` | Studio 在该地址下的路径 |
 | `cacheTtlMs` | `2500` | 状态结果的缓存时长 |
+| `recallCacheTtlMs` | `15000` | 单次检索结果的缓存时长 |
+| `showSidebarEntry` | `true` | 界面开关：左侧边栏里的 OpenViking 入口 |
+| `showCommitStatus` | `true` | 界面开关：输入框下方的提交状态胶囊 |
+| `showRecallPanel` | `true` | 界面开关：右侧边栏的「记忆召回」tab |
+
+三个**界面开关**分别控制这三个入口，**保存后立即生效**——界面会当场挂载或卸载对应入口，
+不需要重载窗口或重启应用。**Configure** 表单本身永远不会被隐藏，所以关掉的入口随时可以
+在这里重新打开。隐藏左侧入口会一并卸载 Studio 页面（重新打开后重新加载）；隐藏召回 tab
+后不再提供该页，已打开的召回页会在回到对话时自动收起（若它在后台分屏里、不是激活页，
+则需要手动关闭——框架没有提供枚举标签页的接口）。
 
 ## 常见问题
 
 **侧边栏没有 OpenViking 行，或输入框下方没有胶囊。**
-客户端部分是页面加载时取用的资源文件，重载窗口（⌘R）即可。仍然没有就重启应用。
+先看插件自己的开关（Plugins → 本插件 → **Configure** → 「界面」）：某个入口可能被关掉了，
+而且三个开关互相独立。否则是客户端部分没加载：重载窗口（⌘R）即可，仍然没有就重启应用。
+
+**我把 OpenViking 行 / 胶囊 / 召回 tab 关掉了，想找回来。**
+打开 **Plugins** → *dsh-openviking-enhance* → 它那一行的 **Configure**，把开关打开再保存。
+即使三个入口全都隐藏，这个配置表单也始终可用。
 
 **面板提示连不上 OpenViking。**
 先起服务并直接验证：`curl http://127.0.0.1:1933/health`。面板会显示它尝试的地址，

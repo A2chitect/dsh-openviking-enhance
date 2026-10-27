@@ -189,6 +189,57 @@ test('a plugin with no config at all still activates', () => {
   assert.ok(routes.length >= 6)
 })
 
+test('the three interface switches are volatile booleans that default to on', () => {
+  // They exist in the host Config only so the Plugins page's configuration form
+  // can render and persist them (the settings service projects volatile fields
+  // only). The host half never reads them; the browser half watches the form.
+  const switches = ['showSidebarEntry', 'showCommitStatus', 'showRecallPanel']
+
+  const defaults = Config({})
+  for (const field of switches) {
+    assert.equal(typeof defaults[field]?.get, 'function', `${field} arrives as a volatile reference`)
+    assert.equal(defaults[field].get(), true, `${field} defaults to true`)
+  }
+
+  // A user who saved `false` must read `false` after the next composition, and
+  // the fields they did not touch must keep their own defaults.
+  const oneOff = Config({ showCommitStatus: false })
+  assert.equal(oneOff.showCommitStatus.get(), false)
+  assert.equal(oneOff.showSidebarEntry.get(), true)
+  assert.equal(oneOff.showRecallPanel.get(), true)
+
+  const allOff = Config({ showSidebarEntry: false, showCommitStatus: false, showRecallPanel: false })
+  for (const field of switches) assert.equal(allOff[field].get(), false, `${field} resolves false`)
+})
+
+test('a config carrying the three switches still activates the plugin', async () => {
+  // The failure mode this pins: a new Config field the host half cannot survive
+  // takes the whole entry down ("1 entry did not activate"). The switches must be
+  // inert data as far as activation is concerned — in either polarity.
+  for (const resolved of [
+    Config({}),
+    Config({ showSidebarEntry: false, showCommitStatus: false, showRecallPanel: false }),
+  ]) {
+    const routes = []
+    const context = {
+      webServer: { port: 0, register: (route) => (routes.push(route), () => {}) },
+      effect: (callback) => (callback(), () => {}),
+      get: () => undefined,
+      logger: { info: () => {}, warn: () => {} },
+    }
+    assert.doesNotThrow(() => apply(context, resolved), 'apply() survives the switches')
+    assert.ok(routes.length >= 6, `every route is registered (saw ${routes.length})`)
+    // The switches are client-only: the config route must not grow a field the
+    // host would then be obliged to honour. It still answers with the connection.
+    const route = routes.find((candidate) => candidate.path === '/api/openviking-enhance/config')
+    const answered = await callRoute(route)
+    assert.equal(answered.status, 200)
+    for (const field of ['showSidebarEntry', 'showCommitStatus', 'showRecallPanel']) {
+      assert.equal(field in answered.body, false, `${field} is not a host-read config field`)
+    }
+  }
+})
+
 /** Call one registered route with a trusted loopback request and read its JSON. */
 function callRoute(route) {
   return new Promise((resolve) => {
