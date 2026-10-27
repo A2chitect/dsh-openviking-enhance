@@ -9,6 +9,8 @@ promotes to a dated section — see [RELEASING.md](RELEASING.md).
 
 ## Unreleased
 
+## 0.2.2 — 2026-10-27
+
 ### Added
 
 - **Three interface switches on the plugin's settings form.** `showSidebarEntry`,
