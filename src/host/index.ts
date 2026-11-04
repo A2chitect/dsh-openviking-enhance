@@ -338,7 +338,10 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
           // TIMELINE_DEFAULT on its poll and for more only when the user expands.
           const requested = Number(query(req).get('summaries') ?? TIMELINE_DEFAULT)
           const limit = Number.isFinite(requested) ? Math.min(Math.max(Math.trunc(requested), 0), TIMELINE_MAX) : TIMELINE_DEFAULT
-          const { status, tasks, summaries } = await service.commits(sessionId, limit)
+          // A user-triggered refresh (opening the popover, returning to the tab)
+          // skips the short status cache; ordinary polling keeps it.
+          const fresh = query(req).get('fresh') === '1'
+          const { status, tasks, summaries } = await service.commits(sessionId, limit, { fresh })
           writeJson(res, 200, { ok: true, status, tasks, summaries })
         } catch (error) {
           writeJson(res, 200, { ok: false, error: message(error) })

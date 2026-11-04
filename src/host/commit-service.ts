@@ -16,7 +16,10 @@
  *     empty.
  */
 import type {
+  ArchiveFailure,
+  ArchiveState,
   ArchiveSummary,
+  ArchiveTerminal,
   CommitArchive,
   CommitPhase,
   CommitStatus,
@@ -51,8 +54,26 @@ interface RawDiffEntry {
   deleted_content?: string
 }
 
-/** How long a missing `memory_diff.json` is left alone before being re-probed. */
-const MISSING_DIFF_RETRY_MS = 10_000
+/** Shape of `.failed.json` on the server. */
+export interface RawFailedMarker {
+  stage?: string
+  error?: string
+  failed_at?: string
+  skipped?: boolean
+  completed_memory_steps?: Record<string, string[]>
+}
+
+/** One archive's terminal state, read once and cached when it is final. */
+interface ArchiveProbe {
+  state: ArchiveState
+  failure: ArchiveFailure | null
+  diff: MemoryDiff | null
+  /** A real `.done` / `.failed.json` was seen (not just a legacy diff). */
+  markers: boolean
+}
+
+/** How long a pending archive is left alone before its markers are re-probed. */
+const PENDING_ARCHIVE_RETRY_MS = 10_000
 
 export interface CommitServiceOptions {
   api: OpenVikingApi
@@ -60,23 +81,29 @@ export interface CommitServiceOptions {
   memoryRuntime: () => OpenVikingMemoryRuntime | null
   /** Status cache TTL; the client polls, so this keeps the server calm. */
   cacheTtlMs?: number
-  /** How long a missing `memory_diff.json` is left alone before being re-probed. */
-  missingDiffRetryMs?: number
+  /** How long a still-pending archive is left alone before its markers are re-probed. */
+  pendingArchiveRetryMs?: number
 }
 
 export class CommitService {
   private readonly cache = new Map<string, { at: number; value: CommitStatus }>()
   /**
-   * `memory_diff.json` is immutable once written, so a read result is cached for
-   * the process lifetime. `diffRetryAt` is the other half: an archive whose diff
-   * does not exist yet (extraction still running, or failed) must be re-probed
-   * later, just not on every five-second poll.
+   * One probe per archive. `memory_diff.json`, `.done` and `.failed.json` are
+   * immutable once written, so a terminal probe is cached for the process
+   * lifetime. A pending archive is re-probed after `pendingRetryMs` — extraction
+   * may still be running — instead of on every poll.
    */
-  private readonly diffCache = new Map<string, MemoryDiff>()
-  private readonly diffRetryAt = new Map<string, number>()
+  private readonly probes = new Map<string, ArchiveProbe>()
+  private readonly probeRetryAt = new Map<string, number>()
+  /**
+   * One in-flight read per session. Several GUI tabs (or a fast poll and a
+   * user-triggered refresh) then share one upstream round trip instead of
+   * multiplying it.
+   */
+  private readonly inflight = new Map<string, Promise<CommitStatus>>()
   private readonly options: CommitServiceOptions
   private readonly cacheTtlMs: number
-  private readonly missingDiffRetryMs: number
+  private readonly pendingRetryMs: number
 
   // Plain field assignment rather than a constructor parameter property: the
   // latter is TypeScript-only syntax that Node's type stripping cannot erase,
@@ -84,7 +111,7 @@ export class CommitService {
   constructor(options: CommitServiceOptions) {
     this.options = options
     this.cacheTtlMs = options.cacheTtlMs ?? 2500
-    this.missingDiffRetryMs = options.missingDiffRetryMs ?? MISSING_DIFF_RETRY_MS
+    this.pendingRetryMs = options.pendingArchiveRetryMs ?? PENDING_ARCHIVE_RETRY_MS
   }
 
   /** OpenViking session key for a DSH session. */
@@ -114,6 +141,25 @@ export class CommitService {
     const cached = this.cache.get(sessionId)
     if (!options.fresh && cached && Date.now() - cached.at < this.cacheTtlMs) return cached.value
 
+    // One upstream read per session at a time. Several GUI tabs, or a poll and a
+    // user-triggered refresh, then share one round trip instead of multiplying it.
+    const running = this.inflight.get(sessionId)
+    if (running) return running
+
+    const work = this.readStatus(sessionId, options.fresh === true)
+      .then((value) => {
+        this.cache.set(sessionId, { at: Date.now(), value })
+        return value
+      })
+      .finally(() => {
+        this.inflight.delete(sessionId)
+      })
+    this.inflight.set(sessionId, work)
+    return work
+  }
+
+  /** One uncached upstream read; `status()` owns caching and in-flight sharing. */
+  private async readStatus(sessionId: string, fresh: boolean): Promise<CommitStatus> {
     const ovSessionId = this.ovSessionId(sessionId)
     const request = { actorPeerId: this.actorPeer(sessionId) }
     // Sequential, not parallel: the history path must be derived from the
@@ -136,19 +182,29 @@ export class CommitService {
       }))
       .sort((a, b) => a.archiveId.localeCompare(b.archiveId))
 
-    let phase = derivePhase({ metaOk: meta.ok, commitCount, pendingTokens, archiveCount: archives.length })
-    if (phase === 'extracting') {
-      // The counter lags an archive in two different situations: extraction is
-      // still running, or its task failed and the counter will never catch up
-      // (the operations are written to the archive regardless). Ask the archive
-      // itself: `memory_diff.json` appears exactly when extraction finished, so
-      // this settles the ambiguity instead of leaving the pill spinning forever.
-      const newest = archives[archives.length - 1]
-      const probe = await this.options.api.readText(`${newest?.archiveUri}/memory_diff.json`, request)
-      phase = probe.ok && probe.result !== null ? 'done' : 'extracting'
-    }
+    // The newest archive's terminal marker is the durable fact behind the pill.
+    // `commit_count` advances when the archive is written, so counts alone cannot
+    // tell "extraction still running" from "extraction failed".
+    const newest = archives[archives.length - 1]
+    const latestProbe = newest === undefined ? null : await this.probeArchive(sessionId, newest.archiveUri, { fresh })
+    const latest: ArchiveTerminal | null =
+      newest !== undefined && latestProbe !== null
+        ? {
+            archiveUri: newest.archiveUri,
+            state: latestProbe.state,
+            failure: latestProbe.failure,
+            markers: latestProbe.markers,
+          }
+        : null
+    const phase = derivePhase({
+      metaOk: meta.ok,
+      commitCount,
+      pendingTokens,
+      archiveCount: archives.length,
+      latestState: latestProbe?.state ?? null,
+    })
 
-    const value: CommitStatus = {
+    return {
       sessionId,
       ovSessionId,
       pendingTokens,
@@ -157,69 +213,127 @@ export class CommitService {
       commitCount,
       lastCommitAt: meta.result?.last_commit_at ?? null,
       phase,
+      latest,
       archives,
     }
-    this.cache.set(sessionId, { at: Date.now(), value })
-    return value
   }
 
   /**
    * Commit records for a session: one per archive, oldest first.
    *
-   * Archives are the durable record — task records are pruned by the server, so
-   * they are only consulted to label a commit that is still being extracted.
+   * Archives and their terminal markers are the durable record — task records are
+   * pruned by the server, so they are only consulted to label a commit that is
+   * still being extracted (and as the fallback on servers without markers).
    */
   async commits(
     sessionId: string,
     summaryLimit: number,
+    options: { fresh?: boolean } = {},
   ): Promise<{ status: CommitStatus; tasks: OvCommitTask[]; summaries: ArchiveSummary[] }> {
-    const status = await this.status(sessionId)
+    const status = await this.status(sessionId, options)
     const tasks = await this.options.api.listCommitTasks(status.ovSessionId, {
       actorPeerId: this.actorPeer(sessionId),
     })
-    const summaries = await this.summaries(sessionId, status.archives, summaryLimit)
+    const summaries = await this.summaries(sessionId, status.archives, summaryLimit, options)
     return { status, tasks: tasks.result ?? [], summaries }
   }
 
-  /** Read and normalize one archive's `memory_diff.json`, memoized once it exists. */
+  /**
+   * Read one archive's `memory_diff.json`, through the same cached probe the
+   * timeline uses. A pending archive returns null; a failed one may still have a
+   * partial diff, which is returned as-is — the caller shows the failure too.
+   */
   async diff(sessionId: string, archiveUri: string): Promise<MemoryDiff | null> {
-    const cached = this.diffCache.get(archiveUri)
-    if (cached) return cached
-    const uri = `${archiveUri.replace(/\/+$/, '')}/memory_diff.json`
-    const response = await this.options.api.readJson<RawMemoryDiff>(uri, {
-      actorPeerId: this.actorPeer(sessionId),
-    })
-    if (!response.ok || !response.result) return null
-    const diff = normalizeDiff(archiveUri, response.result)
-    this.diffCache.set(archiveUri, diff)
-    return diff
+    const probe = await this.probeArchive(sessionId, archiveUri)
+    return probe.diff
   }
 
   /**
-   * Counts for the newest `limit` archives, newest first — the timeline's data.
+   * Terminal states and counts for the newest `limit` archives, newest first.
    *
-   * Cached diffs make this cheap after the first poll; uncached ones are read in
-   * parallel (a handful of ~4 ms requests against a local server), and a missing
-   * diff is re-probed only after `MISSING_DIFF_RETRY_MS` so a 5 s status poll does
-   * not hammer an archive that is still being extracted.
+   * A terminal probe is memoized for the process lifetime; a pending one is
+   * re-probed only after `pendingRetryMs`, so a fast poll during extraction does
+   * not fan out to every archive on every tick.
    */
-  async summaries(sessionId: string, archives: CommitArchive[], limit: number): Promise<ArchiveSummary[]> {
-    const wanted = archives.slice(-Math.max(0, limit)).reverse()
-    const now = Date.now()
+  async summaries(
+    sessionId: string,
+    archives: CommitArchive[],
+    limit: number,
+    options: { fresh?: boolean } = {},
+  ): Promise<ArchiveSummary[]> {
+    const count = Math.max(0, Math.trunc(limit))
+    if (count === 0) return []
+    const wanted = archives.slice(-count).reverse()
     return Promise.all(
       wanted.map(async (archive): Promise<ArchiveSummary> => {
-        if (this.diffCache.has(archive.archiveUri)) {
-          return { archiveUri: archive.archiveUri, summary: this.diffCache.get(archive.archiveUri)?.summary ?? null }
+        const probe = await this.probeArchive(sessionId, archive.archiveUri, options)
+        return {
+          archiveUri: archive.archiveUri,
+          summary: probe.diff?.summary ?? null,
+          state: probe.state,
+          failure: probe.failure,
         }
-        if ((this.diffRetryAt.get(archive.archiveUri) ?? 0) > now) {
-          return { archiveUri: archive.archiveUri, summary: null }
-        }
-        const diff = await this.diff(sessionId, archive.archiveUri)
-        if (diff) return { archiveUri: archive.archiveUri, summary: diff.summary }
-        this.diffRetryAt.set(archive.archiveUri, Date.now() + this.missingDiffRetryMs)
-        return { archiveUri: archive.archiveUri, summary: null }
       }),
     )
+  }
+
+  /**
+   * Read one archive's terminal marker and diff, with an in-memory cache.
+   *
+   * Marker files are the durable record of the commit's extraction: `.done`
+   * means it finished, `.failed.json` means it failed (and carries the server's
+   * own reason). `memory_diff.json` is read in both cases because the timeline
+   * counts can be partially written even on failure. Only a `pending` or
+   * `unknown` archive is re-probed later.
+   */
+  private async probeArchive(
+    sessionId: string,
+    archiveUri: string,
+    options: { fresh?: boolean } = {},
+  ): Promise<ArchiveProbe> {
+    const cached = this.probes.get(archiveUri)
+    if (cached) return cached
+    if (!options.fresh && (this.probeRetryAt.get(archiveUri) ?? 0) > Date.now()) {
+      return { state: 'pending', failure: null, diff: null, markers: false }
+    }
+
+    const request = { actorPeerId: this.actorPeer(sessionId) }
+    const base = archiveUri.replace(/\/+$/, '')
+    const done = await this.options.api.readText(`${base}/.done`, request)
+    const donePresent = done.ok && done.result !== null
+    const doneUnreadable = !done.ok && done.status !== 404
+    const [diffResponse, failedResponse] = await Promise.all([
+      this.options.api.readJson<RawMemoryDiff>(`${base}/memory_diff.json`, request),
+      donePresent || doneUnreadable
+        ? Promise.resolve(null)
+        : this.options.api.readJson<RawFailedMarker>(`${base}/.failed.json`, request),
+    ])
+
+    const diff = diffResponse.ok && diffResponse.result ? normalizeDiff(archiveUri, diffResponse.result) : null
+    const failure =
+      failedResponse !== null && failedResponse.ok && failedResponse.result
+        ? normalizeFailure(failedResponse.result)
+        : null
+    const diffUnreadable = !diffResponse.ok && diffResponse.status !== 404
+    const failedUnreadable = failedResponse !== null && !failedResponse.ok && failedResponse.status !== 404
+
+    let state: ArchiveState
+    if (donePresent) state = 'done'
+    else if (failure !== null) state = 'failed'
+    else if (doneUnreadable || diffUnreadable || failedUnreadable) state = 'unknown'
+    // Legacy servers without terminal markers only wrote memory_diff.json; a
+    // readable diff is the only success signal they offer.
+    else if (diff !== null) state = 'done'
+    else state = 'pending'
+
+    const probe: ArchiveProbe = { state, failure, diff, markers: donePresent || failure !== null }
+    if (state === 'done' || state === 'failed') {
+      this.probes.set(archiveUri, probe)
+      this.probeRetryAt.delete(archiveUri)
+      return probe
+    }
+    this.probeRetryAt.set(archiveUri, Date.now() + this.pendingRetryMs)
+    return probe
   }
 }
 
@@ -261,27 +375,32 @@ export function resolveSessionUri(
 
 /**
  * Phase rules, in order:
- *  - no server / no answer        → 'failed'
- *  - an archive exists that the server has not counted yet → 'extracting'
- *    (`status()` then probes that archive's `memory_diff.json`: present means
- *    the counter merely lags, so the phase settles to 'done')
- *  - nothing committed, tokens accumulating → 'pending'
- *  - otherwise                    → 'done' or 'idle'
+ *  - no server / no answer                        → 'failed'
+ *  - the newest archive's own marker says failed  → 'errored'
+ *  - it says done (the counter may lag it)        → 'done'
+ *  - it is pending/unknown, or an archive exists  → 'extracting'
+ *    that the server has not counted yet
+ *  - nothing committed, tokens accumulating       → 'pending'
+ *  - otherwise                                    → 'done' or 'idle'
  */
 export function derivePhase(input: {
   metaOk: boolean
   commitCount: number
   pendingTokens: number
   archiveCount: number
+  /** Terminal state of the newest archive; null when there is no archive. */
+  latestState?: ArchiveState | null
 }): CommitPhase {
   if (!input.metaOk) return 'failed'
+  if (input.latestState === 'failed') return 'errored'
+  if (input.latestState === 'done') return 'done'
   if (input.archiveCount > input.commitCount) return 'extracting'
+  if (input.latestState === 'pending') return 'extracting'
   if (input.commitCount > 0) return 'done'
   return input.pendingTokens > 0 ? 'pending' : 'idle'
 }
 
-export function normalizeDiff(archiveUri: string, raw: RawMemoryDiff): MemoryDiff {
-  const map = (entry: RawDiffEntry): MemoryDiffEntry => ({
+export function normalizeDiff(archiveUri: string, raw: RawMemoryDiff): MemoryDiff {  const map = (entry: RawDiffEntry): MemoryDiffEntry => ({
     uri: entry.uri ?? '',
     memoryType: entry.memory_type ?? 'unknown',
     ...(entry.before !== undefined ? { before: entry.before } : {}),
@@ -306,5 +425,15 @@ export function normalizeDiff(archiveUri: string, raw: RawMemoryDiff): MemoryDif
       totalDeletes: summary?.total_deletes ?? deletes.length,
       totalSkipped: summary?.total_skipped ?? 0,
     },
+  }
+}
+
+/** Normalize the server's `.failed.json` payload for the wire. */
+export function normalizeFailure(raw: RawFailedMarker): ArchiveFailure {
+  return {
+    stage: typeof raw.stage === 'string' ? raw.stage : null,
+    error: typeof raw.error === 'string' ? raw.error : null,
+    failedAt: typeof raw.failed_at === 'string' ? raw.failed_at : null,
+    skipped: raw.skipped === true,
   }
 }

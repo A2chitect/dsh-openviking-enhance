@@ -31,17 +31,20 @@ The pill follows the app's language (see *Notes*); in English it reads:
 | `OV · 12.3k/20k` | Turns are accumulating towards the commit threshold |
 | `OV · extracting…` | A commit is being archived and its memories extracted |
 | `OV · 3 commits` | Three commits so far |
-| `OV · extraction failed` | A commit was archived but its memories could not be extracted |
+| `OV · extraction failed` | The newest commit was archived but its memories could not be extracted |
+| `OV · cancelled` | The newest commit was cancelled before its memories were extracted |
 | `OV · unavailable` | The local OpenViking server cannot be reached |
 
 Click the pill for details:
 
-- a **timeline** of the most recent 3 commits — when each happened and how many
-  memories it added, updated or deleted (the rest are one click away);
+- a **timeline** of the most recent 3 commits — when each happened, whether its
+  extraction finished or failed, and how many memories it added, updated or
+  deleted (the rest are one click away);
 - clicking a commit lists the **exact memories it changed**, with their
   `viking://` paths;
-- any **failed extraction**, with the time, how long it ran, and the reason the
-  server reported.
+- any **failed extraction**, with the time and the reason the server reported.
+  Failures older than the newest commit stay listed there without changing the
+  pill.
 
 The panel and the pill read only. This plugin never commits, writes or deletes
 anything in OpenViking.

@@ -172,6 +172,10 @@ button.ove-pill-errored:hover, button.ove-pill-errored[aria-expanded="true"] {
 .ove-tl-time { flex: none; color: var(--dsw-alias-label-tertiary); font-variant-numeric: tabular-nums; }
 .ove-tl-counts { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ove-tl-open { flex: none; color: var(--dsw-alias-label-caption); }
+/* A failed extraction is a lost memory, not "no detail": the timeline row keeps
+   the same geometry and only takes the error colour on its dot and counts. */
+.ove-tl-row-failed .ove-tl-dot { background: var(--dsw-alias-state-error-primary, #f85149); }
+.ove-tl-row-failed .ove-tl-counts { color: var(--dsw-alias-state-error-primary, #f85149); }
 .ove-tl-more { justify-content: space-between; }
 
 .ove-empty { color: var(--dsw-alias-label-tertiary); }

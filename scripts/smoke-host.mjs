@@ -181,11 +181,24 @@ async function report(base, sessionId) {
   const commits = await get(`${base}/api/openviking-enhance/commits?sessionId=${encodeURIComponent(sessionId)}`)
   console.log('[smoke] commits    ', summarise({ status: commits?.status, tasks: `${commits?.tasks?.length ?? 0} tasks` }))
   console.log(`[smoke] timeline    newest ${commits?.summaries?.length ?? 0} of ${commits?.status?.archives?.length ?? 0} archives`)
+  // The durable-marker contract the client renders from: `latest` is null only
+  // before the first commit, and every summary carries a terminal state.
+  const latest = commits?.status?.latest
+  const latestOk =
+    latest === null || (typeof latest?.state === 'string' && typeof latest?.markers === 'boolean')
+  const summariesOk = (commits?.summaries ?? []).every((entry) =>
+    ['done', 'failed', 'pending', 'unknown'].includes(entry.state),
+  )
+  console.log(
+    `[smoke] markers     ${latestOk && summariesOk ? 'ok  ' : 'FAIL'} latest=${latest?.state ?? 'none'} summaries=${summariesOk ? 'ok' : 'bad'}`,
+  )
+  if (!latestOk || !summariesOk) process.exitCode = 1
   for (const entry of commits?.summaries ?? []) {
     const name = entry.archiveUri.split('/').at(-1)
     const s = entry.summary
     const counts = s ? `${s.totalAdds} adds / ${s.totalUpdates} updates / ${s.totalDeletes} deletes` : '(no diff yet)'
-    console.log(`[smoke]   ${name.padEnd(12)} ${counts}`)
+    const failed = entry.state === 'failed' ? ` [${entry.failure?.stage ?? 'failed'}]` : ''
+    console.log(`[smoke]   ${name.padEnd(12)} ${entry.state.padEnd(7)} ${counts}${failed}`)
   }
 
   // The configuration form's own guard: a loopback endpoint is probed, anything

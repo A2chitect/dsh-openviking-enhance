@@ -59,9 +59,24 @@ export interface CommitsPayload {
   summaries: ArchiveSummary[]
 }
 
-export function fetchCommits(sessionId: string, summaryLimit = TIMELINE_DEFAULT): Promise<ApiResult<CommitsPayload>> {
-  const query = `sessionId=${encodeURIComponent(sessionId)}&summaries=${summaryLimit}`
-  return readJson<CommitsPayload>(`${BASE}/commits?${query}`)
+export interface CommitsOptions {
+  /** Bypass the host's short status cache for a user-triggered refresh. */
+  fresh?: boolean
+  /** Cancel the request when the session changes or the pill unmounts. */
+  signal?: AbortSignal
+}
+
+export function fetchCommits(
+  sessionId: string,
+  summaryLimit = TIMELINE_DEFAULT,
+  options: CommitsOptions = {},
+): Promise<ApiResult<CommitsPayload>> {
+  const params = new URLSearchParams({ sessionId, summaries: String(summaryLimit) })
+  if (options.fresh === true) params.set('fresh', '1')
+  return readJson<CommitsPayload>(
+    `${BASE}/commits?${params.toString()}`,
+    options.signal === undefined ? undefined : { signal: options.signal },
+  )
 }
 
 export interface DiffPayload {

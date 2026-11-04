@@ -21,6 +21,7 @@ import {
   derivePhase,
   isArchiveUriForSession,
   normalizeDiff,
+  normalizeFailure,
   resolveSessionUri,
 } from '../src/host/commit-service.ts'
 import { OpenVikingApi, parseMaybeDoubleEncoded } from '../src/host/openviking-api.ts'
@@ -28,8 +29,11 @@ import { Config, apply, parseLoopbackEndpoint } from '../src/host/index.ts'
 import {
   deriveClientPhase,
   describeFailure,
+  describeFailureText,
   durationSeconds,
   failedTasks,
+  isCancelledTask,
+  isSupersededByLaterCommit,
   taskTime,
 } from '../src/shared/commit-state.ts'
 
@@ -305,7 +309,7 @@ test('listHistory appends exactly one /history segment', async () => {
   }
 })
 
-test('status hands the session directory to listHistory and reports its archives', async () => {
+test('status hands the session directory to listHistory and probes its newest archive', async () => {
   const seen = []
   const api = {
     user: 'default',
@@ -317,6 +321,13 @@ test('status hands the session directory to listHistory and reports its archives
       seen.push(sessionUri)
       return { ok: true, result: [{ uri: `${sessionUri}/history/archive_001`, isDir: true, size: 0, modTime: null }] }
     },
+    async readText(uri) {
+      if (uri.endsWith('/history/archive_001/.done')) return { ok: true, status: 200, result: '{}', error: null }
+      return { ok: false, status: 404, result: null, error: 'not found' }
+    },
+    async readJson() {
+      return { ok: false, status: 404, result: null, error: 'not found' }
+    },
   }
   const service = new CommitService({ api, memoryRuntime: () => null })
   const status = await service.status('abc')
@@ -325,6 +336,73 @@ test('status hands the session directory to listHistory and reports its archives
   assert.equal(status.archives.length, 1)
   assert.equal(status.archives[0].archiveId, 'archive_001')
   assert.equal(status.phase, 'done')
+  assert.deepEqual(status.latest, {
+    archiveUri: 'viking://user/default/sessions/dsh-abc/history/archive_001',
+    state: 'done',
+    failure: null,
+    markers: true,
+  })
+})
+
+test('a failed archive owns the pill even when a partial diff exists', async () => {
+  // The real shape from OpenViking 0.5.1.1: a failed extraction can leave a
+  // partial memory_diff.json behind, so diff presence alone must not mean done.
+  let contentReads = 0
+  const failure = {
+    stage: 'memory_extraction',
+    error: "Error code: 400 - {'error': {'message': 'Thinking mode does not support this tool_choice (request_id: 1)'}}",
+    failed_at: '2026-10-02T02:09:27.554Z',
+    skipped: true,
+  }
+  const api = {
+    user: 'default',
+    async getSession(id) {
+      return { ok: true, result: { session_id: id, uri: `viking://user/default/sessions/${id}`, commit_count: 3 } }
+    },
+    async listHistory(uri) {
+      return {
+        ok: true,
+        result: [1, 2, 3].map((n) => ({ uri: `${uri}/history/archive_00${n}`, isDir: true, size: 0, modTime: null })),
+      }
+    },
+    async readText(uri) {
+      contentReads += 1
+      return uri.endsWith('/archive_001/.done')
+        ? { ok: true, status: 200, result: '{}', error: null }
+        : { ok: false, status: 404, result: null, error: 'not found' }
+    },
+    async readJson(uri) {
+      contentReads += 1
+      if (uri.endsWith('/memory_diff.json')) {
+        return { ok: true, status: 200, result: { operations: { adds: [], updates: [], deletes: [] } }, error: null }
+      }
+      if (uri.endsWith('/archive_002/.failed.json') || uri.endsWith('/archive_003/.failed.json')) {
+        return { ok: true, status: 200, result: failure, error: null }
+      }
+      return { ok: false, status: 404, result: null, error: 'not found' }
+    },
+  }
+  const service = new CommitService({ api, memoryRuntime: () => null })
+  const status = await service.status('abc')
+  assert.equal(status.phase, 'errored', 'the newest archive failed')
+  assert.equal(status.latest?.state, 'failed')
+  assert.equal(status.latest?.failure?.stage, 'memory_extraction')
+  assert.equal(status.latest?.failure?.skipped, true)
+  assert.equal(status.latest?.markers, true)
+
+  const summaries = await service.summaries('abc', status.archives, 3)
+  assert.deepEqual(summaries.map((entry) => [entry.archiveUri.split('/').pop(), entry.state]), [
+    ['archive_003', 'failed'],
+    ['archive_002', 'failed'],
+    ['archive_001', 'done'],
+  ])
+  assert.ok(summaries[0].summary, 'a partial diff is still reported, next to the failure')
+
+  // A terminal probe is cached: a forced status refresh must not re-read the
+  // archive markers or the diff.
+  const readsAfterProbe = contentReads
+  await service.status('abc', { fresh: true })
+  assert.equal(contentReads, readsAfterProbe, 'terminal archive probes are served from cache')
 })
 
 test('status reads a session that another user owns', async () => {
@@ -362,12 +440,17 @@ test('status falls back to dsh-<id> and the raw path when the plugin is absent',
   assert.equal(status.phase, 'pending')
 })
 
-test('derivePhase names the archive/counter disagreement', () => {
+test('derivePhase prefers the newest archive marker over the commit counter', () => {
   assert.equal(derivePhase({ metaOk: false, commitCount: 0, pendingTokens: 0, archiveCount: 0 }), 'failed')
   assert.equal(derivePhase({ metaOk: true, commitCount: 0, pendingTokens: 0, archiveCount: 0 }), 'idle')
   assert.equal(derivePhase({ metaOk: true, commitCount: 0, pendingTokens: 12, archiveCount: 0 }), 'pending')
   assert.equal(derivePhase({ metaOk: true, commitCount: 2, pendingTokens: 0, archiveCount: 2 }), 'done')
   assert.equal(derivePhase({ metaOk: true, commitCount: 1, pendingTokens: 0, archiveCount: 2 }), 'extracting')
+  // The counter advances when the archive is written, so it cannot tell a
+  // running extraction from a failed one. The archive's own marker can.
+  assert.equal(derivePhase({ metaOk: true, commitCount: 2, pendingTokens: 0, archiveCount: 2, latestState: 'pending' }), 'extracting')
+  assert.equal(derivePhase({ metaOk: true, commitCount: 2, pendingTokens: 0, archiveCount: 2, latestState: 'failed' }), 'errored')
+  assert.equal(derivePhase({ metaOk: true, commitCount: 1, pendingTokens: 0, archiveCount: 2, latestState: 'done' }), 'done')
 })
 
 test('normalizeDiff maps every operation shape and trusts the recorded summary', () => {
@@ -420,18 +503,89 @@ test('deriveClientPhase prefers work in progress over an older failure', () => {
   assert.equal(deriveClientPhase({ error: 'host down', status: null, tasks: [failed] }), 'failed')
 })
 
-test('deriveClientPhase reports the newest task, not any failure', () => {
+test('deriveClientPhase lets the newest archive marker own the pill', () => {
+  const failedTask = { task_id: 'a', status: 'failed', stage: null, error: 'x', result: null, created_at: 100 }
+  const done = { archiveUri: 'viking://s/history/archive_001', state: 'done', failure: null }
+  const failed = {
+    archiveUri: 'viking://s/history/archive_002',
+    state: 'failed',
+    failure: { stage: 'memory_extraction', error: 'boom', failedAt: null, skipped: true },
+  }
+  const pending = { archiveUri: 'viking://s/history/archive_003', state: 'pending', failure: null }
+  // A historical failure no longer owns the pill once a newer archive says done.
+  assert.equal(deriveClientPhase({ error: null, status: { phase: 'done', latest: done }, tasks: [failedTask] }), 'done')
+  assert.equal(deriveClientPhase({ error: null, status: { phase: 'done', latest: failed }, tasks: [] }), 'errored')
+  assert.equal(deriveClientPhase({ error: null, status: { phase: 'done', latest: pending }, tasks: [] }), 'extracting')
+  // A legacy server has no marker: a failed task from the current commit is the
+  // only evidence, and it must outrank the marker-less "pending" state.
+  const pendingLegacy = { archiveUri: 'viking://s/history/archive_003', state: 'pending', failure: null, markers: false }
+  const currentFailure = { task_id: 'f', status: 'failed', stage: null, error: 'x', result: null, created_at: 200 }
+  assert.equal(
+    deriveClientPhase({ error: null, status: { phase: 'extracting', latest: pendingLegacy, lastCommitAt: '1970-01-01T00:03:10.000Z' }, tasks: [currentFailure] }),
+    'errored',
+  )
+  assert.equal(
+    deriveClientPhase({ error: null, status: { phase: 'extracting', latest: pendingLegacy, lastCommitAt: '1970-01-01T00:03:30.000Z' }, tasks: [currentFailure] }),
+    'extracting',
+  )
+  // `cancelled` is not `failed`: it must not turn the pill red on a legacy server.
+  const cancelled = { task_id: 'c', status: 'cancelled', stage: null, error: null, result: null, created_at: 100 }
+  assert.equal(deriveClientPhase({ error: null, status: { phase: 'done' }, tasks: [cancelled] }), 'done')
+})
+
+test('a pruned success cannot resurrect an old failure through the task list', () => {
+  // The server keeps completed tasks ~24 h and failed ones ~7 days. After the
+  // latest success is pruned, its task vanishes while the old failure remains;
+  // `last_commit_at` is the durable proof that the failure was superseded.
   const older = { task_id: 'a', status: 'failed', stage: null, error: 'x', result: null, created_at: 100 }
   const newer = { task_id: 'b', status: 'completed', stage: null, error: null, result: null, created_at: 200 }
-  // A superseded failure must not own the pill; the popover still lists it.
   assert.equal(deriveClientPhase({ error: null, status: { phase: 'done' }, tasks: [newer, older] }), 'done')
   assert.equal(deriveClientPhase({ error: null, status: { phase: 'done' }, tasks: [older, newer] }), 'done')
-  assert.equal(deriveClientPhase({ error: null, status: { phase: 'done' }, tasks: [older] }), 'errored')
+  // No newer task survives, but a later commit does.
+  assert.equal(
+    deriveClientPhase({ error: null, status: { phase: 'done', lastCommitAt: '1970-01-01T00:03:20.000Z' }, tasks: [older] }),
+    'done',
+  )
+  // A failure created after `last_commit_at` belongs to the newest commit.
+  assert.equal(
+    deriveClientPhase({ error: null, status: { phase: 'done', lastCommitAt: '1970-01-01T00:00:00.000Z' }, tasks: [older] }),
+    'errored',
+  )
+})
+
+test('isSupersededByLaterCommit needs a later timestamp and a readable one', () => {
+  const older = { task_id: 'a', status: 'failed', stage: null, error: 'x', result: null, created_at: 100 }
+  assert.equal(isSupersededByLaterCommit(older, { lastCommitAt: '1970-01-01T00:03:20.000Z' }), true)
+  assert.equal(isSupersededByLaterCommit(older, { lastCommitAt: '1970-01-01T00:00:00.000Z' }), false)
+  assert.equal(isSupersededByLaterCommit(older, { lastCommitAt: null }), false)
+  assert.equal(isSupersededByLaterCommit({ ...older, created_at: undefined, created_at_iso: undefined }, { lastCommitAt: '2026-01-01T00:00:00Z' }), false)
 })
 
 test('deriveClientPhase falls back to the host phase with no tasks', () => {
   assert.equal(deriveClientPhase({ error: null, status: { phase: 'pending' }, tasks: [] }), 'pending')
   assert.equal(deriveClientPhase({ error: null, status: null, tasks: [] }), 'idle')
+})
+
+test('normalizeFailure keeps the server reason and stage, and defaults the rest', () => {
+  assert.deepEqual(
+    normalizeFailure({
+      stage: 'memory_extraction',
+      error: "Error code: 400 - {'error': {'message': 'Thinking mode does not support this tool_choice (request_id: 1)'}}",
+      failed_at: '2026-10-02T02:09:27.554Z',
+      skipped: true,
+    }),
+    {
+      stage: 'memory_extraction',
+      error: "Error code: 400 - {'error': {'message': 'Thinking mode does not support this tool_choice (request_id: 1)'}}",
+      failedAt: '2026-10-02T02:09:27.554Z',
+      skipped: true,
+    },
+  )
+  assert.deepEqual(normalizeFailure({}), { stage: null, error: null, failedAt: null, skipped: false })
+  assert.equal(
+    describeFailureText("Error code: 400 - {'error': {'message': 'provider said no'}}"),
+    'provider said no',
+  )
 })
 
 test('describeFailure unwraps the provider message out of the server error', () => {
@@ -451,23 +605,24 @@ test('describeFailure unwraps the provider message out of the server error', () 
   assert.equal(describeFailure({ ...task, error: '   ' }), '')
 })
 
-test('failedTasks and taskTime read the task list the way the popover needs', () => {
+test('failedTasks keeps failures and leaves cancellation out of the failure list', () => {
   const tasks = [
     { task_id: 'a', status: 'completed', stage: null, error: null, result: null, created_at_iso: '2026-10-02T02:03:53+00:00' },
     { task_id: 'b', status: 'failed', stage: 'failed', error: 'x', result: null, created_at_iso: '2026-10-02T02:25:34+00:00', processing_seconds: 89.4 },
     { task_id: 'c', status: 'cancelled', stage: null, error: null, result: null, created_at_iso: '2026-10-02T02:53:25+00:00' },
   ]
   const failures = failedTasks(tasks)
-  assert.deepEqual(failures.map((t) => t.task_id), ['c', 'b'])
-  assert.equal(durationSeconds(failures[1]), 89)
-  assert.equal(taskTime(failures[1]).startsWith('10-02 '), true)
+  assert.deepEqual(failures.map((t) => t.task_id), ['b'])
+  assert.equal(isCancelledTask(tasks[2]), true)
+  assert.equal(durationSeconds(failures[0]), 89)
+  assert.equal(taskTime(failures[0]).startsWith('10-02 '), true)
   assert.equal(taskTime({ ...tasks[0], created_at_iso: 'nonsense' }), null)
 })
 
-// --- the timeline's summary cache ------------------------------------------
+// --- the timeline's archive probes -----------------------------------------
 
-test('summaries caches a written diff and re-probes a missing one on a delay', async () => {
-  let reads = 0
+test('a pending archive is re-probed on a delay; a terminal one is cached', async () => {
+  let diffReads = 0
   let payload = null
   const api = {
     user: 'default',
@@ -477,31 +632,46 @@ test('summaries caches a written diff and re-probes a missing one on a delay', a
     async listHistory(uri) {
       return { ok: true, result: [{ uri: `${uri}/history/archive_001`, isDir: true, size: 0, modTime: '2026-10-02T02:00:00.000Z' }] }
     },
-    async readJson() {
-      reads += 1
-      if (payload === null) return { ok: false, status: 404, result: null, error: 'not found' }
-      return { ok: true, status: 200, result: payload, error: null }
+    async readText() {
+      // No `.done` yet: this exercises the legacy diff-only path.
+      return { ok: false, status: 404, result: null, error: 'not found' }
+    },
+    async readJson(uri) {
+      if (uri.endsWith('/memory_diff.json')) {
+        diffReads += 1
+        return payload === null
+          ? { ok: false, status: 404, result: null, error: 'not found' }
+          : { ok: true, status: 200, result: payload, error: null }
+      }
+      return { ok: false, status: 404, result: null, error: 'not found' }
     },
   }
-  const service = new CommitService({ api, memoryRuntime: () => null, missingDiffRetryMs: 0 })
-  const archives = await service.status('abc')
-  assert.equal(archives.archives[0].modTime, '2026-10-02T02:00:00.000Z', 'archive modTime reaches the timeline')
+  const service = new CommitService({ api, memoryRuntime: () => null, pendingArchiveRetryMs: 0 })
+  const status = await service.status('abc')
+  assert.equal(status.archives[0].modTime, '2026-10-02T02:00:00.000Z', 'archive modTime reaches the timeline')
+  assert.equal(status.phase, 'extracting')
+  assert.deepEqual(status.latest?.state, 'pending')
 
-  // Extraction still running: no diff yet, and the poll must not re-read on every tick.
-  const pending = await service.summaries('abc', archives.archives, 3)
+  const pending = await service.summaries('abc', status.archives, 3)
+  assert.equal(pending[0].state, 'pending')
   assert.equal(pending[0].summary, null)
 
-  // Once extraction writes the file the next probe caches it permanently.
+  // Once extraction writes the diff the next probe caches the terminal state.
   payload = { operations: { adds: [{ uri: 'a' }, { uri: 'b' }], updates: [], deletes: [] }, summary: null }
-  const later = await service.summaries('abc', archives.archives, 3)
+  const later = await service.summaries('abc', status.archives, 3)
+  assert.equal(later[0].state, 'done')
   assert.deepEqual(later[0].summary, { totalAdds: 2, totalUpdates: 0, totalDeletes: 0, totalSkipped: 0 })
-  const readsAfterWrite = reads
-  await service.summaries('abc', archives.archives, 3)
-  assert.equal(reads, readsAfterWrite, 'a written diff is served from cache')
+  assert.equal(later[0].failure, null)
+  const refreshed = await service.status('abc', { fresh: true })
+  assert.equal(refreshed.latest?.state, 'done')
+  assert.equal(refreshed.latest?.markers, false, 'a diff-only success is a legacy server, not marker support')
+  const readsAfterWrite = diffReads
+  await service.summaries('abc', status.archives, 3)
+  assert.equal(diffReads, readsAfterWrite, 'a terminal probe is served from cache')
 })
 
 test('summaries returns newest first and honours the limit', async () => {
-  const seen = []
+  const diffReads = []
   const api = {
     user: 'default',
     async getSession(id) {
@@ -513,8 +683,11 @@ test('summaries returns newest first and honours the limit', async () => {
         result: [1, 2, 3, 4, 5].map((n) => ({ uri: `${uri}/history/archive_00${n}`, isDir: true, size: 0, modTime: null })),
       }
     },
+    async readText() {
+      return { ok: true, status: 200, result: '{}', error: null }
+    },
     async readJson(uri) {
-      seen.push(uri)
+      if (uri.endsWith('/memory_diff.json')) diffReads.push(uri)
       return { ok: true, status: 200, result: { operations: { adds: [], updates: [], deletes: [] } }, error: null }
     },
   }
@@ -523,6 +696,32 @@ test('summaries returns newest first and honours the limit', async () => {
   const summaries = await service.summaries('abc', archives, 2)
   assert.equal(summaries.length, 2)
   assert.equal(summaries[0].archiveUri.endsWith('/archive_005'), true, 'newest first')
+  assert.equal(summaries[0].state, 'done')
   assert.equal(summaries[1].archiveUri.endsWith('/archive_004'), true)
-  assert.equal(seen.length, 2, 'only the requested window is read')
+  assert.equal(diffReads.length, 2, 'only the requested window is read')
+})
+
+test('summaries with a zero limit reads nothing', async () => {
+  let reads = 0
+  const api = {
+    user: 'default',
+    async getSession(id) {
+      return { ok: true, result: { session_id: id, uri: `viking://user/default/sessions/${id}`, commit_count: 1 } }
+    },
+    async listHistory(uri) {
+      return { ok: true, result: [{ uri: `${uri}/history/archive_001`, isDir: true, size: 0, modTime: null }] }
+    },
+    async readText() {
+      return { ok: true, status: 200, result: '{}', error: null }
+    },
+    async readJson() {
+      reads += 1
+      return { ok: true, status: 200, result: { operations: {} }, error: null }
+    },
+  }
+  const service = new CommitService({ api, memoryRuntime: () => null })
+  const status = await service.status('abc')
+  const before = reads
+  assert.deepEqual(await service.summaries('abc', status.archives, 0), [])
+  assert.equal(reads, before, 'summaries=0 is a valid request that reads nothing')
 })

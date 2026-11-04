@@ -8,12 +8,16 @@
  * What it shows, and where each fact comes from:
  *   pending tokens / threshold  → `GET /api/v1/sessions/dsh-<id>`
  *   commit count, last commit   → same call
- *   phase                       → archive count vs. counted commits
+ *   phase                       → the newest archive's `.done` / `.failed.json`
+ *                                 marker, else the derived count phase
  *   affected memories on click  → `history/archive_00N/memory_diff.json`
  *
  * The plugin never learns about a commit from DSH: the memory plugin discards
  * the commit response and logs at `debug`, which the desktop app filters out.
- * Polling the server is therefore not a shortcut, it is the only reliable path.
+ * Polling the server is therefore not a shortcut, it is the only reliable path —
+ * but it is adaptive: 5 s while extraction is running, 30 s when idle, paused
+ * in a hidden tab, with exponential backoff after failures (`poll-policy.ts`),
+ * plus an immediate refresh when the pill is opened or the tab regains focus.
  *
  * Presentation follows the default pills exactly (see `styles.ts`): same font
  * metrics, tertiary label colour, transparent borderless 999px capsule, 14px
@@ -26,15 +30,28 @@
  * otherwise indistinguishable from a git commit's.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { TIMELINE_DEFAULT, TIMELINE_MAX, type CommitStatus, type CommitTask, type MemoryDiff, type MemoryDiffEntry, type MemoryDiffSummary } from '../shared/protocol.ts'
+import {
+  TIMELINE_DEFAULT,
+  TIMELINE_MAX,
+  type ArchiveFailure,
+  type ArchiveSummary,
+  type CommitArchive,
+  type CommitStatus,
+  type CommitTask,
+  type MemoryDiff,
+  type MemoryDiffEntry,
+  type MemoryDiffSummary,
+} from '../shared/protocol.ts'
 import { fetchCommits, fetchDiff, type CommitsPayload } from './host-api.ts'
 import { t } from './locale.ts'
+import { nextPollDelay } from './poll-policy.ts'
 import {
   deriveClientPhase,
   describeFailure,
-  isActiveTask,
+  describeFailureText,
   durationSeconds,
   failedTasks,
+  isActiveTask,
   taskTime,
 } from '../shared/commit-state.ts'
 import { OpenVikingIcon } from './openviking-icon.tsx'
@@ -43,7 +60,15 @@ export interface CommitStatusProps {
   sessionId?: string
 }
 
-const POLL_MS = 5000
+/** One failure row, from an archive marker or (legacy) a task record. */
+interface FailureView {
+  key: string
+  time: string | null
+  duration: number | null
+  reason: string
+  raw: string | null
+  cancelled: boolean
+}
 
 export function CommitStatusPill({ sessionId }: CommitStatusProps) {
   const [status, setStatus] = useState<CommitStatus | null>(null)
@@ -57,26 +82,87 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
   /** How many commit records to fetch counts for; the popover widens this on demand. */
   const [summaryLimit, setSummaryLimit] = useState(TIMELINE_DEFAULT)
   const wrap = useRef<HTMLSpanElement | null>(null)
+  /** Set by the polling effect so opening the popover can refresh immediately. */
+  const refreshRef = useRef<(() => void) | null>(null)
 
-  const poll = useCallback(async () => {
+  useEffect(() => {
     if (!sessionId) return
-    const result = await fetchCommits(sessionId, summaryLimit)
-    if (result.ok) {
-      setStatus(result.status)
-      setTasks(result.tasks)
-      setSummaries(result.summaries)
-      setError(null)
-    } else {
-      setError(result.error)
+    const id = sessionId
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let errorCount = 0
+    let inFlight = false
+    const controller = new AbortController()
+
+    function schedule(delay: number): void {
+      if (cancelled || delay <= 0) return
+      timer = setTimeout(() => void run(false), delay)
+    }
+
+    async function run(fresh: boolean): Promise<void> {
+      if (cancelled || inFlight) return
+      if (timer !== undefined) {
+        clearTimeout(timer)
+        timer = undefined
+      }
+      inFlight = true
+      const result = await fetchCommits(id, summaryLimit, { fresh, signal: controller.signal })
+      inFlight = false
+      if (cancelled) return
+
+      let working = false
+      if (result.ok) {
+        setStatus(result.status)
+        setTasks(result.tasks)
+        setSummaries(result.summaries)
+        setError(null)
+        errorCount = 0
+        working = result.tasks.some(isActiveTask)
+      } else {
+        setError(result.error)
+        errorCount += 1
+      }
+      const hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden'
+      schedule(nextPollDelay({ working, hidden, errorCount }))
+    }
+
+    refreshRef.current = () => void run(true)
+
+    const onVisibility = (): void => {
+      if (cancelled) return
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+        // Stop paying for polls while the tab is in the background. The next
+        // visibility event refreshes immediately.
+        if (timer !== undefined) {
+          clearTimeout(timer)
+          timer = undefined
+        }
+        return
+      }
+      refreshRef.current?.()
+    }
+    const onFocus = (): void => {
+      refreshRef.current?.()
+    }
+
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisibility)
+    if (typeof window !== 'undefined') window.addEventListener('focus', onFocus)
+    void run(true)
+
+    return () => {
+      cancelled = true
+      if (timer !== undefined) clearTimeout(timer)
+      controller.abort()
+      refreshRef.current = null
+      if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisibility)
+      if (typeof window !== 'undefined') window.removeEventListener('focus', onFocus)
     }
   }, [sessionId, summaryLimit])
 
   useEffect(() => {
-    if (!sessionId) return
-    void poll()
-    const timer = setInterval(() => void poll(), POLL_MS)
-    return () => clearInterval(timer)
-  }, [poll, sessionId])
+    if (!open) return
+    refreshRef.current?.()
+  }, [open])
 
   useEffect(() => {
     if (!open) return
@@ -110,18 +196,31 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
 
   if (!sessionId) return null
 
-  // The task list is the accurate signal and this poll already carries it, so the
-  // phase is derived from it rather than from the host's archive-vs-counter view:
-  // `commit_count` advances when the archive is written, so a failed or in-flight
-  // extraction is invisible to a count comparison. See shared/commit-state.ts.
+  // The archive markers are the accurate signal and every poll already carries
+  // them, so the phase is derived from those rather than from the task list:
+  // `commit_count` advances when the archive is written, so a failed or
+  // in-flight extraction is invisible to a count comparison. See
+  // shared/commit-state.ts.
   const running = tasks.filter(isActiveTask)
-  const failures = failedTasks(tasks)
   const phase = deriveClientPhase({ error, status, tasks })
   const text = phaseLabel(phase, status)
   const archives = status ? [...status.archives].reverse() : []
-  const summaryByUri = new Map(summaries.map((entry) => [entry.archiveUri, entry.summary]))
+  const summaryByUri = new Map(summaries.map((entry) => [entry.archiveUri, entry]))
   // Newest first; only the newest few until the user asks for the rest.
   const visibleTimeline = summaryLimit > TIMELINE_DEFAULT ? archives : archives.slice(0, TIMELINE_DEFAULT)
+
+  // A failed archive state can only come from `.failed.json`, so it also proves
+  // marker support. A diff-only "done" may be a legacy server, which still needs
+  // the task list for its failures.
+  const archiveMode =
+    status?.latest?.markers === true || summaries.some((entry) => entry.state === 'failed')
+  const failedArchives = summaries.filter((entry) => entry.state === 'failed')
+  const failureViews = archiveMode
+    ? archiveFailureViews(failedArchives, status?.archives ?? [])
+    : taskFailureViews(tasks)
+  const failureRows = failureViews.filter((view) => !view.cancelled)
+  const latestFailure = status?.latest?.state === 'failed' ? status.latest.failure : null
+  const selectedEntry = selected !== null ? (summaryByUri.get(selected) ?? null) : null
 
   return (
     <span className="ove-dock" ref={wrap} data-dsh-plugin="openviking-enhance-status">
@@ -131,7 +230,7 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-label={t('pill.aria', { text })}
-        title={tooltip(status, error, failures)}
+        title={tooltip(status, error, phase, failureRows, latestFailure)}
         onClick={() => setOpen((value) => !value)}
       >
         <OpenVikingIcon size={14} strokeWidth={1} />
@@ -174,24 +273,24 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
 
           {error ? <div className="ove-facts ove-empty">{t('pill.readFailed', { error })}</div> : null}
 
-          {failures.length > 0 ? (
+          {failureRows.length > 0 ? (
             <div className="ove-section">
-              <div className="ove-section-title ove-error">{t('pill.failedExtractions', { count: failures.length })}</div>
+              <div className="ove-section-title ove-error">{t('pill.failedExtractions', { count: failureRows.length })}</div>
               <div className="ove-empty">{t('pill.failedExtractionsHint')}</div>
-              {failures.slice(0, 4).map((task) => (
-                <div className="ove-failure" key={task.task_id}>
+              {failureRows.slice(0, 4).map((failure) => (
+                <div className="ove-failure" key={failure.key}>
                   <div className="ove-failure-head">
-                    <span>{taskTime(task) ?? '—'}</span>
+                    <span>{failure.time ?? '—'}</span>
                     <span className="ove-row-count">
-                      {durationSeconds(task) !== null ? `${durationSeconds(task)}s` : ''}
+                      {failure.duration !== null ? `${failure.duration}s` : ''}
                     </span>
                   </div>
-                  <div className="ove-failure-msg" title={task.error ?? undefined}>
-                    {failureReason(task)}
+                  <div className="ove-failure-msg" title={failure.raw ?? undefined}>
+                    {failure.reason}
                   </div>
                 </div>
               ))}
-              {failures.length > 4 ? <div className="ove-empty">{t('pill.moreFailures', { count: failures.length - 4 })}</div> : null}
+              {failureRows.length > 4 ? <div className="ove-empty">{t('pill.moreFailures', { count: failureRows.length - 4 })}</div> : null}
             </div>
           ) : null}
 
@@ -205,18 +304,22 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
             ) : (
               <div className="ove-timeline">
                 {visibleTimeline.map((archive) => {
-                  const summary = summaryByUri.get(archive.archiveUri) ?? null
+                  const entry = summaryByUri.get(archive.archiveUri) ?? null
+                  const failed = entry?.state === 'failed'
                   const isNewest = archive.archiveUri === archives[archives.length - 1]?.archiveUri
                   return (
                     <button
                       key={archive.archiveId}
                       type="button"
-                      className="ove-tl-row"
+                      className={`ove-tl-row${failed ? ' ove-tl-row-failed' : ''}`}
+                      title={failed ? archiveFailureText(entry?.failure ?? null) : undefined}
                       onClick={() => void openArchive(archive.archiveUri)}
                     >
                       <span className="ove-tl-dot" aria-hidden="true" />
                       <span className="ove-tl-time">{formatShortTime(archive.modTime)}</span>
-                      <span className={`ove-tl-counts${summary ? '' : ' ove-muted'}`}>{timelineLabel(summary, isNewest && running.length > 0)}</span>
+                      <span className={`ove-tl-counts${entry?.summary ? '' : ' ove-muted'}`}>
+                        {timelineLabel(entry, isNewest && running.length > 0)}
+                      </span>
                       <span className="ove-tl-open">{t('pill.affected')}</span>
                     </button>
                   )
@@ -231,14 +334,70 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
             ) : null}
           </div>
 
+          {selectedEntry?.state === 'failed' ? <FailureDetail failure={selectedEntry.failure} /> : null}
           {diffPending ? <div className="ove-section ove-empty">{t('pill.readingDiff', { archive: selected ?? '' })}</div> : null}
           {diff ? <DiffView diff={diff} /> : null}
-          {!diffPending && selected && !diff ? (
+          {!diffPending && selected && !diff && selectedEntry?.state !== 'failed' ? (
             <div className="ove-section ove-empty">{t('pill.diffMissing')}</div>
           ) : null}
         </div>
       ) : null}
     </span>
+  )
+}
+
+/** Failure rows built from the durable archive markers. */
+function archiveFailureViews(failures: ArchiveSummary[], archives: CommitArchive[]): FailureView[] {
+  const modTimeByUri = new Map(archives.map((archive) => [archive.archiveUri, archive.modTime]))
+  return failures.map((entry) => ({
+    key: entry.archiveUri,
+    time: formatShortTime(entry.failure?.failedAt ?? modTimeByUri.get(entry.archiveUri) ?? null),
+    duration: null,
+    reason: archiveFailureText(entry.failure),
+    raw: entry.failure?.error ?? null,
+    cancelled: isCancelledFailure(entry.failure),
+  }))
+}
+
+/** Failure rows from task records — the fallback for servers without markers. */
+function taskFailureViews(tasks: CommitTask[]): FailureView[] {
+  return failedTasks(tasks).map((task) => ({
+    key: task.task_id,
+    time: taskTime(task),
+    duration: durationSeconds(task),
+    reason: failureReason(task),
+    raw: task.error,
+    cancelled: false,
+  }))
+}
+
+function isCancelledFailure(failure: ArchiveFailure | null): boolean {
+  return failure?.stage === 'cancelled'
+}
+
+function archiveFailureText(failure: ArchiveFailure | null): string {
+  const reason = describeFailureText(failure?.error ?? '')
+  if (reason.length > 0) return reason
+  return failure?.stage ? t('pill.stageReason', { stage: failure.stage }) : t('pill.noReason')
+}
+
+function FailureDetail({ failure }: { failure: ArchiveFailure | null }) {
+  const cancelled = isCancelledFailure(failure)
+  return (
+    <div className="ove-section">
+      <div className={`ove-section-title${cancelled ? '' : ' ove-error'}`}>
+        {cancelled ? t('pill.archive.cancelled') : t('pill.archive.failed')}
+      </div>
+      <div className="ove-failure">
+        <div className="ove-failure-head">
+          <span>{failure?.failedAt ? formatShortTime(failure.failedAt) : '—'}</span>
+          <span className="ove-row-count">{failure?.stage ?? ''}</span>
+        </div>
+        <div className="ove-failure-msg" title={failure?.error ?? undefined}>
+          {cancelled ? '' : archiveFailureText(failure)}
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -280,10 +439,15 @@ function Group({ title, entries }: { title: string; entries: MemoryDiffEntry[] }
 /**
  * One timeline row's right-hand text.
  *
- * A missing summary is not an error by itself: the extraction may still be
- * running. The failure section below says when it actually failed.
+ * The archive marker decides first: a failed extraction must not read as
+ * "no detail", and a partial `memory_diff.json` does not make it successful.
  */
-function timelineLabel(summary: MemoryDiffSummary | null, running: boolean): string {
+function timelineLabel(entry: ArchiveSummary | null, running: boolean): string {
+  if (entry?.state === 'failed') {
+    return isCancelledFailure(entry.failure) ? t('pill.archive.cancelled') : t('pill.archive.failed')
+  }
+  if (entry?.state === 'pending') return t('pill.phase.extracting')
+  const summary = entry?.summary ?? null
   if (!summary) return running ? t('pill.phase.extracting') : t('pill.phase.noDetail')
   const parts: string[] = []
   if (summary.totalAdds > 0) parts.push(t('pill.phaseAdds', { count: summary.totalAdds }))
@@ -319,7 +483,9 @@ function phaseLabel(phase: string, status: CommitStatus | null): string {
     case 'failed':
       return t('pill.label.failed')
     case 'errored':
-      return t('pill.label.errored')
+      return status?.latest?.state === 'failed' && isCancelledFailure(status.latest.failure)
+        ? t('pill.label.cancelled')
+        : t('pill.label.errored')
     case 'extracting':
       return t('pill.label.extracting')
     case 'done':
@@ -331,25 +497,41 @@ function phaseLabel(phase: string, status: CommitStatus | null): string {
   }
 }
 
-function tooltip(status: CommitStatus | null, error: string | null, failures: CommitTask[]): string {
+function tooltip(
+  status: CommitStatus | null,
+  error: string | null,
+  phase: string,
+  failures: FailureView[],
+  latestFailure: ArchiveFailure | null,
+): string {
   if (error) return t('pill.tip.readFailed', { error })
   if (!status) return t('pill.tip.reading')
-  const newest = failures[0]
-  if (newest) {
-    return [
-      t('pill.tip.failure', { reason: failureReason(newest) }),
-      t('pill.tip.session', { id: status.ovSessionId }),
-      t('pill.tip.commits', { count: status.commitCount, failed: failures.length }),
-    ].join('\n')
+
+  const lines: string[] = [t('pill.tip.session', { id: status.ovSessionId })]
+  if (phase === 'errored') {
+    if (latestFailure) {
+      lines.unshift(
+        isCancelledFailure(latestFailure)
+          ? t('pill.tip.cancelled')
+          : t('pill.tip.failure', { reason: archiveFailureText(latestFailure) }),
+      )
+    } else if (failures[0]) {
+      lines.unshift(
+        failures[0].cancelled
+          ? t('pill.tip.cancelled')
+          : t('pill.tip.failure', { reason: failures[0].reason }),
+      )
+    }
+  } else if (failures.length > 0) {
+    // Historical failures are real losses, but they do not own the current
+    // commit's state. Say so instead of calling them "the last extraction".
+    lines.push(t('pill.tip.historyFailures', { count: failures.length }))
+  } else {
+    lines.push(t('pill.tip.pending', { tokens: `${status.pendingTokens}${status.threshold ? ` / ${status.threshold}` : ''}` }))
   }
-  return [
-    t('pill.tip.session', { id: status.ovSessionId }),
-    t('pill.tip.pending', { tokens: `${status.pendingTokens}${status.threshold ? ` / ${status.threshold}` : ''}` }),
-    t('pill.tip.commitCount', { count: status.commitCount }),
-    status.lastCommitAt ? t('pill.tip.lastCommit', { time: status.lastCommitAt }) : '',
-  ]
-    .filter(Boolean)
-    .join('\n')
+  lines.push(t('pill.tip.commitCount', { count: status.commitCount }))
+  if (status.lastCommitAt) lines.push(t('pill.tip.lastCommit', { time: formatTime(status.lastCommitAt) }))
+  return lines.join('\n')
 }
 
 function formatTokens(value: number): string {

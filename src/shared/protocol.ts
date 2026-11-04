@@ -32,15 +32,53 @@ export interface MemoryDiffSummary {
 }
 
 /**
- * One timeline row: an archive plus the counts of what it changed.
+ * Terminal state of one commit archive, from the server's own markers.
  *
- * `summary: null` means the extraction has not written `memory_diff.json` yet —
- * either it is still running, or it failed. The popover's failure section says
- * which; this only reports what exists.
+ * OpenViking writes `.done` when extraction finishes and `.failed.json` when it
+ * fails. Both live inside the archive directory, so unlike `session_commit` task
+ * records they are not cleaned up after 24 hours / 7 days.
+ *
+ * `unknown` means the host could not read the markers at all (transport or auth
+ * error), not that the server has no state.
+ */
+export type ArchiveState = 'done' | 'failed' | 'pending' | 'unknown'
+
+/** What the server's `.failed.json` says about one failed extraction. */
+export interface ArchiveFailure {
+  stage: string | null
+  error: string | null
+  failedAt: string | null
+  skipped: boolean
+}
+
+/** The newest archive, as the pill needs it. */
+export interface ArchiveTerminal {
+  archiveUri: string
+  state: ArchiveState
+  failure: ArchiveFailure | null
+  /**
+   * Whether this archive carried a real terminal marker (`.done` /
+   * `.failed.json`) rather than a legacy diff-only success. It tells the client
+   * whether the archive states, or the task list, are the trustworthy source.
+   */
+  markers: boolean
+}
+
+/**
+ * One timeline row: an archive, its terminal state, and the counts of what it
+ * changed.
+ *
+ * `state` comes from the archive's own markers and is what the UI must trust:
+ * `summary: null` alone cannot tell a failed extraction from one that is still
+ * running, and a failed extraction can still leave a partial
+ * `memory_diff.json` behind.
  */
 export interface ArchiveSummary {
   archiveUri: string
   summary: MemoryDiffSummary | null
+  state: ArchiveState
+  /** The server's own payload from `.failed.json`, when this archive failed. */
+  failure: ArchiveFailure | null
 }
 
 /** Result of one memory-extraction phase, as recorded in `memory_diff.json`. */
@@ -69,17 +107,19 @@ export interface MemoryDiffEntry {
  *
  *  - `failed`  — the host could not be asked (server or route down)
  *  - `errored` — the newest commit's memory extraction failed: the archive was
- *                written, but its memories were never extracted
+ *                written, its memories were not extracted. On a server without
+ *                terminal markers this is a failed task that no later commit
+ *                has superseded.
  */
 export type CommitPhase = 'idle' | 'pending' | 'extracting' | 'done' | 'failed' | 'errored'
 
 /**
  * One `session_commit` task.
  *
- * This is the only place a failed extraction is visible at all: the archive is
- * written either way, `commit_count` advances either way, and the third-party
- * memory plugin discards the task. A failed task carries the server's own error
- * text and no `result`.
+ * Task records are pruned by the server (`completed`/`cancelled` after ~24 h,
+ * `failed` after ~7 days), so they describe live progress and serve as the
+ * failure fallback on servers without archive markers — never as history. A
+ * failed task carries the server's own error text and no `result`.
  */
 export interface CommitTask {
   task_id: string
@@ -119,6 +159,11 @@ export interface CommitStatus {
   lastCommitAt: string | null
   /** Best-effort phase derived by the host; the client refines it with tasks. */
   phase: CommitPhase
+  /**
+   * Terminal state of the newest archive, when one exists. This is the durable
+   * signal: the pill must not derive failure from the pruned task list alone.
+   */
+  latest: ArchiveTerminal | null
   /** One entry per archive directory found on the server. */
   archives: CommitArchive[]
 }

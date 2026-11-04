@@ -9,6 +9,43 @@ promotes to a dated section — see [RELEASING.md](RELEASING.md).
 
 ## Unreleased
 
+### Fixed
+
+- **The commit pill no longer lets a pruned task or an old failure decide the
+  current state.** OpenViking keeps `session_commit` task records for about 24
+  hours (`completed`/`cancelled`) and 7 days (`failed`). Once a later success's
+  task aged out, an older failed task became the newest remaining one and the
+  pill flipped back to "extraction failed"; after 7 days a real failure vanished
+  from the UI while its archive still recorded it. The host now reads the
+  durable per-archive markers (`.done` / `.failed.json`) and derives the phase
+  from the newest archive: a failure after a newer successful commit stays only
+  in the popover, a partial `memory_diff.json` no longer masks a failure, and a
+  cancelled commit reads as "cancelled" rather than "failed". Servers without
+  markers fall back to a failed task only when no later `last_commit_at`
+  supersedes it.
+- **Polling no longer runs at a fixed 5 seconds.** The pill polls at 5 s only
+  while a commit is being extracted, at 30 s when idle and visible, pauses in a
+  hidden tab, and backs off exponentially (5→60 s) after failures. Opening the
+  popover, refocusing the window or switching sessions refreshes immediately.
+  Requests are aborted on session change/unmount and guarded against overlap;
+  the host coalesces concurrent status reads. Idle traffic drops from 36 to
+  about 6 upstream requests per minute per tab.
+
+### 修复
+
+- **提交状态胶囊不再被已清理的 task 或旧失败 "复活"。** OpenViking 对
+  `session_commit` task 的保留是：`completed`/`cancelled` 约 24 小时、`failed` 约 7 天。
+  后续成功提交的 task 先过期后，更早的失败 task 会重新变成"最新"，胶囊又翻回
+  "抽取失败"；7 天后真实失败又会从界面消失，而归档里的标记还在。现在宿主读取归档目录
+  的持久标记（`.done` / `.failed.json`），用**最新一个归档**的终态判定阶段：后续成功提交
+  之后的旧失败只留在弹窗里，部分写出的 `memory_diff.json` 不再掩盖失败，手动取消显示为
+  "已取消"而非"失败"。没有标记的旧服务端则回退到 task，但只在失败未被更晚的
+  `last_commit_at` 覆盖时才生效。
+- **轮询不再固定 5 秒。** 只有抽取进行中才 5 秒一次；空闲且可见时 30 秒；标签页隐藏时暂停；
+  请求失败按 5→60 秒指数退避。打开弹窗、窗口重新获得焦点、切换 session 都立即刷新。
+  切换/卸载会取消旧请求并防止重叠；宿主对同一 session 的并发状态读取做单飞。
+  空闲时的上游请求从 36 次/分钟降到约 6 次/分钟。
+
 ## 0.2.2 — 2026-10-27
 
 ### Added
