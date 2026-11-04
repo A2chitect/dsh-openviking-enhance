@@ -9,6 +9,8 @@ promotes to a dated section — see [RELEASING.md](RELEASING.md).
 
 ## Unreleased
 
+## 0.2.3 — 2026-11-04
+
 ### Fixed
 
 - **The commit pill no longer lets a pruned task or an old failure decide the
