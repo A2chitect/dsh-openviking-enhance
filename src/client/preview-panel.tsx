@@ -30,7 +30,7 @@ import {
 import { copyText } from './clipboard.ts'
 import { fetchPreview } from './host-api.ts'
 import { errorText, noticeText, t } from './locale.ts'
-import { setPreviewTarget, usePreviewTarget } from './preview-store.ts'
+import { openPreview, usePreviewTarget } from './preview-store.ts'
 
 /**
  * The slice of the framework's per-tab information this panel reads.
@@ -204,12 +204,19 @@ export function PreviewPanel(props: PreviewPanelProps) {
    * The address-bar action: navigate to a different URI, or refetch the one
    * already shown. Re-recording the same target would emit nothing (the store
    * dedupes identical targets), so a true refresh calls the loader itself.
+   *
+   * A different URI goes through `openPreview`, not `setPreviewTarget`: a page
+   * opened from a link carries its target in the tab's navigation params, which
+   * take priority over the store, so recording the store alone would leave the
+   * address bar looking dead. Routing through the opener navigates the same
+   * channel the links use; on harness generations whose `openTab` ignores params
+   * the store fallback still carries the target.
    */
   const submit = useCallback(() => {
     const next = draft.trim()
     if (next.length === 0) return
     if (next === targetUri) void load(next)
-    else setPreviewTarget(next)
+    else openPreview(next)
   }, [draft, targetUri, load])
 
   const copy = useCallback(async () => {
