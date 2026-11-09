@@ -7,7 +7,99 @@ Notable changes to `dsh-openviking-enhance`. The `version` field in
 Notes for the next release go under `## Unreleased`, which `pnpm run release`
 promotes to a dated section — see [RELEASING.md](RELEASING.md).
 
+
 ## Unreleased
+
+Act I. v0.4 makes the read-only cockpit *operable*: a URI preview with deep
+links, a read-only `/viking` command, and one Explore page for unified search,
+rules, skills and Experience. Nothing in this version writes to OpenViking.
+
+### Added
+
+- **A `viking://` preview tab in the right sidebar.** Every URI the plugin
+  already shows is a link now — recall-tab rows and their loaded details, the
+  recall-explanation entries, the commit diff's archive and change rows, and the
+  new Explore rows — and one click opens (or re-targets) the preview page. It
+  shows the entry's metadata from `fs/stat` + `fs/attrs` (name, file/directory,
+  context and memory type, category, size, modified time, lock, tags) and the
+  server's three read tiers: L0 abstract, L1 overview and L2 full text, with
+  per-tier availability, "not generated yet" placeholder detection, truncation
+  markers, copy-URI and "open in Studio". L0/L1 are labelled as the directory
+  sidecars they are; L2 is files-only and says so on a directory; only text is
+  rendered, so a memory body never becomes markup. The address bar accepts a
+  pasted `viking://` path, and the page takes its target through the framework's
+  own tab-navigation parameters (with a store fallback for the older DSH
+  generations the manifest still supports).
+- **A read-only `/viking` command.** `status` (endpoint, health, server version,
+  identity, the mounted memory plugin, the DSH version, and the current
+  session's commit state), `doctor` (the Doctor's checks as text), `recall
+  <query>` (the same per-session retrieval the recall tab uses, as scored hits),
+  `open <uri>` (metadata plus bounded L0/L1, pointing at the preview tab for the
+  full view) and `help`. Registration waits for the command service, so a
+  composition without it still mounts every surface; the new `enableCommands`
+  switch unregisters the command (live where the Loader emits
+  `loader/volatile-update`). Command output is deliberately short English plain
+  text — the host half has no locale service and the GUI renders result text
+  without Markdown.
+- **An Explore tab** with four read-only segments. **Search** covers memories,
+  resources and skills in one list-mode request, merges a rules bucket from the
+  rule-search endpoint, and groups hits by bucket with score, URI, abstract and
+  rule facts; each row opens the preview. **Rules** lists the rules the server
+  exposes (from the lazy `viking://~/memories/rules` tree, since the server has
+  no rule-list API) with status/name/scenario, and a read-only tester runs
+  `rules/search` against a task description and shows the matched rules'
+  requirement, `applies_when`, exception, probability and body — parsed from the
+  Rule Markdown frontmatter the server returns. **Skills** lists the installed
+  catalogue. **Experience** discovers Experience files and shows their
+  trajectories and outcome distribution. Every segment gets an explicit empty,
+  unavailable or unsupported state: rules need OpenViking 0.5.3+ and are
+  capability-probed, and Experience is normally empty rather than broken.
+- **Six read-only host routes** for the browser half: `GET /preview`,
+  `POST /search`, `POST /rules/search`, `GET /rules`, `GET /skills` and
+  `GET /experience`. The first three are the only POSTs the plugin has ever
+  exposed and they are read-only queries; the trust fence now admits a POST only
+  as same-origin loopback JSON with a 64 KiB body cap (checked against the
+  streamed bytes, not just the declared length), while every GET route still
+  answers 405 to a POST.
+- **Three new settings switches**: `showPreview` and `showExplore` (both default
+  `true`, applied live like the five existing switches) and `enableCommands`
+  (default `true`, read by the host half).
+- **`ROADMAP.md`**, the version-by-version plan (v0.4 → v1.0) this change starts,
+  with the invariants every version keeps.
+- New unit coverage for the preview/search/catalog/command services, the
+  read-only POST fence, the rule-frontmatter parser, the new switches and the
+  new copy, and expanded browser-smoke checks for the new seats and the command
+  surface.
+
+### Changed
+
+- `GET /api/v1/content/abstract` and `/overview` are used as OpenViking defines
+  them: L0/L1 are directory sidecars, so a file's tiers describe the directory
+  it lives in, and a missing sidecar is a 200 placeholder rather than content —
+  both are surfaced as states, not errors.
+- Unified search is semantic-only. The live OpenViking 0.5.3 backend rejects
+  `search_type: "keywords"` with `INVALID_ARGUMENT`, so the Explore search has no
+  toggle and the host degrades a keyword request to semantic with one notice.
+- The manifest, package and both README version lines stay at **0.3.0**; the
+  release notes above stay under `Unreleased` until `pnpm run release 0.4.0`.
+
+### Verified
+
+- `pnpm test` (typecheck, build, packaging contract, **165** unit tests, client
+  smoke, host smoke) passes.
+- Host smoke against a live OpenViking **0.5.3**: preview (file, placeholder L0,
+  155-char L1, 395-char L2), unified search (3 memory hits), empty rules list,
+  complete rule-tester delivery, 1 skill, 0 Experiences, plus the POST-fence
+  cases (same-origin JSON 200, cross-origin 403, cross-site fetch marker 403,
+  non-JSON 415, oversized 413) and every v0.3 route unchanged.
+- The offline path (no server) answers every route with `{ok:false}` JSON and
+  keeps the fence assertions.
+- The browser check and the before/after captures live in the PR; both were
+  taken in the same scratch DSH 0.2.2-rc.1 web profile against the stand-in
+  server in `scripts/screenshot-fixture.mjs` (now covering the v0.4 endpoints)
+  and a mock model, at 1440x900 @2x in the light theme, with invented content
+  only.
+
 
 ## 0.3.0 — 2026-11-09
 

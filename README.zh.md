@@ -2,15 +2,16 @@
 
 [English](README.md) | 中文
 
-**v0.3.0** · [更新记录](CHANGELOG.md)
+**v0.3.0** · [更新记录](CHANGELOG.md) · [路线图](ROADMAP.md)
 
-> 下面的 v0.3 Explain 功能位于 `Unreleased`；版本行与包版本保持 0.2.3，直到
-> `pnpm run release 0.3.0` 将其提升并打标签。
+> 下面的 v0.4 Act 功能位于 `Unreleased`；版本行与包版本保持 0.3.0，直到
+> `pnpm run release 0.4.0` 将其提升并打标签。
 
 把本地 [OpenViking](https://docs.openviking.ai) 记忆服务接进 DeepSeek Harness
 （DSH）的 Web 界面：左侧边栏的 OpenViking Studio 面板、输入框下方的 commit 状态
-胶囊与 diff 浏览器、每条回复下方的召回解释，以及回答「记忆为什么没生效」的
-「记忆健康」页。
+胶囊与 diff 浏览器、每条回复下方的召回解释、回答「记忆为什么没生效」的
+「记忆健康」页，以及 v0.4 新增的 `viking://` 预览、只读 `/viking` 命令和探索页
+（统一搜索 + 规则/技能/Experience 浏览）。
 
 不需要给 DSH 或 OpenViking 插件打补丁——它就是一个普通的 DSH bundle。
 
@@ -85,12 +86,42 @@ OpenViking 拉进上下文的记忆——检索用的那句话（默认是本会
 
 Studio 面板、打开它的侧边栏行，以及输入框下方的提交状态胶囊。
 
+![viking:// 预览页](assets/v04-after-preview.png)
+
+**点开任意 `viking://` 路径。** 插件里出现的每个 URI 现在都是链接：召回行、召回解释卡、
+提交 diff、探索页的命中行。点击会在右侧栏打开 *预览* 页（已打开时直接切换目标），
+显示条目的元数据（名称、文件/目录、上下文类型与记忆类型、分类、大小、修改时间、
+锁定状态、标签），以及服务端三层读取内容：L0 摘要、L1 概览、L2 全文，每层都标明
+是否可用、是否被截断。L0/L1 是 OpenViking 的**目录级 sidecar**，所以文件的这两层
+描述的是它所在目录（面板会写明）；L2 只对文件可用，目录上会给出提示。全部按纯文本
+渲染——记忆正文永远不会变成 HTML。面板里可以复制 URI、在 Studio 中打开条目，
+也可以把 `viking://` 路径粘贴进地址栏直接跳转。
+
+![/viking 命令输出 status](assets/v04-after-command.png)
+
+**在输入框里直接问。** `/viking status` 输出 endpoint、健康状态、服务端版本、身份、
+已挂载的记忆插件、DSH 版本和当前会话的提交状态；`/viking doctor` 输出 Doctor 的检查项；
+`/viking recall <query>` 用当前会话跑一次召回并列出带分数的命中；`/viking open <uri>`
+输出元数据与有长度上限的 L0/L1。这个命令是只读的——本版本没有 commit、remember、
+forget、pause 动词——`enableCommands` 可以把它关掉。
+
+![探索页](assets/v04-after-explore.png)
+
+**探索整个记忆库。** 右侧栏新增的 *探索* tab 有四个只读区块：**搜索**（一次查询覆盖记忆、
+资源、技能并合并规则命中，按 bucket 分组显示分数与摘要，点行打开预览）、**规则**
+（列出这个 OpenViking 提供的规则；一个只读试跑器展示规则为什么命中——要求、
+`applies_when`、例外、概率与正文）、**技能**（已安装技能目录，点行打开其 `SKILL.md`）、
+**Experience**（Agent Evolution experience 文件的轨迹与结果分布）。规则需要
+OpenViking **0.5.3+** 并且会先做能力探测，旧版本显示明确的「不可用」而不是报错；
+Experience 通常是空的，不是坏了。搜索只走语义检索：当前服务端拒绝关键词模式，
+因此没有切换开关。
+
 ## 前置条件
 
 | | |
 | --- | --- |
 | DSH | 0.2.0-rc.2 或更新（desktop / web profile 均可；已在 0.2.0-rc.2、0.2.1-rc.5、0.2.2-rc.1 实测） |
-| OpenViking | 需要一个本地服务，实测 0.5.1.1–0.5.3（0.5.3 含上下文接口）。Studio 由同一端口的 `/studio/` 提供 |
+| OpenViking | 需要一个本地服务，实测 0.5.1.1–0.5.3（0.5.3 含上下文接口）。预览、搜索、技能与 Experience 在 0.5.1.1+ 可用；**规则需要 0.5.3+**。Studio 由同一端口的 `/studio/` 提供 |
 | 记忆插件 | 建议装 `@openviking/dsh-memory-plugin`——会话提交由它完成。不装也能用，只是看不到提交阈值进度 |
 
 ## 安装
@@ -147,10 +178,13 @@ dsh plugin --profile desktop remove dsh-openviking-enhance
 | `showRecallPanel` | `true` | 界面开关：右侧边栏的「记忆召回」tab |
 | `showRecallExplain` | `true` | 界面开关：每条回复下方的「记忆来源」入口 |
 | `showHealthPanel` | `true` | 界面开关：右侧边栏的「记忆健康」tab 与插件详情页健康摘要 |
+| `showPreview` | `true` | 界面开关：右侧边栏的 `viking://` 预览 tab |
+| `showExplore` | `true` | 界面开关：探索 tab（搜索、规则、技能、Experience） |
+| `enableCommands` | `true` | 宿主开关：只读的 `/viking` 命令 |
 
-![插件配置表单里的五个界面开关](assets/v03-after-settings.png)
+![插件配置表单里的界面开关](assets/v04-after-settings.png)
 
-五个**界面开关**分别控制这五个入口，**保存后立即生效**——界面会当场挂载或卸载对应入口，
+这些**界面开关**分别控制各个入口，**保存后立即生效**——界面会当场挂载或卸载对应入口，
 不需要重载窗口或重启应用。**Configure** 表单本身永远不会被隐藏，所以关掉的入口随时可以
 在这里重新打开。隐藏左侧入口会一并卸载 Studio 页面（重新打开后重新加载）；隐藏召回 tab
 后不再提供该页，已打开的召回页会在回到对话时自动收起（若它在后台分屏里、不是激活页，
@@ -160,11 +194,24 @@ dsh plugin --profile desktop remove dsh-openviking-enhance
 
 **侧边栏没有 OpenViking 行，或输入框下方没有胶囊。**
 先看插件自己的开关（Plugins → 本插件 → **Configure** → 「界面」）：某个入口可能被关掉了，
-而且五个开关互相独立。否则是客户端部分没加载：重载窗口（⌘R）即可，仍然没有就重启应用。
+而且这些开关互相独立。否则是客户端部分没加载：重载窗口（⌘R）即可，仍然没有就重启应用。
 
-**我把 OpenViking 行 / 胶囊 / 召回 tab / 记忆来源 / 记忆健康关掉了，想找回来。**
+**我把 OpenViking 行 / 胶囊 / 召回 tab / 记忆来源 / 记忆健康 / 预览 / 探索 tab 关掉了，想找回来。**
 打开 **Plugins** → *dsh-openviking-enhance* → 它那一行的 **Configure**，把开关打开再保存。
-即使五个入口全都隐藏，这个配置表单也始终可用。
+即使所有入口都隐藏，这个配置表单也始终可用。
+
+**`/viking` 命令不生效。**
+该命令由宿主半部分注册，可以在插件的 **Configure** 表单里用 `enableCommands` 关掉；
+保存后的改动在宿主下次启动时生效（Loader 广播设置更新时也会立即生效）。如果表单里它已经是开着的，
+重启一次 DSH——宿主半部分在启动时加载。
+
+**「规则」区块提示服务端没有规则列表，或规则检索失败。**
+规则是 OpenViking **0.5.3+** 的能力；0.5.1.1/0.5.2 会明确提示不可用。在 0.5.3 上规则库为空
+是正常的（还没有 compile 过），试跑器仍然可用。
+
+**预览页提示「这一层还没有生成」。**
+OpenViking 的 L0/L1 sidecar 是惰性生成的（按目录、在 compile 时），所以全新的或从未 compile
+过的目录出现占位文本是正常的。L2（存储的文件正文）不走 sidecar 机制。
 
 **面板提示连不上 OpenViking。**
 先起服务并直接验证：`curl http://127.0.0.1:1933/health`。面板会显示它尝试的地址，
@@ -200,10 +247,17 @@ Studio 面板和胶囊照常工作。
   切换应用语言即切换本插件的文案；其他语言退回英文。
 - OpenViking 会定期清理 commit 任务记录，所以失败列表只覆盖最近的提交；归档文件
   本身是永久的。
-- 插件的内部接口只接受本机 loopback 且来自 DSH 窗口自身来源的请求。
-- `assets/` 里的 v0.3 截图来自 `scripts/screenshot-fixture.mjs` 的替身服务与 mock 模型，
-  浅色主题、1440×900 视口；`v03-before-*` 是同一 DSH 0.2.2 web profile 中已发布的
-  v0.2.3 构建。截图不含真实记忆数据或账号。
+- 插件的内部接口只接受本机 loopback 且来自 DSH 窗口自身来源的请求。仅有的 POST
+  路由是只读的搜索与规则试跑查询，并且还要求 JSON 请求体不超过 64 KiB。
+- **v0.4 全程只读。** 没有任何路由或命令会写入 OpenViking：没有 commit、remember、
+  forget、策展或捕获控制。这些是 v0.5 的计划，上线前必须先有显式确认、dry-run 与审计。
+- `/viking` 的输出是简短的英文纯文本：宿主半部分拿不到应用语言，且 GUI 的命令结果
+  不渲染 Markdown。
+- 规则是 OpenViking 0.5.3+ 的能力；0.5.1.1/0.5.2 上「规则」区块会说明不可用。
+  统一搜索只走语义检索，因为当前后端拒绝关键词模式。
+- `assets/` 里的截图来自 `scripts/screenshot-fixture.mjs` 的替身服务（v0.4 起也覆盖
+  新增接口）与 mock 模型，浅色主题、1440×900 视口；`v0*-before-*` 是同一 DSH 0.2.2
+  web profile 中已发布的上一版本构建。截图不含真实记忆数据或账号。
 
 ## 开发
 
