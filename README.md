@@ -2,7 +2,7 @@
 
 English | [中文](README.zh.md)
 
-**v0.2.3** · [Changelog](CHANGELOG.md)
+**v0.3.0** · [Changelog](CHANGELOG.md)
 
 > The v0.3 Explain feature set below is under `Unreleased`; the version line and
 > package stay at 0.2.3 until `pnpm run release 0.3.0` promotes and tags it.

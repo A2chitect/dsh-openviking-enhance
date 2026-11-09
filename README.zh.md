@@ -2,7 +2,7 @@
 
 [English](README.md) | 中文
 
-**v0.2.3** · [更新记录](CHANGELOG.md)
+**v0.3.0** · [更新记录](CHANGELOG.md)
 
 > 下面的 v0.3 Explain 功能位于 `Unreleased`；版本行与包版本保持 0.2.3，直到
 > `pnpm run release 0.3.0` 将其提升并打标签。

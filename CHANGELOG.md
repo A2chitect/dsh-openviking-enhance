@@ -9,6 +9,8 @@ promotes to a dated section — see [RELEASING.md](RELEASING.md).
 
 ## Unreleased
 
+## 0.3.0 — 2026-11-09
+
 Explain. v0.3 turns the dashboard from "what is the memory state" into "why is
 the memory in this state", and every new surface is read-only.
 

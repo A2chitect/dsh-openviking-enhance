@@ -1,6 +1,6 @@
 {
   "name": "dsh-openviking-enhance",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "description": "OpenViking in the DSH web GUI: a Studio panel, a commit status pill and diff browser, a per-turn recall explanation, a right-sidebar recall tab, and a Memory health / Doctor tab.",
   "type": "module",
   "icon": "./icon.svg",
