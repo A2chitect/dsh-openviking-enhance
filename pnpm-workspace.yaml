@@ -14,6 +14,17 @@ allowBuilds:
   node-pty: false
   protobufjs: false
 minimumReleaseAgeExclude:
+  - '@deepseek-ai/dsh-api-remotes@0.2.2-rc.1'
+  - '@deepseek-ai/dsh-client-ui-chat@0.2.2-rc.1'
+  - '@deepseek-ai/dsh-client-ui-conversation@0.2.2-rc.1'
+  - '@deepseek-ai/dsh-client-ui-layout@0.2.2-rc.1'
+  - '@deepseek-ai/dsh-client-ui-plugin-manager@0.2.2-rc.1'
+  - '@deepseek-ai/dsh-client-ui-settings@0.2.2-rc.1'
+  - '@deepseek-ai/dsh-client-ui-sidebar@0.2.2-rc.1'
+  - '@deepseek-ai/dsh-client-ui-sidebar-right@0.2.2-rc.1'
+  - '@deepseek-ai/dsh-client-ui-slots@0.2.2-rc.1'
+  - '@deepseek-ai/dsh-host-webserver@0.2.2-rc.1'
+  - '@deepseek-ai/dsh-brand@0.2.2-rc.1'
   - '@deepseek-ai/dsh-api-remotes@0.2.1-rc.2'
   - '@deepseek-ai/dsh-brand@0.2.1-rc.2'
   - '@deepseek-ai/dsh-client-ui-conversation@0.2.1-rc.2'

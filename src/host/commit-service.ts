@@ -31,7 +31,19 @@ import type { OpenVikingApi, OvCommitTask } from './openviking-api.ts'
 
 /** The slice of `@openviking/dsh-memory-plugin`'s runtime this plugin reads. */
 export interface OpenVikingMemoryRuntime {
-  states?: Map<unknown, { ovSessionId?: string; config?: { peerId?: string; commitTokenThreshold?: number } }>
+  /**
+   * Per-session runtime state. `config` is the plugin's fully resolved
+   * configuration (its own schema merged with the profile/env/ovcli layers), so
+   * the Doctor and the recall explanation read effective values from here
+   * instead of re-deriving the plugin's precedence.
+   */
+  states?: Map<
+    unknown,
+    {
+      ovSessionId?: string
+      config?: Record<string, unknown> & { peerId?: string; commitTokenThreshold?: number }
+    }
+  >
 }
 
 /** Shape of `memory_diff.json` on the server. */
@@ -135,6 +147,30 @@ export class CommitService {
   private threshold(sessionId: string): number | null {
     const value = this.options.memoryRuntime()?.states?.get(sessionId)?.config?.commitTokenThreshold
     return typeof value === 'number' && Number.isFinite(value) ? value : null
+  }
+
+  /**
+   * The mounted memory plugin's resolved configuration for one session.
+   *
+   * A snapshot of what the plugin would use right now, not this plugin's guess:
+   * the official plugin resolves its own schema against the profile, the
+   * environment and `ovcli.conf`. `null` means the plugin is not mounted (or
+   * this session was never initialized), never "the plugin has no settings".
+   */
+  pluginConfig(sessionId: string): Record<string, unknown> | null {
+    const config = this.options.memoryRuntime()?.states?.get(sessionId)?.config
+    return config !== null && typeof config === 'object' ? config : null
+  }
+
+  /** Whether the official memory plugin is mounted at all. */
+  pluginMounted(): boolean {
+    return this.options.memoryRuntime() !== null
+  }
+
+  /** The mounted plugin's configured local peer, when a session has one. */
+  pluginPeerSource(sessionId: string): string | null {
+    const source = this.options.memoryRuntime()?.states?.get(sessionId)?.config?.peerSource
+    return typeof source === 'string' && source.length > 0 ? source : null
   }
 
   async status(sessionId: string, options: { fresh?: boolean } = {}): Promise<CommitStatus> {

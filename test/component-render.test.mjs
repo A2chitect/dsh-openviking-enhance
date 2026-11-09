@@ -107,6 +107,8 @@ const FORM = {
       showSidebarEntry: true,
       showCommitStatus: true,
       showRecallPanel: true,
+      showRecallExplain: true,
+      showHealthPanel: true,
     },
     base: { endpoint: '', studioPath: '/studio/', cacheTtlMs: 2500, recallCacheTtlMs: 15000 },
     user: { endpoint: 'http://127.0.0.1:1933' },
@@ -145,10 +147,13 @@ test('the bundle registers every seat, and all of them render', () => {
   const { find, contributions } = loadBundle('en')
   const seats = contributions.map((entry) => entry.options.name).sort()
   assert.deepEqual(seats, [
+    'conversation.chat.turnTail',
     'conversation.composer.dock',
     'main',
+    'plugins.detail.section',
     'plugins.row.config',
     'sidebar.panellist',
+    'sidebar.right.pane.tab',
     'sidebar.right.pane.tab',
   ])
 
@@ -169,6 +174,8 @@ test('the bundle registers every seat, and all of them render', () => {
     'Sidebar entry',
     'Commit status pill',
     'Memory recall tab',
+    'In-conversation memory sources',
+    'Memory health tab',
   ]) {
     assert.ok(markup.includes(label), `the form shows ${label}`)
   }
@@ -181,6 +188,51 @@ test('the bundle registers every seat, and all of them render', () => {
   )
   assert.ok(recall.includes('Search'), 'the recall tab renders its search control')
   assert.ok(recall.includes('This session&#x27;s last prompt'), 'and its placeholder')
+
+  // The per-turn explanation tail reads the turn's prompt through the Chat
+  // standard `useChat` hook; a stand-in snapshot is enough to render its trigger.
+  const fakeChat = {
+    locations: { getTurn: () => ['node-1'] },
+    nodes: { get: () => ({ kind: 'user', data: { content: [{ type: 'text', text: 'Why did this turn recall that?' }] } }) },
+  }
+  const explain = renderToStaticMarkup(
+    createElement(find('conversation.chat.turnTail').Component, {
+      sessionId: 'session-1',
+      turn: { turn: 1 },
+      seq: 1,
+      openFile: () => {},
+      useChat: (selector) => selector(fakeChat),
+    }),
+  )
+  assert.ok(explain.includes('Memory sources'), 'the recall explanation tail renders its trigger')
+
+  // The Memory health tab renders its header before either request resolves.
+  const health = renderToStaticMarkup(
+    createElement(
+      contributions.find((entry) => entry.options.key === 'dsh-openviking-enhance:health').Component,
+      { sessionId: 'session-1' },
+    ),
+  )
+  assert.ok(health.includes('OpenViking health'), 'the health tab renders its header')
+  assert.ok(health.includes('Refresh'), 'and its refresh control')
+
+  // The Plugins-page summary renders for this plugin's own page only.
+  const summary = renderToStaticMarkup(
+    createElement(find('plugins.detail.section').Component, {
+      subject: {
+        kind: 'bundle',
+        pkg: {
+          name: 'dsh-openviking-enhance',
+          installed: true,
+          availability: 'installed',
+          official: false,
+          enabled: true,
+          rows: [],
+        },
+      },
+    }),
+  )
+  assert.ok(summary.includes('OpenViking health'), 'the plugin-page health summary renders')
 
   // The pill renders in the dock, and the centre panel renders while it waits
   // for the host: neither may throw with an absent fetch.
@@ -214,6 +266,8 @@ test('the same components render in Chinese when the app is set to it', () => {
     '左侧边栏入口',
     '提交状态胶囊',
     '记忆召回标签页',
+    '对话内记忆来源',
+    '记忆健康标签页',
   ]) {
     assert.ok(markup.includes(label), `the form shows ${label}`)
   }
@@ -222,28 +276,34 @@ test('the same components render in Chinese when the app is set to it', () => {
   assert.ok(!markup.includes('Save'), 'nothing falls back to English')
 })
 
-test('the form renders the three interface switches as checkboxes that follow the saved values', () => {
+test('the form renders the five interface switches as checkboxes that follow the saved values', () => {
   const { find } = loadBundle('en')
   const markup = renderPage(find, FORM)
 
   const boxes = checkboxes(markup)
-  assert.equal(boxes.length, 3, 'exactly three checkbox inputs, one per switch')
+  assert.equal(boxes.length, 5, 'exactly five checkbox inputs, one per switch')
   assert.deepEqual(
     boxes.map((tag) => hasAttribute(tag, 'checked')),
-    [true, true, true],
-    'all three are checked when the saved values are on',
+    [true, true, true, true, true],
+    'all five are checked when the saved values are on',
   )
   assert.deepEqual(
     boxes.map((tag) => hasAttribute(tag, 'disabled')),
-    [false, false, false],
+    [false, false, false, false, false],
     'a writable form leaves them enabled',
   )
 
-  // The three switches have their own rows, in the order the sidebar, the
-  // composer and the right sidebar appear.
+  // The five switches have their own rows, in the order the sidebar, the
+  // composer and the conversation, then the right sidebar, appear.
   const blocks = toggleBlocks(markup)
-  assert.equal(blocks.length, 3, 'each switch is its own labelled row')
-  for (const [index, label] of ['Sidebar entry', 'Commit status pill', 'Memory recall tab'].entries()) {
+  assert.equal(blocks.length, 5, 'each switch is its own labelled row')
+  for (const [index, label] of [
+    'Sidebar entry',
+    'Commit status pill',
+    'Memory recall tab',
+    'In-conversation memory sources',
+    'Memory health tab',
+  ].entries()) {
     assert.ok(blocks[index].includes(label), `switch ${index + 1} is the ${label} row`)
     assert.equal(checkboxes(blocks[index]).length, 1, `the ${label} row has exactly one checkbox`)
   }
@@ -260,7 +320,7 @@ test('the form renders the three interface switches as checkboxes that follow th
     },
   })
   const offBlocks = toggleBlocks(off)
-  assert.equal(checkboxes(off).length, 3)
+  assert.equal(checkboxes(off).length, 5)
   assert.equal(
     hasAttribute(checkboxes(offBlocks[0])[0], 'checked'),
     true,
@@ -276,19 +336,29 @@ test('the form renders the three interface switches as checkboxes that follow th
     true,
     'the recall switch stays on',
   )
+  assert.equal(
+    hasAttribute(checkboxes(offBlocks[3])[0], 'checked'),
+    true,
+    'the explanation switch stays on',
+  )
+  assert.equal(
+    hasAttribute(checkboxes(offBlocks[4])[0], 'checked'),
+    true,
+    'the health switch stays on',
+  )
   // An override is marked where it is edited, the same as every other field.
   assert.ok(offBlocks[1].includes('overridden'), 'the overridden switch carries the override badge')
 })
 
-test('a read-only form disables the three switches instead of pretending they can be edited', () => {
+test('a read-only form disables the five switches instead of pretending they can be edited', () => {
   const { find } = loadBundle('en')
   const readOnly = { ...FORM, state: { ...FORM.state, writable: false } }
   const markup = renderPage(find, readOnly)
   const boxes = checkboxes(markup)
-  assert.equal(boxes.length, 3)
+  assert.equal(boxes.length, 5)
   assert.deepEqual(
     boxes.map((tag) => hasAttribute(tag, 'disabled')),
-    [true, true, true],
+    [true, true, true, true, true],
     'every switch is disabled when the profile cannot be written',
   )
   assert.ok(markup.includes('read-only'), 'the form also explains why it cannot be edited')

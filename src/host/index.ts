@@ -26,11 +26,13 @@ import {
   type EnhanceConfig,
   type PluginNotice,
 } from '../shared/protocol.ts'
-import { describeConnection, resolveConnection } from './config.ts'
+import { describeConnection, resolveConnectionWithOrigins } from './config.ts'
 import { isLoopbackHostname, isTrustedLocalRequest } from './trust-fence.ts'
 import { CommitService, isArchiveUriForSession, type OpenVikingMemoryRuntime } from './commit-service.ts'
 import { OpenVikingApi } from './openviking-api.ts'
 import { RecallService } from './recall-service.ts'
+import { SessionLogService } from './session-log.ts'
+import { DoctorService } from './doctor-service.ts'
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'openviking-enhance'
@@ -77,6 +79,10 @@ export const Config = z.object({
   showCommitStatus: z.boolean().default(true).volatile(),
   /** Interface switch: the Memory recall tab in the right sidebar. */
   showRecallPanel: z.boolean().default(true).volatile(),
+  /** Interface switch: the per-turn "memory sources" tail in the conversation. */
+  showRecallExplain: z.boolean().default(true).volatile(),
+  /** Interface switch: the Memory health tab and the Plugins-page health summary. */
+  showHealthPanel: z.boolean().default(true).volatile(),
 })
 
 /**
@@ -103,6 +109,11 @@ export interface EnhanceConfigInput {
   studioPath?: ConfigField<string>
   cacheTtlMs?: ConfigField<number>
   recallCacheTtlMs?: ConfigField<number>
+  showSidebarEntry?: ConfigField<boolean>
+  showCommitStatus?: ConfigField<boolean>
+  showRecallPanel?: ConfigField<boolean>
+  showRecallExplain?: ConfigField<boolean>
+  showHealthPanel?: ConfigField<boolean>
 }
 
 /** The value behind a field, whether it is a reference or the value itself. */
@@ -200,7 +211,7 @@ export function apply(ctx: Context, config: EnhanceConfigInput = {}): void {
 
 function start(ctx: Context, config: EnhanceConfigInput): void {
   const host = ctx as unknown as HostContext
-  const connection = resolveConnection({
+  const { connection, origins } = resolveConnectionWithOrigins({
     endpoint: configText(config.endpoint),
     apiKey: configText(config.apiKey),
     account: configText(config.account),
@@ -232,6 +243,27 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
     commit: service,
     cacheTtlMs: configNumber(config.recallCacheTtlMs, 15000),
   })
+
+  const sessionLog = new SessionLogService({ api, commit: service })
+
+  /** The running app's release, when the web host publishes it. */
+  const dshVersion = (): string | null => {
+    try {
+      const clientModules = host.get('clientModules') as
+        | { release?: { version?: unknown } }
+        | undefined
+      if (typeof clientModules?.release?.version === 'string') return clientModules.release.version
+      const app = host.get('app') as { version?: unknown } | undefined
+      if (typeof app?.version === 'string') return app.version
+    } catch {
+      // An optional host service that throws is simply not available.
+    }
+    return typeof process.env.DSH_VERSION === 'string' && process.env.DSH_VERSION.length > 0
+      ? process.env.DSH_VERSION
+      : null
+  }
+
+  const doctor = new DoctorService({ api, commit: service, connection, origins, dshVersion })
 
   const configPayload = async (): Promise<ApiResult<EnhanceConfig>> => {
     const health = await api.health()
@@ -399,6 +431,65 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
             fresh: params.get('fresh') === '1',
           })
           writeJson(res, 200, { ok: true, recall: payload })
+        } catch (error) {
+          writeJson(res, 200, { ok: false, error: message(error) })
+        }
+      },
+    },
+    {
+      kind: 'exact',
+      path: `${API_PREFIX}/recall/explain`,
+      handler: async (req, res) => {
+        if (!guard(req, res)) return
+        const params = query(req)
+        const sessionId = params.get('sessionId') ?? ''
+        if (!sessionId) {
+          writeJson(res, 400, { ok: false, error: 'sessionId is required' } satisfies ApiResult<never>)
+          return
+        }
+        const requested = params.get('source')
+        const source =
+          requested === 'turn' || requested === 'session' || requested === 'manual' ? requested : undefined
+        try {
+          const explanation = await recall.explain(sessionId, params.get('query') ?? undefined, {
+            fresh: params.get('fresh') === '1',
+            ...(source === undefined ? {} : { source }),
+          })
+          writeJson(res, 200, { ok: true, explanation })
+        } catch (error) {
+          writeJson(res, 200, { ok: false, error: message(error) })
+        }
+      },
+    },
+    {
+      kind: 'exact',
+      path: `${API_PREFIX}/session-log`,
+      handler: async (req, res) => {
+        if (!guard(req, res)) return
+        const params = query(req)
+        const sessionId = params.get('sessionId') ?? ''
+        if (!sessionId) {
+          writeJson(res, 400, { ok: false, error: 'sessionId is required' } satisfies ApiResult<never>)
+          return
+        }
+        try {
+          const log = await sessionLog.log(sessionId, { fresh: params.get('fresh') === '1' })
+          writeJson(res, 200, { ok: true, log })
+        } catch (error) {
+          writeJson(res, 200, { ok: false, error: message(error) })
+        }
+      },
+    },
+    {
+      kind: 'exact',
+      path: `${API_PREFIX}/doctor`,
+      handler: async (req, res) => {
+        if (!guard(req, res)) return
+        const params = query(req)
+        const sessionId = params.get('sessionId') ?? undefined
+        try {
+          const report = await doctor.report(sessionId, { probe: params.get('probe') === '1' })
+          writeJson(res, 200, { ok: true, report })
         } catch (error) {
           writeJson(res, 200, { ok: false, error: message(error) })
         }

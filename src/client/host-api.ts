@@ -17,10 +17,14 @@ import {
   type ApiResult,
   type CommitStatus,
   type CommitTask,
+  type DoctorReport,
   type EnhanceConfig,
   type MemoryDiff,
   type RecallContent,
+  type RecallExplanation,
   type RecallPayload,
+  type RecallQuerySource,
+  type SessionMemoryLog,
 } from '../shared/protocol.ts'
 
 /** Relative base: no leading slash, so `<base href>` keeps working. */
@@ -135,4 +139,69 @@ export interface RecallContentResponse {
 
 export function fetchRecallContent(uri: string): Promise<ApiResult<RecallContentResponse>> {
   return readJson<RecallContentResponse>(`${BASE}/recall/content?uri=${encodeURIComponent(uri)}`)
+}
+
+export interface ExplainResponse {
+  explanation: RecallExplanation
+}
+
+/**
+ * Explain one recall for a turn.
+ *
+ * The prompt is sent explicitly because the turn tail knows it; without one the
+ * host falls back to the session's latest captured prompt. `source` only labels
+ * where the text came from — the host does not trust it for anything else.
+ */
+export function fetchRecallExplain(
+  sessionId: string,
+  query: string,
+  options: { source?: RecallQuerySource; fresh?: boolean; signal?: AbortSignal } = {},
+): Promise<ApiResult<ExplainResponse>> {
+  const params = new URLSearchParams({ sessionId })
+  const trimmed = query.trim()
+  if (trimmed.length > 0) params.set('query', trimmed)
+  if (options.source !== undefined) params.set('source', options.source)
+  if (options.fresh === true) params.set('fresh', '1')
+  return readJson<ExplainResponse>(
+    `${BASE}/recall/explain?${params.toString()}`,
+    options.signal === undefined ? undefined : { signal: options.signal },
+  )
+}
+
+export interface SessionLogResponse {
+  log: SessionMemoryLog
+}
+
+export function fetchSessionLog(
+  sessionId: string,
+  options: { fresh?: boolean; signal?: AbortSignal } = {},
+): Promise<ApiResult<SessionLogResponse>> {
+  const params = new URLSearchParams({ sessionId })
+  if (options.fresh === true) params.set('fresh', '1')
+  return readJson<SessionLogResponse>(
+    `${BASE}/session-log?${params.toString()}`,
+    options.signal === undefined ? undefined : { signal: options.signal },
+  )
+}
+
+export interface DoctorResponse {
+  report: DoctorReport
+}
+
+/**
+ * The Doctor snapshot. `probe=1` asks the server to exercise its optional
+ * capabilities; the Plugins-page summary omits it and stays a cheap read.
+ */
+export function fetchDoctor(
+  sessionId?: string,
+  options: { probe?: boolean; signal?: AbortSignal } = {},
+): Promise<ApiResult<DoctorResponse>> {
+  const params = new URLSearchParams()
+  if (sessionId !== undefined && sessionId.length > 0) params.set('sessionId', sessionId)
+  if (options.probe === true) params.set('probe', '1')
+  const suffix = params.toString()
+  return readJson<DoctorResponse>(
+    `${BASE}/doctor${suffix.length > 0 ? `?${suffix}` : ''}`,
+    options.signal === undefined ? undefined : { signal: options.signal },
+  )
 }

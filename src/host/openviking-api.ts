@@ -39,15 +39,20 @@ export interface OvSessionMeta {
   /** Owner of the session; the fallback when `uri` is absent. */
   created_by_user_id?: string
   user?: { account_id?: string; user_id?: string }
+  /** Captured, not-yet-committed messages. */
   message_count: number
+  /** Every message the server has received, committed or not. */
+  total_message_count?: number
   commit_count: number
   memories_extracted: { total: number; memory_write: number; memory_edit: number }
   last_commit_at: string | null
   last_auto_commit_at?: string | null
+  last_message_at?: string | null
   pending_tokens: number
   keep_recent_count?: number
   created_at?: string
   updated_at?: string
+  llm_token_usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }
 }
 
 export interface OvFsEntry {
@@ -213,6 +218,59 @@ export class OpenVikingApi {
       body,
     })
   }
+
+  /**
+   * The newer context face: the same endpoint with `mode: "context"`.
+   *
+   * This is what `@openviking/dsh-memory-plugin` prefers when the server has it.
+   * Unlike the list mode it returns one server-assembled block plus `stats` —
+   * quotas, token budget, de-duplication and exclusion accounting — which is
+   * exactly what "why did this turn recall these" needs. A legacy server rejects
+   * the extra fields; callers fall back to `search()`.
+   */
+  async searchContext(body: OvContextRequest, options: RequestOptions = {}): Promise<OvResult<OvContextResponse>> {
+    return this.request<OvContextResponse>('/api/v1/search/search', { timeoutMs: 20000, ...options }, {
+      method: 'POST',
+      body,
+    })
+  }
+
+  /** Server status. `result.user` is the authenticated request's own user. */
+  async systemStatus(options: RequestOptions = {}): Promise<OvResult<OvSystemStatus>> {
+    return this.request<OvSystemStatus>('/api/v1/system/status', { timeoutMs: 5000, ...options })
+  }
+
+  /**
+   * Installed skills, capped at one node each.
+   *
+   * The Doctor only needs the count and a few names, not the whole catalog;
+   * `node_limit=1` keeps the answer small even on a large library.
+   */
+  async listSkills(options: RequestOptions = {}): Promise<OvResult<OvSkillList>> {
+    return this.request<OvSkillList>('/api/v1/skills?node_limit=1', { timeoutMs: 5000, ...options })
+  }
+
+  /** Retrieval quality metrics — query count and latency, no memory bodies. */
+  async observerRetrieval(options: RequestOptions = {}): Promise<OvResult<OvObserverRetrieval>> {
+    return this.request<OvObserverRetrieval>('/api/v1/observer/retrieval?format=json', { timeoutMs: 5000, ...options })
+  }
+
+  /** Rules capability probe. The server requires `task_context`; one short one. */
+  async rulesSearch(taskContext: string, options: RequestOptions = {}): Promise<OvResult<OvRuleSearch>> {
+    return this.request<OvRuleSearch>(
+      '/api/v1/rules/search',
+      { timeoutMs: 8000, ...options },
+      { method: 'POST', body: { task_context: taskContext.slice(0, 2000) } },
+    )
+  }
+
+  /** `fs/stat` for one `viking://` URI; the capability probe and count read. */
+  async fsStat(uri: string, options: RequestOptions = {}): Promise<OvResult<OvFsStat>> {
+    return this.request<OvFsStat>(`/api/v1/fs/stat?uri=${encodeURIComponent(uri)}`, {
+      timeoutMs: 5000,
+      ...options,
+    })
+  }
 }
 
 /** One retrieval request. Field names are the server's, snake_case included. */
@@ -224,6 +282,105 @@ export interface OvSearchRequest {
   /** 0 keeps weak matches visible instead of hiding them behind the default. */
   score_threshold?: number
   session_id?: string
+}
+
+/**
+ * The context-face request body.
+ *
+ * These names mirror the memory plugin's own request builder (see its
+ * `buildContextSearchBody`); every optional field is sent only when the mounted
+ * plugin's effective configuration says so. The server owns the mechanics —
+ * quotas, tier degradation, cross-turn de-duplication.
+ */
+export interface OvContextRequest {
+  query: string
+  mode: 'context'
+  purpose?: 'chat' | 'coding'
+  score_threshold?: number
+  session_id?: string
+  dedup_turns?: number
+  query_expansion?: 'off' | 'auto'
+  max_tokens?: number
+  quotas?: Record<string, number>
+  peer_scope?: 'actor' | 'all'
+  exclude_uris?: string[]
+  rewrite?: boolean | 'auto'
+  rewrite_max_bullets?: number
+}
+
+/** One entry in a context-face reply. */
+export interface OvContextItem {
+  uri: string
+  score: number
+  category?: string
+  detail?: string
+  text?: string
+  origin?: string
+  context_type?: string
+  level?: number
+  abstract?: string
+  tags?: string[]
+}
+
+/** The accounting the context face ships beside its entries. */
+export interface OvContextStats {
+  searched?: Record<string, number>
+  candidates?: number
+  returned?: number
+  dropped?: number
+  deduped?: number
+  excluded?: number
+  max_tokens?: number
+  used_tokens?: number
+  quotas?: Record<string, number>
+  tier_counts?: Record<string, number>
+  origins?: Record<string, number>
+  peer_scope?: string
+  planned_queries?: string[]
+  query_expansion?: string
+  rewrite?: string
+  score_threshold?: number
+  dedup?: { turns?: number; status?: string; cooled?: number; turn?: number }
+  fill?: Record<string, number>
+}
+
+export interface OvContextResponse {
+  entries?: OvContextItem[]
+  rendered?: string
+  digest?: string
+  stats?: OvContextStats
+}
+
+export interface OvSystemStatus {
+  initialized?: boolean
+  user?: string
+}
+
+export interface OvSkillList {
+  skills?: Array<{ name?: string; uri?: string }>
+  root_uris?: string[]
+}
+
+export interface OvObserverRetrieval {
+  is_healthy?: boolean
+  status?: {
+    total_queries?: number
+    avg_latency_ms?: number
+    zero_result_rate?: number
+    avg_results_per_query?: number
+  }
+}
+
+export interface OvRuleSearch {
+  rules?: unknown[]
+  delivery?: { complete?: boolean; rule_count?: number; rendered_chars?: number }
+  warning?: string
+}
+
+export interface OvFsStat {
+  uri?: string
+  isDir?: boolean
+  count?: number
 }
 
 /** One retrieved entry, exactly as the server ranks it. */

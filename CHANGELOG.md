@@ -9,6 +9,110 @@ promotes to a dated section — see [RELEASING.md](RELEASING.md).
 
 ## Unreleased
 
+## 0.3.0 — 2026-11-09
+
+Explain. v0.3 turns the dashboard from "what is the memory state" into "why is
+the memory in this state", and every new surface is read-only.
+
+### Added
+
+- **A recall explanation under every completed turn.** The conversation gains a
+  `Memory sources` trigger whose card replays the turn's prompt against the
+  server's context face (`POST /api/v1/search/search` with `mode: "context"`).
+  It shows the query, every hit with score/category/URI/read tier/provenance,
+  the server's token budget (used/max), quotas, tier counts, exclusion and
+  cross-turn de-duplication accounting, provenance, the retrieval plan, the
+  assembled injection block, and latency. The card says it is a replay: DSH does
+  not retain the memory plugin's injected block, so a historical "exactly what
+  was injected" claim would be a lie. Servers without the context face fall back
+  to the existing per-target search and say so.
+- **A commit diff browser in the commit pill.** Each commit can be filtered by
+  added/updated/deleted, every change expands to its before/after text with a
+  line diff, deletes show their deleted content, and one click copies a URI or
+  exports the commit as JSON. Failed commits show the server error, time and the
+  task id when the record has not been pruned yet, with a copy-error control.
+- **A Memory health tab in the right sidebar.** It distinguishes the five states
+  that matter — nothing captured, captured but not committed, extracting after
+  a commit, extraction failed, writes queued locally — plus the normal committed
+  state, with message/pending/commit counts, threshold, last commit and last
+  auto-commit times, recent tasks, recent commits and a timestamped activity
+  timeline. It also reads the official plugin's local pending queue (counts,
+  types and times only, never payloads) and labels that state as cross-plugin.
+- **A Doctor.** Endpoint, health, version, identity, the mounted memory plugin's
+  version and effective recall/capture/commit settings, per-field connection
+  sources (profile override, environment, `ovcli.conf`/`.local`, default), and
+  live probes for the context face, rule search, skills, `fs/stat` and retrieval
+  metrics. Every check names the likely fix, the DSH version is checked against
+  the manifest range, and the diagnostic JSON and `curl /health` command are one
+  click away. API keys are never included in any report or copied diagnostic.
+- **A compact health summary on the plugin's own Plugins page**, so "is it
+  working?" has an answer before opening a session.
+- **Two more interface switches:** `showRecallExplain` and `showHealthPanel`,
+  both default `true`, applied live like the existing three.
+- `test/v03-units.test.mjs` pins the context/fallback wire shapes, the request
+  mirroring, the five session states, connection sources, the pending-queue
+  reader and the text diff. The host smoke harness now exercises
+  `/recall/explain`, `/session-log` and `/doctor` against a live server.
+
+### Changed
+
+- **DSH 0.2.2 support.** Development is now type-checked and built against
+  `@deepseek-ai/dsh-*@0.2.2-rc.1` (including the Chat package that owns
+  `conversation.chat.turnTail`), while 0.2.0-rc.2 and 0.2.1 remain supported.
+- **The commit popover is wider and the timeline links into the full diff**;
+  the old paths-only list is gone.
+- The sidebar tab closing path now handles the recall and health pages
+  independently and no longer arms a deferred close when the right column is
+  mounted with no tab of ours on screen.
+
+### Verified
+
+- DSH 0.2.2-rc.1 (web profile), OpenViking 0.5.3 (`/health`, context face,
+  rules, skills, observer) and the 0.5.1.1–0.5.3 fallback paths. The live host
+  smoke reports the context face available and the Doctor's probes available.
+- The pending queue was empty on the verification machine; the reader is covered
+  by a temp-directory unit test instead.
+
+### 新增
+
+- **每条已完成回复下方的召回解释。** 对话里新增「记忆来源」入口，展开后会用该轮提问
+  重放服务端的上下文接口（`POST /api/v1/search/search`，`mode: "context"`），显示
+  命中条目的分数、类别、URI、读取层级与来源，以及 token 预算（已用/上限）、配额、
+  层级统计、排除与跨轮去重、检索计划、服务端组装的注入块和耗时。卡片明确说明这是
+  "重放"：DSH 不保留记忆插件注入的原始文本，因此不会假装展示历史注入。没有上下文
+  接口的旧服务端退回逐目标检索，并注明原因。
+- **提交胶囊里的 diff 浏览器。** 可按新增/更新/删除筛选，每个变更展开后显示前后文本
+  与行级 diff，删除项显示被删内容；可复制 URI 或把本次提交导出为 JSON。失败提交显示
+  服务端错误、时间和仍保留的 task id，并可复制错误。
+- **右侧边栏的「记忆健康」页。** 区分五种状态——没有消息、已捕获未提交、提交后抽取中、
+  抽取失败、本地队列中——以及正常已提交；显示消息数、待提交 token、阈值、提交次数、
+  最近提交/自动提交时间、最近任务、归档和活动时间线。它还会读取官方插件本地 pending
+  队列的数量、类型与时间（绝不读取 payload），并标注这是跨插件本地状态。
+- **Doctor。** 显示地址、健康、版本、身份、已挂载记忆插件的版本与生效的召回/捕获/提交
+  设置，以及每个连接字段的来源（profile 覆盖、环境变量、`ovcli.conf`/`.local`、默认）；
+  并对上下文接口、规则检索、技能、`fs/stat` 与召回观测做真实探测。每项检查给出可能的
+  修复方向，DSH 版本会与清单声明区间比对，诊断 JSON 与 `curl /health` 一键复制；API key
+  不会出现在任何报告或导出里。
+- **插件详情页的健康摘要**，不必先打开会话就能看到"是否正常"。
+- **两个新的界面开关：** `showRecallExplain`、`showHealthPanel`，默认都打开，和原有
+  三个开关一样保存后立即生效。
+
+### 变更
+
+- **支持 DSH 0.2.2。** 开发依赖升级到 `@deepseek-ai/dsh-*@0.2.2-rc.1`（包括拥有
+  `conversation.chat.turnTail` 的 Chat 包），同时保留 0.2.0-rc.2 与 0.2.1 支持。
+- **提交弹窗加宽**，时间线直接进入完整 diff，不再只列路径。
+- 右侧边栏的关闭逻辑按召回页与健康页分别处理；右栏已挂载但当前页不是本插件页面时
+  不再安排无意义的延迟关闭。
+
+### 验证
+
+- DSH 0.2.2-rc.1（web profile）、OpenViking 0.5.3（`/health`、上下文接口、规则、技能、
+  观测）以及 0.5.1.1–0.5.3 的回退路径。真实宿主 smoke 显示上下文接口与 Doctor 探测
+  均可用。
+- 验证机器上的 pending 队列为空；读取逻辑由临时目录单测覆盖。
+
+
 ## 0.2.3 — 2026-11-04
 
 ### Fixed

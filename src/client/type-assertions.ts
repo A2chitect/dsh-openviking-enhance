@@ -14,6 +14,9 @@ import { OpenVikingIcon } from './openviking-icon.tsx'
 import { StudioPanel } from './studio-panel.tsx'
 import { CommitStatusPill } from './commit-status.tsx'
 import { RecallPanel } from './recall-panel.tsx'
+import { RecallExplainTail } from './recall-explain.tsx'
+import { HealthPanel } from './health-panel.tsx'
+import { PluginHealthSection } from './plugin-health.tsx'
 import { ConfigPage } from './config-page.tsx'
 
 declare const slots: SlotService
@@ -30,6 +33,20 @@ slots.register(
   { name: 'sidebar.right.pane.tab', key: 'dsh-openviking-enhance:recall', inject: (sessionId: string) => ({ sessionId }) },
   RecallPanel,
 )
+slots.register(
+  {
+    name: 'conversation.chat.turnTail',
+    id: 'openviking-recall-explain',
+    order: 10,
+    inject: (sessionId: string) => ({ sessionId, openRecall: () => {} }),
+  },
+  RecallExplainTail,
+)
+slots.register(
+  { name: 'sidebar.right.pane.tab', key: 'dsh-openviking-enhance:health', inject: (sessionId: string) => ({ sessionId }) },
+  HealthPanel,
+)
+slots.register({ name: 'plugins.detail.section', id: 'openviking-health', order: 40 }, PluginHealthSection)
 slots.register({ name: 'plugins.row.config', key: 'dsh-openviking-enhance#openviking-enhance' }, ConfigPage)
 
 // --- and the mistakes each rule exists to catch ------------------------------
@@ -48,5 +65,7 @@ slots.register({ name: 'conversation.composer.dock', id: 'x' }, CommitStatusPill
 slots.register({ name: 'sidebar.right.pane.tab', key: 'x' }, RecallPanel)
 // @ts-expect-error the config seat is keyed, and its root scope forbids an inject factory
 slots.register({ name: 'plugins.row.config', key: 'x', inject: (sessionId: string) => ({ sessionId }) }, ConfigPage)
+// @ts-expect-error the turn-tail seat is a session slot: no inject means no session
+slots.register({ name: 'conversation.chat.turnTail', id: 'x', order: 1 }, RecallExplainTail)
 // @ts-expect-error the component must accept the props its slot hands it
 slots.register({ name: 'sidebar.panellist', id: 'x' }, (props: { nope: number }) => null)

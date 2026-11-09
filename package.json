@@ -1,7 +1,7 @@
 {
   "name": "dsh-openviking-enhance",
-  "version": "0.2.3",
-  "description": "OpenViking in the DSH web GUI: a Studio panel, a per-session memory-commit status pill with its commit timeline, and a right-sidebar tab showing what the current session retrieves.",
+  "version": "0.3.0",
+  "description": "OpenViking in the DSH web GUI: a Studio panel, a commit status pill and diff browser, a per-turn recall explanation, a right-sidebar recall tab, and a Memory health / Doctor tab.",
   "type": "module",
   "icon": "./icon.svg",
   "main": "lib/index.js",
@@ -23,7 +23,7 @@
   "dsh": {
     "manifestVersion": 1,
     "engines": {
-      "dsh": ">=0.2.0-rc.2 || >=0.2.1-rc.2"
+      "dsh": ">=0.2.0-rc.2 || >=0.2.1-rc.2 || >=0.2.2-rc.1"
     },
     "bundle": {
       "patch": "./cordis.patch.yml"
@@ -37,7 +37,8 @@
         "@deepseek-ai/dsh-client-ui-layout",
         "@deepseek-ai/dsh-client-ui-sidebar",
         "@deepseek-ai/dsh-client-ui-sidebar-right",
-        "@deepseek-ai/dsh-client-ui-conversation"
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-chat"
       ]
     }
   },
@@ -55,15 +56,16 @@
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.5",
-    "@deepseek-ai/dsh-api-remotes": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-client-ui-conversation": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-client-ui-layout": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-client-ui-plugin-manager": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-client-ui-settings": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-client-ui-sidebar": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-client-ui-sidebar-right": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-client-ui-slots": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-host-webserver": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-api-remotes": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-chat": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-conversation": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-layout": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-plugin-manager": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-settings": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-sidebar": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-sidebar-right": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-slots": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-host-webserver": "0.2.2-rc.1",
     "@deepseek-ai/schemastery": "^3.18.5",
     "@types/node": "^22.20.0",
     "@types/react": "~18.3.1",
@@ -73,12 +75,12 @@
     "typescript": "~5.7.2"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh": "^0.2.0-rc.1 || ^0.2.1-rc.2",
+    "@deepseek-ai/dsh": "^0.2.0-rc.1 || ^0.2.1-rc.2 || ^0.2.2-rc.1",
     "react": "^18.2.0"
   },
   "engines": {
     "node": "^22.19.0 || >=24",
-    "dsh": ">=0.2.0-rc.2 || >=0.2.1-rc.2"
+    "dsh": ">=0.2.0-rc.2 || >=0.2.1-rc.2 || >=0.2.2-rc.1"
   },
   "license": "MIT",
   "repository": {

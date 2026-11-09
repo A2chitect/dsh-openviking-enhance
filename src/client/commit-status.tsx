@@ -54,6 +54,8 @@ import {
   isActiveTask,
   taskTime,
 } from '../shared/commit-state.ts'
+import { lineDiff, type DiffRow } from '../shared/text-diff.ts'
+import { copyText } from './clipboard.ts'
 import { OpenVikingIcon } from './openviking-icon.tsx'
 
 export interface CommitStatusProps {
@@ -63,6 +65,8 @@ export interface CommitStatusProps {
 /** One failure row, from an archive marker or (legacy) a task record. */
 interface FailureView {
   key: string
+  /** The server task id that archived this failure, when one is still retained. */
+  taskId: string | null
   time: string | null
   duration: number | null
   reason: string
@@ -216,7 +220,7 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
     status?.latest?.markers === true || summaries.some((entry) => entry.state === 'failed')
   const failedArchives = summaries.filter((entry) => entry.state === 'failed')
   const failureViews = archiveMode
-    ? archiveFailureViews(failedArchives, status?.archives ?? [])
+    ? archiveFailureViews(failedArchives, status?.archives ?? [], tasks)
     : taskFailureViews(tasks)
   const failureRows = failureViews.filter((view) => !view.cancelled)
   const latestFailure = status?.latest?.state === 'failed' ? status.latest.failure : null
@@ -334,7 +338,9 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
             ) : null}
           </div>
 
-          {selectedEntry?.state === 'failed' ? <FailureDetail failure={selectedEntry.failure} /> : null}
+          {selectedEntry?.state === 'failed' ? (
+            <FailureDetail failure={selectedEntry.failure} task={taskForArchive(tasks, selected)} />
+          ) : null}
           {diffPending ? <div className="ove-section ove-empty">{t('pill.readingDiff', { archive: selected ?? '' })}</div> : null}
           {diff ? <DiffView diff={diff} /> : null}
           {!diffPending && selected && !diff && selectedEntry?.state !== 'failed' ? (
@@ -347,22 +353,37 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
 }
 
 /** Failure rows built from the durable archive markers. */
-function archiveFailureViews(failures: ArchiveSummary[], archives: CommitArchive[]): FailureView[] {
+function archiveFailureViews(
+  failures: ArchiveSummary[],
+  archives: CommitArchive[],
+  tasks: CommitTask[],
+): FailureView[] {
   const modTimeByUri = new Map(archives.map((archive) => [archive.archiveUri, archive.modTime]))
-  return failures.map((entry) => ({
-    key: entry.archiveUri,
-    time: formatShortTime(entry.failure?.failedAt ?? modTimeByUri.get(entry.archiveUri) ?? null),
-    duration: null,
-    reason: archiveFailureText(entry.failure),
-    raw: entry.failure?.error ?? null,
-    cancelled: isCancelledFailure(entry.failure),
-  }))
+  return failures.map((entry) => {
+    const task = taskForArchive(tasks, entry.archiveUri)
+    return {
+      key: entry.archiveUri,
+      taskId: task?.task_id ?? null,
+      time: formatShortTime(entry.failure?.failedAt ?? modTimeByUri.get(entry.archiveUri) ?? null),
+      duration: task ? durationSeconds(task) : null,
+      reason: archiveFailureText(entry.failure),
+      raw: entry.failure?.error ?? null,
+      cancelled: isCancelledFailure(entry.failure),
+    }
+  })
+}
+
+/** The task record that produced one archive, when it has not been pruned yet. */
+function taskForArchive(tasks: CommitTask[], archiveUri: string | null): CommitTask | null {
+  if (archiveUri === null) return null
+  return tasks.find((task) => task.result?.archive_uri === archiveUri) ?? null
 }
 
 /** Failure rows from task records — the fallback for servers without markers. */
 function taskFailureViews(tasks: CommitTask[]): FailureView[] {
   return failedTasks(tasks).map((task) => ({
     key: task.task_id,
+    taskId: task.task_id,
     time: taskTime(task),
     duration: durationSeconds(task),
     reason: failureReason(task),
@@ -381,8 +402,15 @@ function archiveFailureText(failure: ArchiveFailure | null): string {
   return failure?.stage ? t('pill.stageReason', { stage: failure.stage }) : t('pill.noReason')
 }
 
-function FailureDetail({ failure }: { failure: ArchiveFailure | null }) {
+function FailureDetail({ failure, task }: { failure: ArchiveFailure | null; task: CommitTask | null }) {
   const cancelled = isCancelledFailure(failure)
+  const [copied, setCopied] = useState(false)
+  const raw = failure?.error ?? task?.error ?? null
+  const time = failure?.failedAt
+    ? formatShortTime(failure.failedAt)
+    : task
+      ? taskTime(task) ?? '—'
+      : '—'
   return (
     <div className="ove-section">
       <div className={`ove-section-title${cancelled ? '' : ' ove-error'}`}>
@@ -390,50 +418,244 @@ function FailureDetail({ failure }: { failure: ArchiveFailure | null }) {
       </div>
       <div className="ove-failure">
         <div className="ove-failure-head">
-          <span>{failure?.failedAt ? formatShortTime(failure.failedAt) : '—'}</span>
-          <span className="ove-row-count">{failure?.stage ?? ''}</span>
+          <span>{time}</span>
+          <span className="ove-row-count">{failure?.stage ?? task?.stage ?? ''}</span>
         </div>
-        <div className="ove-failure-msg" title={failure?.error ?? undefined}>
+        {task !== null && (
+          <div className="ove-failure-task">
+            {t('pill.taskId')} <code>{task.task_id}</code>
+          </div>
+        )}
+        <div className="ove-failure-msg" title={raw ?? undefined}>
           {cancelled ? '' : archiveFailureText(failure)}
         </div>
+        {raw !== null && raw.length > 0 ? (
+          <div className="ove-failure-actions">
+            <button
+              type="button"
+              className="ove-diff-action"
+              onClick={() => void markCopied(raw, setCopied)}
+            >
+              {copied ? t('pill.copied') : t('pill.copyError')}
+            </button>
+          </div>
+        ) : null}
       </div>
     </div>
   )
 }
 
+/** The three change kinds, in the order the diff browser shows them. */
+type DiffFilter = 'all' | 'adds' | 'updates' | 'deletes'
+
+interface DiffGroup {
+  key: Exclude<DiffFilter, 'all'>
+  title: string
+  entries: MemoryDiffEntry[]
+}
+
+/**
+ * One commit's memory changes, with the part the old popover never showed: the
+ * text before and after.
+ *
+ * The summary/filters are local state because this is a browsing surface, not a
+ * status: switching a filter must not refetch the commit or disturb the pill.
+ */
 function DiffView({ diff }: { diff: MemoryDiff }) {
   const { summary } = diff
+  const [filter, setFilter] = useState<DiffFilter>('all')
+  const [openKey, setOpenKey] = useState<string | null>(null)
+  const groups: DiffGroup[] = [
+    { key: 'adds', title: t('pill.group.adds'), entries: diff.adds },
+    { key: 'updates', title: t('pill.group.updates'), entries: diff.updates },
+    { key: 'deletes', title: t('pill.group.deletes'), entries: diff.deletes },
+  ]
+  const total = summary.totalAdds + summary.totalUpdates + summary.totalDeletes
+  const visible = filter === 'all' ? groups : groups.filter((group) => group.key === filter)
+  const shown = visible.reduce((count, group) => count + group.entries.length, 0)
   return (
     <div className="ove-section">
-      <div className="ove-section-title">
-        {t('pill.diffSummary', { adds: summary.totalAdds, updates: summary.totalUpdates, deletes: summary.totalDeletes })}
+      <div className="ove-diff-head">
+        <span className="ove-section-title">
+          {t('pill.diffSummary', { adds: summary.totalAdds, updates: summary.totalUpdates, deletes: summary.totalDeletes })}
+        </span>
+        <button type="button" className="ove-diff-action" onClick={() => exportDiff(diff)}>
+          {t('pill.export')}
+        </button>
       </div>
-      <div className="ove-empty">{diff.archiveUri}</div>
-      <Group title={t('pill.group.adds')} entries={diff.adds} />
-      <Group title={t('pill.group.updates')} entries={diff.updates} />
-      <Group title={t('pill.group.deletes')} entries={diff.deletes} />
-      {summary.totalAdds + summary.totalUpdates + summary.totalDeletes === 0 ? (
+      <div className="ove-empty ove-diff-archive">{diff.archiveUri}</div>
+      {total === 0 ? (
         <div className="ove-empty">{t('pill.noMemoryChange')}</div>
+      ) : (
+        <>
+          <div className="ove-diff-filters" role="tablist" aria-label={t('pill.filter.label')}>
+            {(['all', 'adds', 'updates', 'deletes'] as const).map((candidate) => {
+              const count =
+                candidate === 'all'
+                  ? total
+                  : candidate === 'adds'
+                    ? summary.totalAdds
+                    : candidate === 'updates'
+                      ? summary.totalUpdates
+                      : summary.totalDeletes
+              return (
+                <button
+                  key={candidate}
+                  type="button"
+                  role="tab"
+                  aria-selected={filter === candidate}
+                  className={`ove-diff-filter${filter === candidate ? ' ove-diff-filter-active' : ''}`}
+                  onClick={() => setFilter(candidate)}
+                >
+                  {t(`pill.filter.${candidate}`)}
+                  <span className="ove-diff-filter-count">{count}</span>
+                </button>
+              )
+            })}
+          </div>
+          {shown === 0 ? (
+            <div className="ove-empty">{t('pill.filter.empty')}</div>
+          ) : (
+            visible.map((group) => (
+              <section key={group.key}>
+                <div className="ove-diff-group">
+                  <span>{group.title}</span>
+                  <span className="ove-row-count">{group.entries.length}</span>
+                </div>
+                {group.entries.map((entry) => {
+                  const key = `${group.key}:${entry.uri}`
+                  return (
+                    <DiffEntry
+                      key={key}
+                      entry={entry}
+                      kind={group.key}
+                      open={openKey === key}
+                      onToggle={() => setOpenKey((current) => (current === key ? null : key))}
+                    />
+                  )
+                })}
+              </section>
+            ))
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+function DiffEntry({
+  entry,
+  kind,
+  open,
+  onToggle,
+}: {
+  entry: MemoryDiffEntry
+  kind: DiffGroup['key']
+  open: boolean
+  onToggle: () => void
+}) {
+  const [copied, setCopied] = useState(false)
+  const preview = firstLine(kind === 'updates' ? entry.after ?? entry.before ?? '' : kind === 'adds' ? entry.after ?? '' : entry.deletedContent ?? entry.before ?? '')
+  const rows = diffRowsFor(entry, kind)
+  return (
+    <div className={`ove-diff-entry${open ? ' ove-diff-entry-open' : ''}`}>
+      <div className="ove-diff-entry-head">
+        <button type="button" className="ove-diff-row" aria-expanded={open} onClick={onToggle}>
+          <span className="ove-diff-kind" data-kind={kind} aria-hidden="true">
+            {kind === 'adds' ? '+' : kind === 'updates' ? '±' : '−'}
+          </span>
+          <span className="ove-diff-name" title={entry.uri}>
+            {fileName(entry.uri)}
+          </span>
+          <span className="ove-diff-type">{entry.memoryType}</span>
+          {!open && preview.length > 0 ? <span className="ove-diff-preview">{preview}</span> : null}
+          <span className="ove-diff-caret" aria-hidden="true">
+            {open ? '▾' : '▸'}
+          </span>
+        </button>
+        <button
+          type="button"
+          className="ove-diff-action"
+          title={t('pill.copyUri')}
+          onClick={() => void markCopied(entry.uri, setCopied)}
+        >
+          {copied ? t('pill.copied') : t('pill.copyUri')}
+        </button>
+      </div>
+      {open ? (
+        <div className="ove-diff-detail">
+          <div className="ove-diff-uri">{entry.uri}</div>
+          {rows.length === 0 ? (
+            <p className="ove-empty">{t('pill.diffNoText')}</p>
+          ) : (
+            <div className="ove-diff-body">
+              {rows.map((row: DiffRow, index: number) => (
+                <div className={`ove-diff-line ove-diff-line-${row.kind}`} key={`${index}-${row.text.slice(0, 24)}`}>
+                  <span className="ove-diff-sign" aria-hidden="true">
+                    {row.kind === 'add' ? '+' : row.kind === 'remove' ? '−' : ' '}
+                  </span>
+                  <span className="ove-diff-text">{row.text.length > 0 ? row.text : ' '}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       ) : null}
     </div>
   )
 }
 
-function Group({ title, entries }: { title: string; entries: MemoryDiffEntry[] }) {
-  if (entries.length === 0) return null
-  return (
-    <details className="ove-group" open>
-      <summary>
-        {t('pill.groupTitle', { title, count: entries.length })}
-      </summary>
-      {entries.map((entry) => (
-        <div className="ove-entry" key={entry.uri}>
-          <div className="ove-uri">{entry.uri}</div>
-          <div className="ove-type">{entry.memoryType}</div>
-        </div>
-      ))}
-    </details>
+/** The text diff for one change, as display rows. */
+function diffRowsFor(entry: MemoryDiffEntry, kind: DiffGroup['key']): DiffRow[] {
+  if (kind === 'updates') {
+    if (entry.before === undefined && entry.after === undefined) return []
+    return lineDiff(entry.before ?? '', entry.after ?? '').rows
+  }
+  if (kind === 'adds') return entry.after === undefined ? [] : lineDiff('', entry.after).rows
+  return lineDiff(entry.deletedContent ?? entry.before ?? '', '').rows
+}
+
+/** First non-empty line, for the collapsed preview. */
+function firstLine(text: string): string {
+  for (const line of text.split('\n')) {
+    if (line.trim().length > 0) return line.trim()
+  }
+  return ''
+}
+
+function fileName(uri: string): string {
+  const cut = uri.lastIndexOf('/')
+  return cut === -1 ? uri : uri.slice(cut + 1)
+}
+
+/** Copy feedback: one-way, so a re-render cannot flip the label back mid-click. */
+async function markCopied(text: string, set: (value: boolean) => void): Promise<void> {
+  if (await copyText(text)) set(true)
+}
+
+/** Download one commit's changes as JSON, a user-initiated local export. */
+export function exportDiff(diff: MemoryDiff): void {
+  if (typeof document === 'undefined') return
+  const archiveId = diff.archiveUri.split('/').pop() ?? 'commit'
+  const body = JSON.stringify(
+    {
+      archiveUri: diff.archiveUri,
+      extractedAt: diff.extractedAt,
+      summary: diff.summary,
+      adds: diff.adds,
+      updates: diff.updates,
+      deletes: diff.deletes,
+    },
+    null,
+    2,
   )
+  const blob = new Blob([body], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = `openviking-${archiveId}.json`
+  anchor.click()
+  URL.revokeObjectURL(url)
 }
 
 /**

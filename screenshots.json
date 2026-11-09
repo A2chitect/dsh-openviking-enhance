@@ -1,6 +1,19 @@
 [
-  "assets/studio-panel.png",
   "assets/commit-pill.png",
   "assets/recall-tab.png",
-  "assets/settings-form.png"
+  "assets/settings-form.png",
+  "assets/studio-panel.png",
+  "assets/v03-after-commit-added.png",
+  "assets/v03-after-commit-updated.png",
+  "assets/v03-after-conversation.png",
+  "assets/v03-after-doctor.png",
+  "assets/v03-after-explain.png",
+  "assets/v03-after-health.png",
+  "assets/v03-after-plugin-health.png",
+  "assets/v03-after-settings.png",
+  "assets/v03-after-tabs.png",
+  "assets/v03-before-commit.png",
+  "assets/v03-before-conversation.png",
+  "assets/v03-before-settings.png",
+  "assets/v03-before-tabs.png"
 ]
