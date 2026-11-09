@@ -14,7 +14,6 @@
 // given, else it lists candidates from the OpenViking session index.
 import http from 'node:http'
 import { Config, apply } from '../lib/index.js'
-import { resolveConnection } from '../src/host/config.ts'
 
 const routes = []
 const context = {
@@ -340,7 +339,9 @@ async function report(base, sessionId) {
       JSON.stringify(report).includes('"apiKey":') ||
       JSON.stringify(report).includes('"api_key"') ||
       JSON.stringify(report).includes('Authorization:')
-    const configuredKey = resolveConnection().apiKey
+    // Read the key from the same resolved config the host under test received,
+    // not from a second resolution path.
+    const configuredKey = resolved.apiKey?.get?.() ?? ''
     // A one-character key (or the dev placeholder) occurs in unrelated strings;
     // only a key long enough to be meaningful makes the exact-value assertion
     // evidence rather than noise.

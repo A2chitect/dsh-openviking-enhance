@@ -37,6 +37,18 @@ export type RecallExplainProps = PropsRuntime<'conversation.chat.turnTail'> & {
   openRecall?: () => void
 }
 
+/**
+ * The explanation's `RecallEffectiveSettings` names four fields differently from
+ * the Doctor's snapshot; borrowing the Doctor namespace without this map would
+ * render `doctor.effective.dedupTurns` and friends.
+ */
+const RECALL_EFFECTIVE_LABELS: Record<string, string> = {
+  dedupTurns: 'doctor.effective.recallDedupTurns',
+  queryExpansion: 'doctor.effective.recallQueryExpansion',
+  rewrite: 'doctor.effective.recallRewrite',
+  peerScope: 'doctor.effective.recallPeerScope',
+}
+
 const BUCKET_KEYS: Record<string, string> = {
   memories: 'recall.bucket.memories',
   resources: 'recall.bucket.resources',
@@ -132,6 +144,9 @@ export function RecallExplainTail(props: RecallExplainProps) {
           signal: controller.signal,
         })
         if (ticket !== generation.current) return
+        // `host-api` reports an abort as `{ok:false,error:'aborted'}` rather than
+        // rejecting; closing the card must not surface that as a failed replay.
+        if (controller.signal.aborted) return
         if (answer.ok) {
           setExplanation(answer.explanation)
           setError(null)
@@ -139,8 +154,7 @@ export function RecallExplainTail(props: RecallExplainProps) {
           setError(answer.error)
         }
       } catch (problem) {
-        if (ticket !== generation.current) return
-        if (problem instanceof Error && problem.name === 'AbortError') return
+        if (ticket !== generation.current || controller.signal.aborted) return
         setError(problem instanceof Error ? problem.message : String(problem))
       } finally {
         if (ticket === generation.current) setLoading(false)
@@ -275,7 +289,7 @@ export function RecallExplainTail(props: RecallExplainProps) {
                       .filter(([, value]) => value !== null)
                       .map(([key, value]) => (
                         <div className="ove-explain-stat" key={key}>
-                          <dt>{t(`doctor.effective.${key}`)}</dt>
+                          <dt>{t(RECALL_EFFECTIVE_LABELS[key] ?? `doctor.effective.${key}`)}</dt>
                           <dd>{String(value)}</dd>
                         </div>
                       ))}

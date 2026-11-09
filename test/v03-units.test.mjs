@@ -249,11 +249,11 @@ test('the context request mirrors the mounted plugin, and omits knobs it did not
 
 test('decay protection and rewrite=auto are mirrored, not silently dropped', () => {
   const body = contextRequestBody('why', 'dsh-s1', {
-    recallEventsDecayProtection: '30d',
-    recallRewrite: 'auto',
+    recallEventsDecayProtection: ' 30d ',
+    recallRewrite: ' AUTO ',
   })
-  assert.equal(body.events_time_decay_protection, '30d')
-  assert.equal(body.rewrite, 'auto')
+  assert.equal(body.events_time_decay_protection, '30d', 'decay protection is trimmed like the official request')
+  assert.equal(body.rewrite, 'auto', 'rewrite is lowercased like the official request')
 })
 
 test('the context timeout covers the expansion and rewrite fuses', () => {
@@ -413,11 +413,11 @@ test('connection origins name the layer that supplied each field', async () => {
 })
 
 test('the DSH compatibility check is honest about untested generations', () => {
-  assert.equal(compatibilityOf('0.2.1-rc.3').compatible, false)
+  assert.equal(compatibilityOf('0.2.1-rc.3').compatible, true)
   assert.equal(compatibilityOf('0.2.2-rc.1').compatible, true)
   assert.equal(compatibilityOf('0.1.7-rc.2').compatible, false)
   assert.equal(compatibilityOf('0.2.0-rc.1').compatible, false)
-  assert.equal(compatibilityOf('0.2.0-rc.2').compatible, false)
+  assert.equal(compatibilityOf('0.2.0-rc.2').compatible, true)
   assert.equal(compatibilityOf('0.2.2').compatible, true)
   assert.equal(compatibilityOf('0.3.0').compatible, null)
   assert.equal(compatibilityOf('not-a-version').compatible, null)
@@ -476,8 +476,8 @@ test('the Doctor reports connection, plugin and capability facts without a secre
   assert.equal(report.plugin.version, '0.5.32')
   assert.equal(report.capabilities.contextFace.state, 'available')
   assert.equal(probes.length, 1)
-  assert.equal(probes[0].query_expansion, 'off', 'the capability probe does not spend an expansion call')
   assert.equal(probes[0].session_id, undefined, 'the capability probe does not touch a session')
+  assert.equal(probes[0].query_expansion, undefined, 'the session-free probe does not name expansion at all')
   assert.equal(report.capabilities.ruleSearch.state, 'available')
   assert.equal(report.capabilities.skills.count, 2)
   assert.equal(report.capabilities.mcpTools.count, 2)

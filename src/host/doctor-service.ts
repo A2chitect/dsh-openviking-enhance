@@ -36,7 +36,7 @@ import {
 } from './local-state.ts'
 
 /** The DSH generations this release is built and type-checked against. */
-export const PLUGIN_DSH_RANGE = '>=0.2.2-rc.1'
+export const PLUGIN_DSH_RANGE = '>=0.2.0-rc.2 || >=0.2.1-rc.2 || >=0.2.2-rc.1'
 /** The OpenViking versions this release's contract tests cover. */
 export const TESTED_OV_RANGE = 'OpenViking 0.5.1.1 – 0.5.3'
 
@@ -352,9 +352,10 @@ export class DoctorService {
         mode: 'context',
         purpose: 'coding',
         score_threshold: 0.35,
-        // A capability probe is not a recall: keeping it out of the session and
-        // expansion paths avoids an LLM call and any dedup bookkeeping on open.
-        query_expansion: 'off',
+        // A capability probe is not a recall. It carries no session, so the
+        // server cannot expand it; leaving the field out also keeps the request
+        // acceptable to a context-face version that predates the field.
+
       },
       { ...request, timeoutMs: 10000 },
     )
@@ -440,14 +441,25 @@ export function compatibilityOf(dshVersion: string | null): {
   const major = Number(match[1])
   const minor = Number(match[2])
   const patch = Number(match[3])
-  // A future major/minor is accepted by the manifest range but untested here;
+  // A future major/minor is accepted by the manifest ranges but untested here;
   // report "unknown" rather than guessing incompatible.
   if (major !== 0 || minor > 2) return { dshVersion, compatible: null }
   if (minor < 2) return { dshVersion, compatible: false }
-  if (patch > 2) return { dshVersion, compatible: true }
-  if (patch < 2) return { dshVersion, compatible: false }
-  // 0.2.2-rc.1 is the manifest's floor; a bare 0.2.2 (and later 0.2.x) is covered.
   const prerelease = match[4] ?? ''
+  if (patch === 0) {
+    // 0.2.0-rc.2 is the floor of the first supported generation.
+    if (prerelease.length === 0) return { dshVersion, compatible: true }
+    const rc = /^rc\.(\d+)/.exec(prerelease)
+    return { dshVersion, compatible: rc !== null && Number(rc[1]) >= 2 }
+  }
+  if (patch === 1) {
+    // 0.2.1-rc.2 is the floor of the second generation.
+    if (prerelease.length === 0) return { dshVersion, compatible: true }
+    const rc = /^rc\.(\d+)/.exec(prerelease)
+    return { dshVersion, compatible: rc !== null && Number(rc[1]) >= 2 }
+  }
+  // 0.2.2-rc.1 is the floor of the current generation; later 0.2.x releases are
+  // covered by the same range.
   if (prerelease.length === 0) return { dshVersion, compatible: true }
   const rc = /^rc\.(\d+)/.exec(prerelease)
   return { dshVersion, compatible: rc !== null && Number(rc[1]) >= 1 }

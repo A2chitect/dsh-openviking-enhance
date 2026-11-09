@@ -56,12 +56,12 @@ the memory in this state", and every new surface is read-only.
 
 ### Changed
 
-- **DSH 0.2.2 support, and 0.2.0/0.2.1 are no longer supported.** The Chat transcript
-  seats this release uses (`conversation.chat.turnTail`, `conversation.chat.assistant-actions`)
-  only exist in the 0.2.2 generation, so `engines.dsh` and the manifest now require
-  `>=0.2.2-rc.1`; 0.2.3 remains the last release for the old shells. Development
-  is type-checked and built against `@deepseek-ai/dsh-*@0.2.2-rc.1` (including the
-  Chat package that owns `conversation.chat.turnTail`).
+- **DSH 0.2.2 support, on top of the existing 0.2.0/0.2.1 generations.**
+  Development is type-checked and built against `@deepseek-ai/dsh-*@0.2.2-rc.1`
+  (including the Chat package that owns `conversation.chat.turnTail`). The old
+  generations still carry the seats this release uses: the plugin was mounted and
+  exercised in running 0.2.0-rc.2 and 0.2.1-rc.5 web shells, and the manifest's
+  range is unchanged apart from adding 0.2.2-rc.1.
 - **The recall replay follows the official request more closely.** Its HTTP
   deadline is derived from the memory plugin's expansion/rewrite fuses (15 s /
   45 s, or `recallContextTimeoutMs`), and the request now mirrors
@@ -77,9 +77,12 @@ the memory in this state", and every new surface is read-only.
 
 ### Verified
 
-- DSH 0.2.2-rc.1 (web profile), OpenViking 0.5.3 (`/health`, context face,
-  rules, skills, observer) and the 0.5.1.1–0.5.3 fallback paths. The live host
-  smoke reports the context face available and the Doctor's probes available.
+- DSH 0.2.2-rc.1, plus the plugin mounted and exercised in running 0.2.0-rc.2 and
+  0.2.1-rc.5 web shells (the Memory sources tail, commit pill and Memory health
+  tab all render, with no page or console errors). OpenViking 0.5.3 (`/health`,
+  context face, rules, skills, observer) and the 0.5.1.1–0.5.3 fallback paths.
+  The live host smoke reports the context face available and the Doctor's probes
+  available.
 - The pending queue was empty on the verification machine; the reader is covered
   by a temp-directory unit test instead.
 
@@ -111,11 +114,10 @@ the memory in this state", and every new surface is read-only.
 
 ### 变更
 
-- **支持 DSH 0.2.2；不再支持 0.2.0/0.2.1。** 本版本使用的 Chat 转录槽位
-  （`conversation.chat.turnTail`、`conversation.chat.assistant-actions`）只存在于 0.2.2 代，
-  因此 `engines.dsh` 与清单改为 `>=0.2.2-rc.1`；旧 shell 的最后一个版本是 0.2.3。
-  开发依赖升级到 `@deepseek-ai/dsh-*@0.2.2-rc.1`（包括拥有 `conversation.chat.turnTail`
-  的 Chat 包）。
+- **支持 DSH 0.2.2，并保留原有的 0.2.0/0.2.1 世代。** 开发依赖升级到
+  `@deepseek-ai/dsh-*@0.2.2-rc.1`（包括拥有 `conversation.chat.turnTail` 的 Chat 包）。
+  旧世代同样带有本版本使用的槽位：插件已在实际运行的 0.2.0-rc.2 与 0.2.1-rc.5 web shell
+  中挂载并验证，清单范围除新增 0.2.2-rc.1 外保持不变。
 - **召回重放更贴近官方请求。** HTTP 超时按官方插件查询扩展 / 重写的熔断时间推导
   （15 秒 / 45 秒，或 `recallContextTimeoutMs`），请求也会带上
   `recallEventsDecayProtection` 与 `rewrite=auto`；卡片同时显示记忆插件的生效召回设置。
@@ -127,9 +129,10 @@ the memory in this state", and every new surface is read-only.
 
 ### 验证
 
-- DSH 0.2.2-rc.1（web profile）、OpenViking 0.5.3（`/health`、上下文接口、规则、技能、
-  观测）以及 0.5.1.1–0.5.3 的回退路径。真实宿主 smoke 显示上下文接口与 Doctor 探测
-  均可用。
+- DSH 0.2.2-rc.1，并已在实际运行的 0.2.0-rc.2 与 0.2.1-rc.5 web shell 中挂载验证
+  （「记忆来源」、提交胶囊与「记忆健康」页均正常渲染，无页面或控制台错误）。
+  OpenViking 0.5.3（`/health`、上下文接口、规则、技能、观测）以及 0.5.1.1–0.5.3 的
+  回退路径。真实宿主 smoke 显示上下文接口与 Doctor 探测均可用。
 - 验证机器上的 pending 队列为空；读取逻辑由临时目录单测覆盖。
 
 

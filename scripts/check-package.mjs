@@ -104,7 +104,8 @@ for (const artefact of ['lib/index.js', 'lib/client.js']) {
 // host carries the exact range instead.
 if (existsSync(join(root, 'lib/index.js')) && typeof pkg.engines?.dsh === 'string') {
   const built = readFileSync(join(root, 'lib/index.js'), 'utf8')
-  check(built.includes(pkg.engines.dsh), 'the built host carries the manifest DSH range')
+  const builtRange = /PLUGIN_DSH_RANGE\s*=\s*"([^"]+)"/.exec(built)?.[1] ?? null
+  check(builtRange === pkg.engines.dsh, 'the built host carries the manifest DSH range verbatim')
 }
 check(
   typeof pkg.scripts?.prepack === 'string',

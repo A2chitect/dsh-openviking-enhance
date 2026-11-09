@@ -507,17 +507,17 @@ export function contextRequestBody(
   const dedupTurns = dedup === null ? 5 : Math.max(0, Math.floor(dedup))
   if (dedupTurns > 0) body.dedup_turns = dedupTurns
   if (config?.recallQueryExpansionConfigured === true) {
-    body.query_expansion = config.recallQueryExpansion === 'off' ? 'off' : 'auto'
+    body.query_expansion = String(config.recallQueryExpansion).trim().toLowerCase() === 'off' ? 'off' : 'auto'
   }
   if (config?.recallPeerScope === 'actor') body.peer_scope = 'actor'
-  const decay = asText(config?.recallEventsDecayProtection)
-  if (decay !== null) body.events_time_decay_protection = decay
+  const decay = asText(config?.recallEventsDecayProtection)?.trim()
+  if (decay !== undefined && decay.length > 0) body.events_time_decay_protection = decay
   const exclude = config?.recallExcludeUris
   if (Array.isArray(exclude)) {
     const uris = exclude.filter((value): value is string => typeof value === 'string' && value.length > 0)
     if (uris.length > 0) body.exclude_uris = uris.slice(0, 200)
   }
-  const rewrite = asText(config?.recallRewrite)
+  const rewrite = asText(config?.recallRewrite)?.trim().toLowerCase() ?? null
   // The official plugin's real call site never passes `localCompressorAvailable`,
   // so `auto` always sends the server-side rewrite. Mirror it rather than quietly
   // sending a different request than the one the turn made.

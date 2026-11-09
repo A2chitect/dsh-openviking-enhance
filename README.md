@@ -111,7 +111,7 @@ The Studio panel, the sidebar row that opens it, and the commit pill below the c
 
 | | |
 | --- | --- |
-| DSH | 0.2.2-rc.1 or newer (desktop or web profile; verified on 0.2.2-rc.1) |
+| DSH | 0.2.0-rc.2 or newer (desktop or web profile; verified on 0.2.0-rc.2, 0.2.1-rc.5 and 0.2.2-rc.1) |
 | OpenViking | A local server; 0.5.1.1–0.5.3 tested (0.5.3 with the context face). Studio is served at `/studio/` on the same port |
 | Memory plugin | `@openviking/dsh-memory-plugin` recommended — it is what commits sessions. Without it the panel still works, but pending-token thresholds are unknown |
 
@@ -222,9 +222,9 @@ That is the default. Click *show all*.
 
 **There is no recall or Memory health tab in the right sidebar.**
 The tabs are reached through that column's own `+` guide, and they only exist
-after a window reload (the client half is a file the page loads). DSH must be
-0.2.2-rc.1 or newer: older shells lack the Chat transcript seats this release
-uses and stay on the 0.2.3 plugin.
+after a window reload (the client half is a file the page loads). If DSH is older
+than 0.2.0-rc.2 it has no right sidebar to contribute to: the rows are skipped and
+the Studio panel and the pill keep working.
 
 **I changed the code and nothing happened.**
 The two halves reload differently: the client half after a window reload, the host
