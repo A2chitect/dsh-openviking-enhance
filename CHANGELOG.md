@@ -9,8 +9,6 @@ promotes to a dated section — see [RELEASING.md](RELEASING.md).
 
 ## Unreleased
 
-## 0.3.0 — 2026-11-09
-
 Explain. v0.3 turns the dashboard from "what is the memory state" into "why is
 the memory in this state", and every new surface is read-only.
 
@@ -58,9 +56,19 @@ the memory in this state", and every new surface is read-only.
 
 ### Changed
 
-- **DSH 0.2.2 support.** Development is now type-checked and built against
-  `@deepseek-ai/dsh-*@0.2.2-rc.1` (including the Chat package that owns
-  `conversation.chat.turnTail`), while 0.2.0-rc.2 and 0.2.1 remain supported.
+- **DSH 0.2.2 support, and 0.2.0/0.2.1 are no longer supported.** The Chat transcript
+  seats this release uses (`conversation.chat.turnTail`, `conversation.chat.assistant-actions`)
+  only exist in the 0.2.2 generation, so `engines.dsh` and the manifest now require
+  `>=0.2.2-rc.1`; 0.2.3 remains the last release for the old shells. Development
+  is type-checked and built against `@deepseek-ai/dsh-*@0.2.2-rc.1` (including the
+  Chat package that owns `conversation.chat.turnTail`).
+- **The recall replay follows the official request more closely.** Its HTTP
+  deadline is derived from the memory plugin's expansion/rewrite fuses (15 s /
+  45 s, or `recallContextTimeoutMs`), and the request now mirrors
+  `recallEventsDecayProtection` and `rewrite=auto`; the card also shows the
+  plugin's effective recall settings. The Doctor's context probe is session-free
+  and sends `query_expansion: "off"`, so opening the health page cannot trigger
+  an expansion LLM call or touch a session's de-duplication bookkeeping.
 - **The commit popover is wider and the timeline links into the full diff**;
   the old paths-only list is gone.
 - The sidebar tab closing path now handles the recall and health pages
@@ -103,8 +111,16 @@ the memory in this state", and every new surface is read-only.
 
 ### 变更
 
-- **支持 DSH 0.2.2。** 开发依赖升级到 `@deepseek-ai/dsh-*@0.2.2-rc.1`（包括拥有
-  `conversation.chat.turnTail` 的 Chat 包），同时保留 0.2.0-rc.2 与 0.2.1 支持。
+- **支持 DSH 0.2.2；不再支持 0.2.0/0.2.1。** 本版本使用的 Chat 转录槽位
+  （`conversation.chat.turnTail`、`conversation.chat.assistant-actions`）只存在于 0.2.2 代，
+  因此 `engines.dsh` 与清单改为 `>=0.2.2-rc.1`；旧 shell 的最后一个版本是 0.2.3。
+  开发依赖升级到 `@deepseek-ai/dsh-*@0.2.2-rc.1`（包括拥有 `conversation.chat.turnTail`
+  的 Chat 包）。
+- **召回重放更贴近官方请求。** HTTP 超时按官方插件查询扩展 / 重写的熔断时间推导
+  （15 秒 / 45 秒，或 `recallContextTimeoutMs`），请求也会带上
+  `recallEventsDecayProtection` 与 `rewrite=auto`；卡片同时显示记忆插件的生效召回设置。
+  Doctor 的上下文探测不再携带 session，并显式 `query_expansion: "off"`，打开健康页
+  不会触发扩展 LLM 调用，也不会碰会话的跨轮去重状态。
 - **提交弹窗加宽**，时间线直接进入完整 diff，不再只列路径。
 - 右侧边栏的关闭逻辑按召回页与健康页分别处理；右栏已挂载但当前页不是本插件页面时
   不再安排无意义的延迟关闭。

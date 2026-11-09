@@ -64,7 +64,7 @@ function loadBundle(locale) {
   }))
 
   const find = (name) => contributions.find((entry) => entry.options.name === name)
-  return { find, contributions }
+  return { find, contributions, exports: exportsObject }
 }
 
 /**
@@ -246,6 +246,35 @@ test('the bundle registers every seat, and all of them render', () => {
     renderToStaticMarkup(createElement(find('main').Component)).includes('ove-panel'),
     'the Studio panel renders',
   )
+})
+
+test('the commit diff browser renders its filters and an expanded line diff', () => {
+  const { exports } = loadBundle('en')
+  const diff = {
+    archiveUri: 'viking://user/demo/sessions/demo/history/archive_003',
+    extractedAt: '2026-10-02T07:55:00Z',
+    adds: [],
+    updates: [
+      {
+        uri: 'viking://user/demo/memories/entities/project/sidebar-row-order.md',
+        memoryType: 'entity',
+        before: 'Rows sort by order.',
+        after: 'Rows sort by order ascending.',
+      },
+    ],
+    deletes: [],
+    summary: { totalAdds: 0, totalUpdates: 1, totalDeletes: 0, totalSkipped: 0 },
+  }
+  const markup = renderToStaticMarkup(createElement(exports.DiffView, { diff }))
+  for (const label of ['All', 'Added', 'Updated', 'Deleted', 'Export JSON']) {
+    assert.ok(markup.includes(label), `the diff browser renders ${label}`)
+  }
+  assert.ok(markup.includes('ove-diff-filter'), 'the filters are real controls')
+  const entry = renderToStaticMarkup(
+    createElement(exports.DiffEntry, { entry: diff.updates[0], kind: 'updates', open: true, onToggle: () => {} }),
+  )
+  assert.ok(entry.includes('ove-diff-line-add'), 'an expanded update shows added lines')
+  assert.ok(entry.includes('ove-diff-line-remove'), 'an expanded update shows removed lines')
 })
 
 test('the same components render in Chinese when the app is set to it', () => {

@@ -300,6 +300,7 @@ export interface OvContextRequest {
   session_id?: string
   dedup_turns?: number
   query_expansion?: 'off' | 'auto'
+  events_time_decay_protection?: string
   max_tokens?: number
   quotas?: Record<string, number>
   peer_scope?: 'actor' | 'all'

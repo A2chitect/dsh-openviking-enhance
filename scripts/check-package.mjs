@@ -59,6 +59,7 @@ check(
 )
 check(typeof pkg.engines?.node === 'string', 'engines.node is declared')
 check(typeof pkg.engines?.dsh === 'string', 'engines.dsh is declared')
+check(pkg.dsh?.engines?.dsh === pkg.engines?.dsh, 'dsh.engines.dsh and engines.dsh agree')
 
 // ---- a stranger can install it --------------------------------------------
 // pnpm refuses to install while any dependency build script is undecided, and its
@@ -97,6 +98,13 @@ for (const readme of ['README.md', 'README.zh.md']) {
 // without it installs a plugin that cannot load.
 for (const artefact of ['lib/index.js', 'lib/client.js']) {
   check(pkg.files?.includes(artefact) === true && existsSync(join(root, artefact)), `${artefact} is built and shipped`)
+}
+// The Doctor reports this range, and it is a second copy of the manifest string.
+// Escaping the build output would let the two drift silently; assert the built
+// host carries the exact range instead.
+if (existsSync(join(root, 'lib/index.js')) && typeof pkg.engines?.dsh === 'string') {
+  const built = readFileSync(join(root, 'lib/index.js'), 'utf8')
+  check(built.includes(pkg.engines.dsh), 'the built host carries the manifest DSH range')
 }
 check(
   typeof pkg.scripts?.prepack === 'string',

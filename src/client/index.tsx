@@ -9,21 +9,22 @@
  * below (or by `ctx.effect`), so an unload — or a feature switch — collapses it
  * cleanly and can mount it again later.
  *
- * Slot map, all verified against `@deepseek-ai/dsh-client-ui-{slots,sidebar,layout,conversation}@0.2.0-rc.2`,
- * and re-verified on 0.2.1-rc.2 and 0.2.1-rc.3:
+ * Slot map, all verified against the 0.2.2-rc.1 generation of the framework:
  *   sidebar.panellist          list, root      owner {size, active}  → panel icon
  *   main                       keyed, root     key must equal the panellist id
  *   conversation.composer.dock list, session   inject(sessionId)     → status pill
+ *   conversation.chat.turnTail list, session   inject(sessionId)     → memory-sources card
+ *   plugins.row.config         keyed, root     key = package#row      → settings form
+ *   plugins.detail.section     list, root      subject               → health summary
  *
- * Plus one tab type in the right Sidebar
- * (`@deepseek-ai/dsh-client-ui-sidebar-right@0.2.0-rc.2`, re-verified on
- * 0.2.1-rc.2 and 0.2.1-rc.3), registered in two
- * stages because that is the only contract the framework offers:
+ * Plus two tab types in the right Sidebar (recall and Memory health), registered
+ * in two stages because that is the only contract the framework offers:
  *   ctx.sidebarRightTabs.register({id, kind, title, guide})   stage one: a page type
  *   sidebar.right.pane.tab     keyed, session, key = that id → stage two: the body
  *
- * The three surfaces are switchable from the plugin's own settings form
- * (`showSidebarEntry` / `showCommitStatus` / `showRecallPanel`). `feature-toggles.ts`
+ * The five surfaces are switchable from the plugin's own settings form
+ * (`showSidebarEntry` / `showCommitStatus` / `showRecallPanel` /
+ * `showRecallExplain` / `showHealthPanel`). `feature-toggles.ts`
  * reads the live values from `ctx.configForms`; this file owns the mount/unmount
  * pairs and the order they run in:
  *
@@ -47,6 +48,8 @@ import { installStyles } from './styles.ts'
 import { OpenVikingIcon } from './openviking-icon.tsx'
 import { StudioPanel } from './studio-panel.tsx'
 import { CommitStatusPill } from './commit-status.tsx'
+// Exported for the server-rendered component tests; the shell only reads apply/inject.
+export { DiffEntry, DiffView } from './commit-status.tsx'
 import { RecallPanel } from './recall-panel.tsx'
 import { RecallExplainTail } from './recall-explain.tsx'
 import { HealthPanel } from './health-panel.tsx'

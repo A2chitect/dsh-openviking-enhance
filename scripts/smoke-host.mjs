@@ -14,6 +14,7 @@
 // given, else it lists candidates from the OpenViking session index.
 import http from 'node:http'
 import { Config, apply } from '../lib/index.js'
+import { resolveConnection } from '../src/host/config.ts'
 
 const routes = []
 const context = {
@@ -339,9 +340,18 @@ async function report(base, sessionId) {
       JSON.stringify(report).includes('"apiKey":') ||
       JSON.stringify(report).includes('"api_key"') ||
       JSON.stringify(report).includes('Authorization:')
+    const configuredKey = resolveConnection().apiKey
+    // A one-character key (or the dev placeholder) occurs in unrelated strings;
+    // only a key long enough to be meaningful makes the exact-value assertion
+    // evidence rather than noise.
+    const exactCheckable = configuredKey.length >= 8
+    const actualLeak = exactCheckable && JSON.stringify(doctorAnswer).includes(configuredKey)
     const originOk = apiKeyOrigin !== undefined && typeof apiKeyOrigin.configured === 'boolean' && !('value' in apiKeyOrigin)
-    console.log(`[smoke] doctor      ${!leaked && originOk ? 'ok  ' : 'FAIL'} API key stays out of the diagnostics (origin only)`)
-    if (leaked || !originOk) process.exitCode = 1
+    console.log(
+      `[smoke] doctor      ${!leaked && !actualLeak && originOk ? 'ok  ' : 'FAIL'} API key stays out of the diagnostics ` +
+        `(origin only${exactCheckable ? ', exact value absent' : '; configured key too short to search'})`,
+    )
+    if (leaked || actualLeak || !originOk) process.exitCode = 1
   }
 
   const archive = commits?.status?.archives?.at(-1)

@@ -36,7 +36,7 @@ import {
 } from './local-state.ts'
 
 /** The DSH generations this release is built and type-checked against. */
-export const PLUGIN_DSH_RANGE = '>=0.2.0-rc.2 || >=0.2.1-rc.2 || >=0.2.2-rc.1'
+export const PLUGIN_DSH_RANGE = '>=0.2.2-rc.1'
 /** The OpenViking versions this release's contract tests cover. */
 export const TESTED_OV_RANGE = 'OpenViking 0.5.1.1 – 0.5.3'
 
@@ -146,7 +146,7 @@ export class DoctorService {
       warnings.push({ code: 'pendingQueueUnavailable', params: { error: pending.error ?? 'unknown' } })
     }
 
-    const contextFace = await this.contextCapability(probe, ovSessionId, request, warnings)
+    const contextFace = await this.contextCapability(probe, request, warnings)
     const ruleSearch = await this.rulesCapability(probe, request)
     const fsStat = await this.fsCapability(probe, request)
     const toolNames = this.options.tools?.() ?? null
@@ -338,7 +338,6 @@ export class DoctorService {
 
   private async contextCapability(
     probe: boolean,
-    ovSessionId: string | null,
     request: { actorPeerId?: string },
     warnings: PluginNotice[],
   ): Promise<DoctorCapability> {
@@ -353,7 +352,9 @@ export class DoctorService {
         mode: 'context',
         purpose: 'coding',
         score_threshold: 0.35,
-        ...(ovSessionId === null ? {} : { session_id: ovSessionId }),
+        // A capability probe is not a recall: keeping it out of the session and
+        // expansion paths avoids an LLM call and any dedup bookkeeping on open.
+        query_expansion: 'off',
       },
       { ...request, timeoutMs: 10000 },
     )
@@ -439,18 +440,17 @@ export function compatibilityOf(dshVersion: string | null): {
   const major = Number(match[1])
   const minor = Number(match[2])
   const patch = Number(match[3])
-  if (major !== 0) return { dshVersion, compatible: null }
-  // 0.1.x is the generation before the plugin's manifest range; 0.2.x is the
-  // band this plugin declares.
-  if (minor === 1) return { dshVersion, compatible: false }
-  if (minor !== 2) return { dshVersion, compatible: false }
-  if (patch >= 1) return { dshVersion, compatible: true }
-  // 0.2.0-rc.2 is the manifest's floor; a bare 0.2.0 is covered, the alpha train
-  // and rc.1 are below it.
+  // A future major/minor is accepted by the manifest range but untested here;
+  // report "unknown" rather than guessing incompatible.
+  if (major !== 0 || minor > 2) return { dshVersion, compatible: null }
+  if (minor < 2) return { dshVersion, compatible: false }
+  if (patch > 2) return { dshVersion, compatible: true }
+  if (patch < 2) return { dshVersion, compatible: false }
+  // 0.2.2-rc.1 is the manifest's floor; a bare 0.2.2 (and later 0.2.x) is covered.
   const prerelease = match[4] ?? ''
   if (prerelease.length === 0) return { dshVersion, compatible: true }
   const rc = /^rc\.(\d+)/.exec(prerelease)
-  return { dshVersion, compatible: rc !== null && Number(rc[1]) >= 2 }
+  return { dshVersion, compatible: rc !== null && Number(rc[1]) >= 1 }
 }
 
 function textOf(value: unknown): string | null {

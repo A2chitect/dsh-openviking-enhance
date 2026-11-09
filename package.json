@@ -1,6 +1,6 @@
 {
   "name": "dsh-openviking-enhance",
-  "version": "0.3.0",
+  "version": "0.2.3",
   "description": "OpenViking in the DSH web GUI: a Studio panel, a commit status pill and diff browser, a per-turn recall explanation, a right-sidebar recall tab, and a Memory health / Doctor tab.",
   "type": "module",
   "icon": "./icon.svg",
@@ -23,7 +23,7 @@
   "dsh": {
     "manifestVersion": 1,
     "engines": {
-      "dsh": ">=0.2.0-rc.2 || >=0.2.1-rc.2 || >=0.2.2-rc.1"
+      "dsh": ">=0.2.2-rc.1"
     },
     "bundle": {
       "patch": "./cordis.patch.yml"
@@ -55,8 +55,9 @@
     "release": "node scripts/release.mjs"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.5",
+    "@deepseek-ai/cordis": "^4.1.0",
     "@deepseek-ai/dsh-api-remotes": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-store": "0.2.2-rc.1",
     "@deepseek-ai/dsh-client-ui-chat": "0.2.2-rc.1",
     "@deepseek-ai/dsh-client-ui-conversation": "0.2.2-rc.1",
     "@deepseek-ai/dsh-client-ui-layout": "0.2.2-rc.1",
@@ -66,7 +67,7 @@
     "@deepseek-ai/dsh-client-ui-sidebar-right": "0.2.2-rc.1",
     "@deepseek-ai/dsh-client-ui-slots": "0.2.2-rc.1",
     "@deepseek-ai/dsh-host-webserver": "0.2.2-rc.1",
-    "@deepseek-ai/schemastery": "^3.18.5",
+    "@deepseek-ai/schemastery": "^3.19.0",
     "@types/node": "^22.20.0",
     "@types/react": "~18.3.1",
     "esbuild": "^0.28.0",
@@ -75,12 +76,12 @@
     "typescript": "~5.7.2"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh": "^0.2.0-rc.1 || ^0.2.1-rc.2 || ^0.2.2-rc.1",
+    "@deepseek-ai/dsh": ">=0.2.2-rc.1",
     "react": "^18.2.0"
   },
   "engines": {
     "node": "^22.19.0 || >=24",
-    "dsh": ">=0.2.0-rc.2 || >=0.2.1-rc.2 || >=0.2.2-rc.1"
+    "dsh": ">=0.2.2-rc.1"
   },
   "license": "MIT",
   "repository": {

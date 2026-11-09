@@ -146,7 +146,7 @@ export interface SidebarRightNavigation {
 /**
  * One open tab as the right Sidebar's own controller reports it.
  *
- * The live 0.2.1-rc.3 record is `{ id, kind, contentId, title }`: a page tab's
+ * The live 0.2.2-rc.1 record is `{ id, kind, contentId, title }`: a page tab's
  * address (`sidebar://<kind>`) lives in `contentId`, not in `address`. An earlier
  * build of this plugin compared only `address` and therefore never closed the
  * open recall page — keep all three shapes here so the check cannot silently go

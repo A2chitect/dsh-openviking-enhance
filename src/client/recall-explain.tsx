@@ -18,6 +18,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type { UseChat } from '@deepseek-ai/dsh-client-ui-chat/client'
 import type {
   RecallExplainEntry,
   RecallExplainStats,
@@ -30,6 +31,8 @@ import { OpenVikingIcon } from './openviking-icon.tsx'
 /** Props a `conversation.chat.turnTail` occupant receives, plus our inject face. */
 export type RecallExplainProps = PropsRuntime<'conversation.chat.turnTail'> & {
   sessionId: string
+  /** Chat's standard selector hook, delivered with the slot's session kit. */
+  useChat: UseChat
   /** Open the full recall tab, for the case where explanation is not enough. */
   openRecall?: () => void
 }
@@ -112,14 +115,22 @@ export function RecallExplainTail(props: RecallExplainProps) {
   const [error, setError] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<string | null>(null)
   const generation = useRef(0)
+  const controllerRef = useRef<AbortController | null>(null)
 
   const load = useCallback(
     async (fresh: boolean) => {
       if (prompt.length === 0) return
       const ticket = (generation.current += 1)
+      controllerRef.current?.abort()
+      const controller = new AbortController()
+      controllerRef.current = controller
       setLoading(true)
       try {
-        const answer = await fetchRecallExplain(sessionId, prompt, { source: 'turn', fresh })
+        const answer = await fetchRecallExplain(sessionId, prompt, {
+          source: 'turn',
+          fresh,
+          signal: controller.signal,
+        })
         if (ticket !== generation.current) return
         if (answer.ok) {
           setExplanation(answer.explanation)
@@ -129,6 +140,7 @@ export function RecallExplainTail(props: RecallExplainProps) {
         }
       } catch (problem) {
         if (ticket !== generation.current) return
+        if (problem instanceof Error && problem.name === 'AbortError') return
         setError(problem instanceof Error ? problem.message : String(problem))
       } finally {
         if (ticket === generation.current) setLoading(false)
@@ -145,11 +157,25 @@ export function RecallExplainTail(props: RecallExplainProps) {
     setOpen(false)
     setExpanded(null)
     generation.current += 1
+    controllerRef.current?.abort()
+    controllerRef.current = null
+    return () => {
+      controllerRef.current?.abort()
+      controllerRef.current = null
+    }
   }, [sessionId, turn.turn, prompt])
 
   useEffect(() => {
     if (open && explanation === null && error === null && !loading) void load(false)
   }, [open, explanation, error, loading, load])
+
+  // Closing the card is a user action: do not keep a long replay running in the
+  // background just because the component is still mounted for its trigger.
+  useEffect(() => {
+    if (open) return
+    controllerRef.current?.abort()
+    controllerRef.current = null
+  }, [open])
 
   if (prompt.length === 0) return null
 
@@ -241,6 +267,21 @@ export function RecallExplainTail(props: RecallExplainProps) {
                 </div>
               )}
 
+              {explanation.effective !== null && (
+                <details className="ove-explain-details">
+                  <summary>{t('explain.effective')}</summary>
+                  <dl className="ove-explain-stats">
+                    {Object.entries(explanation.effective)
+                      .filter(([, value]) => value !== null)
+                      .map(([key, value]) => (
+                        <div className="ove-explain-stat" key={key}>
+                          <dt>{t(`doctor.effective.${key}`)}</dt>
+                          <dd>{String(value)}</dd>
+                        </div>
+                      ))}
+                  </dl>
+                </details>
+              )}
               {explanation.stats !== null && (
                 <details className="ove-explain-details">
                   <summary>{t('explain.accounting')}</summary>

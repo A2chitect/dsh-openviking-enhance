@@ -86,6 +86,8 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
   /** How many commit records to fetch counts for; the popover widens this on demand. */
   const [summaryLimit, setSummaryLimit] = useState(TIMELINE_DEFAULT)
   const wrap = useRef<HTMLSpanElement | null>(null)
+  /** The newest archive the user asked for; late replies from older clicks lose. */
+  const diffGeneration = useRef(0)
   /** Set by the polling effect so opening the popover can refresh immediately. */
   const refreshRef = useRef<(() => void) | null>(null)
 
@@ -187,10 +189,12 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
   const openArchive = useCallback(
     async (archiveUri: string) => {
       if (!sessionId) return
+      const ticket = (diffGeneration.current += 1)
       setSelected(archiveUri)
       setDiff(null)
       setDiffPending(true)
       const result = await fetchDiff(sessionId, archiveUri)
+      if (ticket !== diffGeneration.current) return
       setDiffPending(false)
       if (result.ok) setDiff(result.diff)
       else setError(result.error)
@@ -461,7 +465,7 @@ interface DiffGroup {
  * The summary/filters are local state because this is a browsing surface, not a
  * status: switching a filter must not refetch the commit or disturb the pill.
  */
-function DiffView({ diff }: { diff: MemoryDiff }) {
+export function DiffView({ diff }: { diff: MemoryDiff }) {
   const { summary } = diff
   const [filter, setFilter] = useState<DiffFilter>('all')
   const [openKey, setOpenKey] = useState<string | null>(null)
@@ -543,7 +547,7 @@ function DiffView({ diff }: { diff: MemoryDiff }) {
   )
 }
 
-function DiffEntry({
+export function DiffEntry({
   entry,
   kind,
   open,

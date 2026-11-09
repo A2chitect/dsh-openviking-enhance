@@ -18,6 +18,7 @@ import {
   bucketOf,
   codingQuotas,
   contextRequestBody,
+  contextRequestTimeoutMs,
   effectiveRecallSettings,
 } from '../src/host/recall-service.ts'
 import { deriveSessionState, toEvents } from '../src/host/session-log.ts'
@@ -246,6 +247,25 @@ test('the context request mirrors the mounted plugin, and omits knobs it did not
   assert.equal(configured.rewrite_max_bullets, 4)
 })
 
+test('decay protection and rewrite=auto are mirrored, not silently dropped', () => {
+  const body = contextRequestBody('why', 'dsh-s1', {
+    recallEventsDecayProtection: '30d',
+    recallRewrite: 'auto',
+  })
+  assert.equal(body.events_time_decay_protection, '30d')
+  assert.equal(body.rewrite, 'auto')
+})
+
+test('the context timeout covers the expansion and rewrite fuses', () => {
+  const base = { query: 'why', mode: 'context', session_id: 'dsh-s1' }
+  assert.equal(contextRequestTimeoutMs(null, base), 15_000)
+  assert.equal(contextRequestTimeoutMs(null, { ...base, rewrite: true }), 45_000)
+  assert.equal(contextRequestTimeoutMs(null, { ...base, rewrite: 'auto' }), 45_000)
+  assert.equal(contextRequestTimeoutMs({ timeoutMs: 30_000 }, base), 30_000)
+  assert.equal(contextRequestTimeoutMs({ recallContextTimeoutMs: 60_000 }, base), 60_000)
+  assert.equal(contextRequestTimeoutMs(null, { ...base, query_expansion: 'off' }), undefined)
+})
+
 test('coding quotas stay within the requested slot count', () => {
   for (const limit of [1, 3, 10, 12]) {
     const quotas = codingQuotas(limit)
@@ -304,6 +324,16 @@ test('the session state distinguishes the five working states', () => {
   assert.equal(deriveSessionState({ ...base, activeTask: true }), 'extracting')
   assert.equal(deriveSessionState({ ...base, latestArchiveState: 'pending' }), 'extracting')
   assert.equal(deriveSessionState({ ...base, latestArchiveState: 'failed', commitCount: 1 }), 'failed')
+  assert.equal(
+    deriveSessionState({ ...base, latestArchiveState: 'failed', commitCount: 1, archiveCount: 2 }),
+    'failed',
+    'a failed newest archive outranks the archive/commit count gap',
+  )
+  assert.equal(
+    deriveSessionState({ ...base, latestArchiveState: 'pending', commitCount: 1, archiveCount: 2 }),
+    'extracting',
+    'a pending newest archive still outranks a count-consistent state',
+  )
   assert.equal(deriveSessionState({ ...base, pendingQueueCount: 2 }), 'queued')
   assert.equal(deriveSessionState({ ...base, commitCount: 1, pendingTokens: 0, messageCount: 0 }), 'committed')
   assert.equal(deriveSessionState({ ...base, serverOk: false }), 'unknown')
@@ -383,18 +413,20 @@ test('connection origins name the layer that supplied each field', async () => {
 })
 
 test('the DSH compatibility check is honest about untested generations', () => {
-  assert.equal(compatibilityOf('0.2.1-rc.3').compatible, true)
+  assert.equal(compatibilityOf('0.2.1-rc.3').compatible, false)
   assert.equal(compatibilityOf('0.2.2-rc.1').compatible, true)
   assert.equal(compatibilityOf('0.1.7-rc.2').compatible, false)
   assert.equal(compatibilityOf('0.2.0-rc.1').compatible, false)
-  assert.equal(compatibilityOf('0.2.0-rc.2').compatible, true)
-  assert.equal(compatibilityOf('0.3.0').compatible, false)
+  assert.equal(compatibilityOf('0.2.0-rc.2').compatible, false)
+  assert.equal(compatibilityOf('0.2.2').compatible, true)
+  assert.equal(compatibilityOf('0.3.0').compatible, null)
   assert.equal(compatibilityOf('not-a-version').compatible, null)
   assert.equal(compatibilityOf(null).compatible, null)
 })
 
 test('the Doctor reports connection, plugin and capability facts without a secret', async () => {
   const home = await mkdtemp(join(tmpdir(), 'ove-doctor-'))
+  const probes = []
   const reply = (result) => ({ ok: true, status: 200, result, error: null })
   const api = {
     user: 'default',
@@ -403,7 +435,10 @@ test('the Doctor reports connection, plugin and capability facts without a secre
     listSkills: async () => reply({ skills: [{ name: 'a' }, { name: 'b' }] }),
     observerRetrieval: async () => reply({ status: { total_queries: 10, avg_latency_ms: 500 } }),
     getSession: async () => reply(SESSION),
-    searchContext: async () => reply({ entries: [], stats: {} }),
+    searchContext: async (body) => {
+      probes.push(body)
+      return reply({ entries: [], stats: {} })
+    },
     rulesSearch: async () => reply({ rules: [], warning: 'rule library is empty' }),
     fsStat: async () => reply({ uri: 'viking://user/default', isDir: true }),
   }
@@ -440,6 +475,9 @@ test('the Doctor reports connection, plugin and capability facts without a secre
   assert.equal(report.plugin.mounted, true)
   assert.equal(report.plugin.version, '0.5.32')
   assert.equal(report.capabilities.contextFace.state, 'available')
+  assert.equal(probes.length, 1)
+  assert.equal(probes[0].query_expansion, 'off', 'the capability probe does not spend an expansion call')
+  assert.equal(probes[0].session_id, undefined, 'the capability probe does not touch a session')
   assert.equal(report.capabilities.ruleSearch.state, 'available')
   assert.equal(report.capabilities.skills.count, 2)
   assert.equal(report.capabilities.mcpTools.count, 2)

@@ -138,10 +138,13 @@ export function deriveSessionState(input: {
 }): SessionMemoryState {
   if (!input.serverOk) return 'unknown'
   if (input.pendingQueueCount > 0) return 'queued'
-  if (input.activeTask || input.archiveCount > input.commitCount || input.latestArchiveState === 'pending') {
-    return 'extracting'
-  }
+  // A newest archive still pending is live extraction. A newest archive that
+  // failed is a terminal loss and outranks the count gap: `commit_count` only
+  // advances on successful extraction, so `archiveCount > commitCount` is the
+  // ordinary shape of a failed commit, not evidence that another one is running.
+  if (input.activeTask || input.latestArchiveState === 'pending') return 'extracting'
   if (input.latestArchiveState === 'failed') return 'failed'
+  if (input.archiveCount > input.commitCount) return 'extracting'
   if (input.totalMessageCount === 0 && input.messageCount === 0 && input.commitCount === 0) return 'no-messages'
   if (input.pendingTokens > 0 || input.messageCount > 0 || input.commitCount === 0) return 'not-committed'
   return 'committed'

@@ -120,7 +120,7 @@ const BOOT_SEATS = [
   'sidebar.right.pane.tab',
 ].sort()
 
-/** The recall page as an open tab, in the LIVE 0.2.1-rc.3 record shape.
+/** The recall page as an open tab, in the LIVE 0.2.2-rc.1 record shape.
  *
  * A page tab's address lives in `contentId`; `contentId === sidebar://<kind>`
  * is also how the framework itself identifies a page tab (`pageKind`). The
@@ -583,6 +583,9 @@ check(
   'the manifest depends on the settings package (the form and the live switches)',
 )
 check(injectedCss?.includes('.ove-recall'), 'installs the recall panel stylesheet')
+check(injectedCss?.includes('.ove-explain-card'), 'installs the recall explanation stylesheet')
+check(injectedCss?.includes('.ove-health'), 'installs the memory health stylesheet')
+check(injectedCss?.includes('.ove-diff-line-add') && injectedCss?.includes('.ove-diff-line-remove'), 'installs the diff line styles')
 
 // ---------------------------------------------------------------------------
 // Scenario 2 — a saved all-off answer: nothing surface-mounted, form still there

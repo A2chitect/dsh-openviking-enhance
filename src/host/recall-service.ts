@@ -187,7 +187,12 @@ export class RecallService {
     const memo = await readPluginMemo<ContextFaceMemo>('context-face.json', this.options.localState)
     let contextError: string | null = null
     if (!memoActive(memo, this.now())) {
-      const reply = await api.searchContext(contextRequestBody(queryText, ovSessionId, config), request)
+      const body = contextRequestBody(queryText, ovSessionId, config)
+      const timeoutMs = contextRequestTimeoutMs(config, body)
+      const reply = await api.searchContext(
+        body,
+        timeoutMs === undefined ? request : { ...request, timeoutMs },
+      )
       if (reply.ok && reply.result !== null) {
         return this.contextExplanation(base, queryText, source, reply.result, started, warnings)
       }
@@ -483,6 +488,10 @@ export function contextRequestBody(
   ovSessionId: string,
   config: Record<string, unknown> | null,
 ): OvContextRequest {
+  // These fallbacks only feed the two `*Configured` branches below; when the
+  // knobs are unset the fields are omitted and the server's own defaults apply.
+  // Keeping the fallbacks aligned with 0.5.32's DEFAULT_CONTEXT_* values is a
+  // last-resort guard, not a claim about a future server.
   const limit = Math.max(1, Math.floor(asNumber(config?.recallLimit) ?? 10))
   const maxTokens = Math.max(64, Math.floor(asNumber(config?.recallMaxTokens) ?? 1600))
   const body: OvContextRequest = {
@@ -501,19 +510,49 @@ export function contextRequestBody(
     body.query_expansion = config.recallQueryExpansion === 'off' ? 'off' : 'auto'
   }
   if (config?.recallPeerScope === 'actor') body.peer_scope = 'actor'
+  const decay = asText(config?.recallEventsDecayProtection)
+  if (decay !== null) body.events_time_decay_protection = decay
   const exclude = config?.recallExcludeUris
   if (Array.isArray(exclude)) {
     const uris = exclude.filter((value): value is string => typeof value === 'string' && value.length > 0)
     if (uris.length > 0) body.exclude_uris = uris.slice(0, 200)
   }
-  if (config?.recallRewrite === 'server') {
-    body.rewrite = true
-    const bullets = asNumber(config.recallCompressMaxBullets)
-    if (config.recallCompressMaxBulletsConfigured === true && bullets !== null) {
+  const rewrite = asText(config?.recallRewrite)
+  // The official plugin's real call site never passes `localCompressorAvailable`,
+  // so `auto` always sends the server-side rewrite. Mirror it rather than quietly
+  // sending a different request than the one the turn made.
+  if (rewrite === 'server') body.rewrite = true
+  else if (rewrite === 'auto') body.rewrite = 'auto'
+  if (body.rewrite !== undefined) {
+    const bullets = asNumber(config?.recallCompressMaxBullets)
+    if (config?.recallCompressMaxBulletsConfigured === true && bullets !== null) {
       body.rewrite_max_bullets = Math.max(1, Math.floor(bullets))
     }
   }
   return body
+}
+
+/**
+ * The HTTP deadline for one context request, derived the way the memory plugin
+ * derives it.
+ *
+ * The server pipeline is serial and the expansion and rewrite stages have their
+ * own fuses; a request that asks for either must survive the longest of them or
+ * the card would report a healthy server as unreachable. An explicit
+ * `recallContextTimeoutMs` wins; otherwise the floor is 45 s for rewrite and 15 s
+ * for expansion, never below the plugin's `timeoutMs`.
+ */
+export function contextRequestTimeoutMs(
+  config: Record<string, unknown> | null,
+  body: Pick<OvContextRequest, 'rewrite' | 'session_id' | 'query_expansion'>,
+): number | undefined {
+  const configured = asNumber(config?.recallContextTimeoutMs)
+  if (configured !== null && configured > 0) return Math.max(1000, Math.floor(configured))
+  const wantsRewrite = body.rewrite !== undefined
+  const wantsExpansion = body.session_id !== undefined && body.query_expansion !== 'off'
+  if (!wantsRewrite && !wantsExpansion) return undefined
+  const floor = wantsRewrite ? 45_000 : 15_000
+  return Math.max(asNumber(config?.timeoutMs) ?? 0, floor)
 }
 
 /**
