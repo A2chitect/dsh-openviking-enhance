@@ -655,7 +655,9 @@ export function exportDiff(diff: MemoryDiff): void {
   anchor.href = url
   anchor.download = `openviking-${archiveId}.json`
   anchor.click()
-  URL.revokeObjectURL(url)
+  // Revoke after the browser has started the download; revoking in the same
+  // task can cancel it on some engines.
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
 /**
