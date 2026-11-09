@@ -263,7 +263,31 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
       : null
   }
 
-  const doctor = new DoctorService({ api, commit: service, connection, origins, dshVersion })
+  /** Tool names the model can see, when the tool registry exposes them. */
+  const listToolNames = (): string[] | null => {
+    try {
+      const tools = host.get('tools') as
+        | { schemas?: (scope?: unknown) => Array<{ name?: unknown }> }
+        | undefined
+      if (typeof tools?.schemas !== 'function') return null
+      const schemas = tools.schemas()
+      if (!Array.isArray(schemas)) return null
+      return schemas
+        .map((schema) => (typeof schema?.name === 'string' ? schema.name : ''))
+        .filter((name) => name.length > 0)
+    } catch {
+      return null
+    }
+  }
+
+  const doctor = new DoctorService({
+    api,
+    commit: service,
+    connection,
+    origins,
+    dshVersion,
+    tools: listToolNames,
+  })
 
   const configPayload = async (): Promise<ApiResult<EnhanceConfig>> => {
     const health = await api.health()

@@ -432,6 +432,7 @@ test('the Doctor reports connection, plugin and capability facts without a secre
     ],
     dshVersion: () => '0.2.2-rc.1',
     pluginVersion: () => '0.5.32',
+    tools: () => ['mcp__openviking__search', 'mcp__openviking__read', 'other_tool'],
     localState: { home },
   })
   const report = await service.report('session-1', { probe: true })
@@ -441,6 +442,8 @@ test('the Doctor reports connection, plugin and capability facts without a secre
   assert.equal(report.capabilities.contextFace.state, 'available')
   assert.equal(report.capabilities.ruleSearch.state, 'available')
   assert.equal(report.capabilities.skills.count, 2)
+  assert.equal(report.capabilities.mcpTools.count, 2)
+  assert.ok(report.checks.some((check) => check.id === 'mcpTools' && check.status === 'ok'))
   assert.equal(report.compatibility.dshCompatible, true)
   assert.ok(report.checks.length >= 12)
   assert.ok(report.checks.some((check) => check.id === 'commitThreshold' && check.status === 'ok'))

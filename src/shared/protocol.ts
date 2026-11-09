@@ -543,6 +543,8 @@ export interface DoctorReport {
     contextFace: DoctorCapability
     ruleSearch: DoctorCapability
     skills: DoctorCapability & { count: number | null }
+    /** Whether the memory plugin's MCP tools are visible to the model. */
+    mcpTools: DoctorCapability & { count: number; names: string[] }
     fsStat: DoctorCapability
     observer: DoctorCapability & { avgLatencyMs: number | null; queries: number | null }
   }

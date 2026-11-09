@@ -49,6 +49,11 @@ export interface DoctorOptions {
   origins: ConnectionFieldOrigin[]
   /** The running app's version, when the host exposes one. */
   dshVersion?: () => string | null
+  /**
+   * Every tool name visible to the model, or null when the tool registry is not
+   * reachable. Used to answer "are the OpenViking MCP tools visible?".
+   */
+  tools?: () => string[] | null
   /** Test seams. */
   now?: () => number
   localState?: LocalStateOptions
@@ -144,6 +149,8 @@ export class DoctorService {
     const contextFace = await this.contextCapability(probe, ovSessionId, request, warnings)
     const ruleSearch = await this.rulesCapability(probe, request)
     const fsStat = await this.fsCapability(probe, request)
+    const toolNames = this.options.tools?.() ?? null
+    const mcpTools = toolNames === null ? null : toolNames.filter((name) => name.startsWith('mcp__openviking__'))
 
     const sessionUri =
       sessionMeta?.result && ovSessionId !== null
@@ -204,6 +211,15 @@ export class DoctorService {
         : typeof config.commitTokenThreshold === 'number'
           ? check('commitThreshold', 'ok', `${Math.round(config.commitTokenThreshold)} tokens`, null)
           : check('commitThreshold', 'unknown', null, 'doctor.hint.thresholdUnknown'),
+    )
+    checks.push(
+      !mounted
+        ? check('mcpTools', 'skipped', null, null)
+        : mcpTools === null
+          ? check('mcpTools', 'unknown', null, 'doctor.hint.mcpTools')
+          : mcpTools.length > 0
+            ? check('mcpTools', 'ok', `${mcpTools.length} tools`, null)
+            : check('mcpTools', 'warn', 'none visible', 'doctor.hint.mcpTools'),
     )
     checks.push(capabilityCheck('contextFace', contextFace))
     checks.push(capabilityCheck('rules', ruleSearch))
@@ -275,6 +291,12 @@ export class DoctorService {
           state: skills.ok ? 'available' : 'unavailable',
           detail: skills.ok ? `${skills.result?.skills?.length ?? 0} skills` : skills.error ?? `HTTP ${skills.status}`,
           count: skills.ok ? skills.result?.skills?.length ?? 0 : null,
+        },
+        mcpTools: {
+          state: !mounted ? 'skipped' : mcpTools === null ? 'unknown' : mcpTools.length > 0 ? 'available' : 'unavailable',
+          detail: mcpTools === null ? null : `${mcpTools.length} exposed to the model`,
+          count: mcpTools?.length ?? 0,
+          names: (mcpTools ?? []).slice(0, 12),
         },
         fsStat,
         observer: {
