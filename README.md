@@ -123,7 +123,7 @@ so); L2 is files-only and says that on a directory. Everything is plain text —
 a memory body never becomes markup. Copy the URI or open the entry in Studio from
 the panel, or paste a `viking://` path into its address bar.
 
-![The /viking command answering status](assets/v04-after-command.png)
+![The /viking command answering status](assets/v04-after-viking-status.png)
 
 **Ask from the composer.** `/viking status` prints the endpoint, health, server
 version, identity, the mounted memory plugin, the DSH version and the current
@@ -133,7 +133,7 @@ open <uri>` prints metadata and bounded L0/L1. The command is read-only — this
 version has no commit, remember, forget or pause verb — and `enableCommands`
 turns it off.
 
-![The Explore tab](assets/v04-after-explore.png)
+![The Explore tab with unified search results](assets/v04-after-explore-search.png)
 
 **Explore the whole library.** The right sidebar's new *Explore* tab has four
 read-only segments. **Search** runs one query across memories, resources and

@@ -97,7 +97,7 @@ Studio 面板、打开它的侧边栏行，以及输入框下方的提交状态�
 渲染——记忆正文永远不会变成 HTML。面板里可以复制 URI、在 Studio 中打开条目，
 也可以把 `viking://` 路径粘贴进地址栏直接跳转。
 
-![/viking 命令输出 status](assets/v04-after-command.png)
+![/viking 命令输出 status](assets/v04-after-viking-status.png)
 
 **在输入框里直接问。** `/viking status` 输出 endpoint、健康状态、服务端版本、身份、
 已挂载的记忆插件、DSH 版本和当前会话的提交状态；`/viking doctor` 输出 Doctor 的检查项；
@@ -105,7 +105,7 @@ Studio 面板、打开它的侧边栏行，以及输入框下方的提交状态�
 输出元数据与有长度上限的 L0/L1。这个命令是只读的——本版本没有 commit、remember、
 forget、pause 动词——`enableCommands` 可以把它关掉。
 
-![探索页](assets/v04-after-explore.png)
+![探索页的统一搜索结果](assets/v04-after-explore-search.png)
 
 **探索整个记忆库。** 右侧栏新增的 *探索* tab 有四个只读区块：**搜索**（一次查询覆盖记忆、
 资源、技能并合并规则命中，按 bucket 分组显示分数与摘要，点行打开预览）、**规则**
