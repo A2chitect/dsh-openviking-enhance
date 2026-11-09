@@ -22,12 +22,15 @@
  *  - clearing a field is an `unset`, which restores inheritance rather than
  *    writing an empty string.
  *
- * The form has two halves: the connection values the host half reads, and three
+ * The form has two halves: the connection values the host half reads, and the
  * **interface switches** (`showSidebarEntry` / `showCommitStatus` /
- * `showRecallPanel`). The switches are client-only preferences — the host serves
- * them so this form can persist them, and the browser half applies them live
- * through `ctx.configForms`, so saving one immediately mounts or unmounts the
- * surface without a reload.
+ * `showRecallPanel` / `showRecallExplain` / `showHealthPanel` / `showPreview` /
+ * `showExplore` / `enableCommands`). The switches are preferences — the host
+ * serves them so this form can persist them, and the browser half applies them
+ * live through `ctx.configForms`, so saving one immediately mounts or unmounts
+ * the surface without a reload. The one exception is `enableCommands`: its
+ * effect is host-side (the `/viking` command registry), so the host half watches
+ * the same value and registers/unregisters the command.
  */
 import { useCallback, useState } from 'react'
 import type { PluginConfigViewProps } from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
@@ -97,6 +100,21 @@ const FEATURE_TOGGLES: readonly ToggleSpec[] = [
     key: 'showHealthPanel',
     label: 'config.showHealthPanel',
     hint: 'config.showHealthPanelHint',
+  },
+  {
+    key: 'showPreview',
+    label: 'config.showPreview',
+    hint: 'config.showPreviewHint',
+  },
+  {
+    key: 'showExplore',
+    label: 'config.showExplore',
+    hint: 'config.showExploreHint',
+  },
+  {
+    key: 'enableCommands',
+    label: 'config.enableCommands',
+    hint: 'config.enableCommandsHint',
   },
 ]
 

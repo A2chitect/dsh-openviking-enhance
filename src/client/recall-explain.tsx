@@ -26,6 +26,7 @@ import type {
 } from '../shared/protocol.ts'
 import { fetchRecallExplain } from './host-api.ts'
 import { noticeText, t } from './locale.ts'
+import { VikingUriLink } from './viking-uri-link.tsx'
 import { OpenVikingIcon } from './openviking-icon.tsx'
 
 /** Props a `conversation.chat.turnTail` occupant receives, plus our inject face. */
@@ -367,7 +368,7 @@ function ExplainEntry({ entry, open, onToggle }: { entry: RecallExplainEntry; op
       </button>
       {open && (
         <div className="ove-explain-detail">
-          <span className="ove-explain-uri">{entry.uri}</span>
+          <VikingUriLink uri={entry.uri} className="ove-explain-uri" />
           {tags.length > 0 && (
             <span className="ove-explain-tags">
               {tags.map((tag) => (

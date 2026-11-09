@@ -25,6 +25,14 @@ import {
   type RecallPayload,
   type RecallQuerySource,
   type SessionMemoryLog,
+  type ExperienceKind,
+  type ExperiencePayload,
+  type PreviewPayload,
+  type RuleListPayload,
+  type RuleSearchPayload,
+  type SearchPayload,
+  type SearchType,
+  type SkillCatalogue,
 } from '../shared/protocol.ts'
 
 /** Relative base: no leading slash, so `<base href>` keeps working. */
@@ -202,6 +210,102 @@ export function fetchDoctor(
   const suffix = params.toString()
   return readJson<DoctorResponse>(
     `${BASE}/doctor${suffix.length > 0 ? `?${suffix}` : ''}`,
+    options.signal === undefined ? undefined : { signal: options.signal },
+  )
+}
+
+/* ---- v0.4: read-only preview + Explore routes ------------------------- */
+
+/** POST a JSON body to a read-only route. The routes refuse other media types. */
+function postJson<T>(url: string, body: unknown, signal?: AbortSignal): Promise<ApiResult<T>> {
+  return readJson<T>(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+    ...(signal === undefined ? {} : { signal }),
+  })
+}
+
+export interface PreviewResponse {
+  preview: PreviewPayload
+}
+
+/**
+ * One entry's metadata and L0/L1/L2.
+ *
+ * The host reads all three tiers in this one request, so switching tiers in the
+ * panel is free and there is no per-tier loading state to race.
+ */
+export function fetchPreview(uri: string): Promise<ApiResult<PreviewResponse>> {
+  return readJson<PreviewResponse>(`${BASE}/preview?uri=${encodeURIComponent(uri)}`)
+}
+
+export interface SearchResponse {
+  search: SearchPayload
+}
+
+/** One unified search across the server's four buckets (rules included). */
+export function fetchSearch(
+  request: { query: string; searchType?: SearchType; buckets?: readonly string[]; limit?: number },
+  signal?: AbortSignal,
+): Promise<ApiResult<SearchResponse>> {
+  return postJson<SearchResponse>(`${BASE}/search`, request, signal)
+}
+
+export interface RulesSearchResponse {
+  rules: RuleSearchPayload
+}
+
+/**
+ * The read-only rule tester: which active Rules apply to this task context?
+ *
+ * The input is a task description, not a search query — that is the server's
+ * own contract for `rules/search`, and the panel says so where it is typed.
+ */
+export function fetchRulesSearch(
+  taskContext: string,
+  signal?: AbortSignal,
+): Promise<ApiResult<RulesSearchResponse>> {
+  return postJson<RulesSearchResponse>(`${BASE}/rules/search`, { taskContext }, signal)
+}
+
+export interface RulesResponse {
+  list: RuleListPayload
+}
+
+export function fetchRules(signal?: AbortSignal): Promise<ApiResult<RulesResponse>> {
+  return readJson<RulesResponse>(
+    `${BASE}/rules`,
+    signal === undefined ? undefined : { signal },
+  )
+}
+
+export interface SkillsResponse {
+  catalogue: SkillCatalogue
+}
+
+export function fetchSkills(signal?: AbortSignal): Promise<ApiResult<SkillsResponse>> {
+  return readJson<SkillsResponse>(
+    `${BASE}/skills`,
+    signal === undefined ? undefined : { signal },
+  )
+}
+
+export interface ExperienceResponse {
+  experience: ExperiencePayload
+}
+
+/** Experiences first; when one is selected, its trajectories or outcomes. */
+export function fetchExperience(
+  kind: ExperienceKind,
+  experienceUri?: string,
+  options: { limit?: number; signal?: AbortSignal } = {},
+): Promise<ApiResult<ExperienceResponse>> {
+  const params = new URLSearchParams({ kind })
+  if (experienceUri !== undefined && experienceUri.length > 0) params.set('experienceUri', experienceUri)
+  if (options.limit !== undefined) params.set('limit', String(options.limit))
+  return readJson<ExperienceResponse>(
+    `${BASE}/experience?${params.toString()}`,
     options.signal === undefined ? undefined : { signal: options.signal },
   )
 }

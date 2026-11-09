@@ -27,12 +27,26 @@ import {
   type PluginNotice,
 } from '../shared/protocol.ts'
 import { describeConnection, resolveConnectionWithOrigins } from './config.ts'
-import { isLoopbackHostname, isTrustedLocalRequest } from './trust-fence.ts'
+import {
+  isJsonObject,
+  isLoopbackHostname,
+  isTrustedLocalRequest,
+  readReadOnlyJsonBody,
+} from './trust-fence.ts'
 import { CommitService, isArchiveUriForSession, type OpenVikingMemoryRuntime } from './commit-service.ts'
 import { OpenVikingApi } from './openviking-api.ts'
 import { RecallService } from './recall-service.ts'
 import { SessionLogService } from './session-log.ts'
 import { DoctorService } from './doctor-service.ts'
+import { readMemoryPluginVersion } from './local-state.ts'
+import { CatalogService, clampExperienceLimit, normalizeExperienceKind } from './catalog-service.ts'
+import { PreviewFailure, PreviewService } from './preview-service.ts'
+import { SearchService } from './search-service.ts'
+import {
+  VikingCommand,
+  vikingCommandDefinition,
+  type VikingCommandDefinition,
+} from './viking-command.ts'
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'openviking-enhance'
@@ -67,12 +81,13 @@ export const Config = z.object({
   /**
    * Interface switch: the Studio entry in the left sidebar.
    *
-   * The three `show*` fields are *client-only* preferences: they exist here so the
+   * The `show*` fields are *client-only* preferences: they exist here so the
    * Plugins page's configuration form can render and persist them (the settings
    * service projects `.volatile()` fields only), and the host half never reads
    * them. The browser half watches them through `ctx.configForms` and mounts or
    * unmounts each surface live, so flipping one takes effect on the next save
-   * without a reload.
+   * without a reload. `enableCommands` is the one switch the host reads (see its
+   * own comment below).
    */
   showSidebarEntry: z.boolean().default(true).volatile(),
   /** Interface switch: the per-session commit status pill under the composer. */
@@ -83,6 +98,19 @@ export const Config = z.object({
   showRecallExplain: z.boolean().default(true).volatile(),
   /** Interface switch: the Memory health tab and the Plugins-page health summary. */
   showHealthPanel: z.boolean().default(true).volatile(),
+  /** Interface switch: the `viking://` preview tab in the right sidebar. */
+  showPreview: z.boolean().default(true).volatile(),
+  /** Interface switch: the Explore tab (search, rules, skills, experience). */
+  showExplore: z.boolean().default(true).volatile(),
+  /**
+   * Host-side switch: register the read-only `/viking` command.
+   *
+   * Unlike the `show*` fields this one is read by the host half (the command
+   * registry is a host service): a change is applied live through the Loader's
+   * `loader/volatile-update` event, so turning it off unregisters the command
+   * without a restart. It is still `.volatile()` so the same form persists it.
+   */
+  enableCommands: z.boolean().default(true).volatile(),
 })
 
 /**
@@ -114,6 +142,9 @@ export interface EnhanceConfigInput {
   showRecallPanel?: ConfigField<boolean>
   showRecallExplain?: ConfigField<boolean>
   showHealthPanel?: ConfigField<boolean>
+  showPreview?: ConfigField<boolean>
+  showExplore?: ConfigField<boolean>
+  enableCommands?: ConfigField<boolean>
 }
 
 /** The value behind a field, whether it is a reference or the value itself. */
@@ -153,7 +184,32 @@ interface HostContext {
   webServer: { register(route: WebRoute): () => void; port: number }
   effect(callback: () => (() => void) | void, label?: string): () => void
   get(key: string): unknown
+  /**
+   * Listen for a Cordis event. Used only for the Loader's
+   * `loader/volatile-update`, so a settings save can toggle the `/viking`
+   * command without a restart. Optional: a bare host without a plugin Loader
+   * simply applies the value it started with.
+   */
+  on?(event: string, listener: () => void): (() => void) | void
+  /**
+   * Cordis's scoped `ctx.inject(deps, callback)`: run the callback once the
+   * named service exists, and dispose what it returns when it goes away.
+   *
+   * This is how the command registry stays OPTIONAL: a composition without
+   * `@deepseek-ai/dsh-commands` still mounts every route and every tab, it just
+   * never gets a command. Waiting for the service is the activation-safe form;
+   * reading `ctx.commands` directly would throw and take the entry down.
+   */
+  inject?(
+    deps: readonly string[],
+    callback: (scope: { get(key: string): unknown }) => (() => void) | void,
+  ): { dispose(): void } | unknown
   logger?: { info?(message: string): void; warn?(message: string, error?: unknown): void }
+}
+
+/** The slice of the command registry this plugin registers into. */
+interface CommandRegistryLike {
+  register(definition: VikingCommandDefinition): () => void
 }
 
 function writeJson(res: ServerResponse, status: number, body: unknown): void {
@@ -289,6 +345,20 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
     tools: listToolNames,
   })
 
+  const preview = new PreviewService({ api, studioUrl: () => `${connection.endpoint}${studioPath}` })
+  const search = new SearchService({ api })
+  const catalog = new CatalogService({ api })
+  const vikingCommand = new VikingCommand({
+    api,
+    connection,
+    commit: service,
+    recall,
+    doctor,
+    preview,
+    dshVersion,
+    memoryPluginVersion: readMemoryPluginVersion,
+  })
+
   const configPayload = async (): Promise<ApiResult<EnhanceConfig>> => {
     const health = await api.health()
     const warnings: PluginNotice[] = []
@@ -322,6 +392,46 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
     if (isTrustedLocalRequest(req)) return true
     writeJson(res, 403, { ok: false, error: 'forbidden' } satisfies ApiResult<never>)
     return false
+  }
+
+  /**
+   * The v0.4 read-only POST guard: same loopback + same-origin fence as every
+   * GET, and the body rules live in `readReadOnlyJsonBody` (JSON content type,
+   * 64 KiB cap). Only the documented read-only routes use this; a future write
+   * route must add its own admission, which is the point.
+   */
+  const guardPost = (req: IncomingMessage, res: ServerResponse): boolean => {
+    if (req.method !== 'POST') {
+      writeJson(res, 405, { ok: false, error: 'method-not-allowed' } satisfies ApiResult<never>)
+      return false
+    }
+    if (isTrustedLocalRequest(req)) return true
+    writeJson(res, 403, { ok: false, error: 'forbidden' } satisfies ApiResult<never>)
+    return false
+  }
+
+  /** Read one guarded POST body, answering the refusal itself. */
+  const readPostBody = async (
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<Record<string, unknown> | null> => {
+    const body = await readReadOnlyJsonBody(req)
+    if (!body.ok) {
+      const status = body.error === 'content-type' ? 415 : body.error === 'too-large' ? 413 : 400
+      writeJson(res, status, { ok: false, error: body.error } satisfies ApiResult<never>)
+      return null
+    }
+    if (!isJsonObject(body.value)) {
+      writeJson(res, 400, { ok: false, error: 'invalid-body' } satisfies ApiResult<never>)
+      return null
+    }
+    return body.value
+  }
+
+  /** A finite, bounded integer query parameter. */
+  const limitParam = (params: URLSearchParams, name: string, fallback: number, max: number): number => {
+    const raw = Number(params.get(name) ?? fallback)
+    return Number.isFinite(raw) ? Math.min(Math.max(Math.trunc(raw), 1), max) : fallback
   }
 
   const routes: WebRoute[] = [
@@ -543,6 +653,125 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
         }
       },
     },
+    /* ---- v0.4 read-only routes ---------------------------------------- */
+    {
+      kind: 'exact',
+      path: `${API_PREFIX}/preview`,
+      handler: async (req, res) => {
+        if (!guard(req, res)) return
+        const uri = (query(req).get('uri') ?? '').trim()
+        if (uri.length === 0) {
+          writeJson(res, 400, { ok: false, error: 'uri is required' } satisfies ApiResult<never>)
+          return
+        }
+        try {
+          // One request returns stat + L0/L1/L2; the panel never fans out.
+          writeJson(res, 200, { ok: true, preview: await preview.preview(uri) })
+        } catch (error) {
+          if (error instanceof PreviewFailure) {
+            // A bad URI is a caller error; "not found"/"unreadable" are answers
+            // the panel renders in place. Neither is a throw.
+            const status = error.code === 'not-a-viking-path' ? 400 : 200
+            writeJson(res, status, {
+              ok: false,
+              error: error.code === 'unreadable' ? error.message : error.code,
+            } satisfies ApiResult<never>)
+            return
+          }
+          writeJson(res, 200, { ok: false, error: message(error) } satisfies ApiResult<never>)
+        }
+      },
+    },
+    {
+      kind: 'exact',
+      path: `${API_PREFIX}/search`,
+      handler: async (req, res) => {
+        if (!guardPost(req, res)) return
+        const body = await readPostBody(req, res)
+        if (body === null) return
+        const text = typeof body.query === 'string' ? body.query : ''
+        if (text.trim().length === 0) {
+          writeJson(res, 400, { ok: false, error: 'query is required' } satisfies ApiResult<never>)
+          return
+        }
+        const buckets = Array.isArray(body.buckets)
+          ? body.buckets.filter((bucket): bucket is string => typeof bucket === 'string')
+          : undefined
+        try {
+          const payload = await search.search({
+            query: text,
+            ...(typeof body.searchType === 'string' ? { searchType: body.searchType } : {}),
+            ...(buckets === undefined ? {} : { buckets }),
+            ...(typeof body.limit === 'number' ? { limit: body.limit } : {}),
+          })
+          writeJson(res, 200, { ok: true, search: payload })
+        } catch (error) {
+          writeJson(res, 200, { ok: false, error: message(error) } satisfies ApiResult<never>)
+        }
+      },
+    },
+    {
+      kind: 'exact',
+      path: `${API_PREFIX}/rules/search`,
+      handler: async (req, res) => {
+        if (!guardPost(req, res)) return
+        const body = await readPostBody(req, res)
+        if (body === null) return
+        const taskContext = typeof body.taskContext === 'string' ? body.taskContext : ''
+        if (taskContext.trim().length === 0) {
+          writeJson(res, 400, { ok: false, error: 'taskContext is required' } satisfies ApiResult<never>)
+          return
+        }
+        try {
+          writeJson(res, 200, { ok: true, rules: await catalog.searchRules(taskContext) })
+        } catch (error) {
+          writeJson(res, 200, { ok: false, error: message(error) } satisfies ApiResult<never>)
+        }
+      },
+    },
+    {
+      kind: 'exact',
+      path: `${API_PREFIX}/rules`,
+      handler: async (req, res) => {
+        if (!guard(req, res)) return
+        try {
+          writeJson(res, 200, { ok: true, list: await catalog.listRules() })
+        } catch (error) {
+          writeJson(res, 200, { ok: false, error: message(error) } satisfies ApiResult<never>)
+        }
+      },
+    },
+    {
+      kind: 'exact',
+      path: `${API_PREFIX}/skills`,
+      handler: async (req, res) => {
+        if (!guard(req, res)) return
+        try {
+          writeJson(res, 200, { ok: true, catalogue: await catalog.listSkills() })
+        } catch (error) {
+          writeJson(res, 200, { ok: false, error: message(error) } satisfies ApiResult<never>)
+        }
+      },
+    },
+    {
+      kind: 'exact',
+      path: `${API_PREFIX}/experience`,
+      handler: async (req, res) => {
+        if (!guard(req, res)) return
+        const params = query(req)
+        const kind = normalizeExperienceKind(params.get('kind') ?? undefined)
+        const experienceUri = (params.get('experienceUri') ?? params.get('uri') ?? '').trim() || undefined
+        const limit = limitParam(params, 'limit', 20, 100)
+        try {
+          writeJson(res, 200, {
+            ok: true,
+            experience: await catalog.experience(kind, experienceUri, limit),
+          })
+        } catch (error) {
+          writeJson(res, 200, { ok: false, error: message(error) } satisfies ApiResult<never>)
+        }
+      },
+    },
   ]
 
   host.effect(() => {
@@ -551,6 +780,96 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
       for (const dispose of disposers.reverse()) dispose()
     }
   }, 'openviking-enhance: http routes')
+
+  /**
+   * F6: the `/viking` command.
+   *
+   * Two guardrails, because a host plugin that fails to activate takes the whole
+   * profile down:
+   *
+   *  1. registration happens inside `ctx.inject(['commands'], …)`, so a
+   *     composition without the command registry mounts everything else and
+   *     simply has no `/viking` — reaching for `ctx.commands` directly would
+   *     throw at activation;
+   *  2. the `enableCommands` switch is applied in both directions: off at
+   *     startup never registers, and a settings save is heard through the
+   *     Loader's `loader/volatile-update` event to register/unregister live.
+   *
+   * Any failure here is logged and contained: commands are a convenience, and
+   * losing them must not lose the read-only UI.
+   */
+  const commandDefinition = vikingCommandDefinition(vikingCommand)
+  let commandRegistry: CommandRegistryLike | null = null
+  let unregisterCommand: (() => void) | null = null
+  const commandsEnabled = (): boolean => configField(config.enableCommands) !== false
+  const syncCommand = (): void => {
+    if (!commandsEnabled()) {
+      if (unregisterCommand !== null) {
+        const dispose = unregisterCommand
+        unregisterCommand = null
+        try {
+          dispose()
+        } catch (error) {
+          logger?.warn?.('[openviking-enhance] failed to unregister /viking', error)
+        }
+      }
+      return
+    }
+    if (commandRegistry === null || unregisterCommand !== null) return
+    try {
+      unregisterCommand = commandRegistry.register(commandDefinition)
+      logger?.info?.('[openviking-enhance] registered /viking (read-only)')
+    } catch (error) {
+      logger?.warn?.('[openviking-enhance] failed to register /viking', error)
+      unregisterCommand = null
+    }
+  }
+  try {
+    host.inject?.(['commands'], (scope) => {
+      const registry = scope.get('commands') as Partial<CommandRegistryLike> | undefined
+      if (registry === undefined || typeof registry.register !== 'function') return
+      commandRegistry = registry as CommandRegistryLike
+      syncCommand()
+      return () => {
+        // The service is going away (or being replaced): drop our definition
+        // through its own disposer rather than leaving a dead handler behind.
+        commandRegistry = null
+        if (unregisterCommand !== null) {
+          const dispose = unregisterCommand
+          unregisterCommand = null
+          try {
+            dispose()
+          } catch {
+            // A registry being torn down may already have released it.
+          }
+        }
+      }
+    })
+  } catch (error) {
+    logger?.warn?.('[openviking-enhance] command service unavailable', error)
+  }
+
+  let stopVolatileWatch: (() => void) | null = null
+  try {
+    const stop = host.on?.('loader/volatile-update', syncCommand)
+    if (typeof stop === 'function') stopVolatileWatch = stop
+  } catch (error) {
+    logger?.warn?.('[openviking-enhance] cannot watch volatile config updates', error)
+  }
+
+  host.effect(() => () => {
+    stopVolatileWatch?.()
+    stopVolatileWatch = null
+    if (unregisterCommand !== null) {
+      const dispose = unregisterCommand
+      unregisterCommand = null
+      try {
+        dispose()
+      } catch {
+        // Unloading: best effort.
+      }
+    }
+  }, 'openviking-enhance: /viking command')
 }
 
 function normalizeStudioPath(path: string | undefined): string {

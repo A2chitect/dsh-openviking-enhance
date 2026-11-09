@@ -17,16 +17,17 @@
  *   plugins.row.config         keyed, root     key = package#row      → settings form
  *   plugins.detail.section     list, root      subject               → health summary
  *
- * Plus two tab types in the right Sidebar (recall and Memory health), registered
- * in two stages because that is the only contract the framework offers:
+ * Plus four tab types in the right Sidebar (recall, Memory health, the v0.4
+ * `viking://` preview and Explore), registered in two stages because that is the
+ * only contract the framework offers:
  *   ctx.sidebarRightTabs.register({id, kind, title, guide})   stage one: a page type
  *   sidebar.right.pane.tab     keyed, session, key = that id → stage two: the body
  *
- * The five surfaces are switchable from the plugin's own settings form
+ * The client-mounted surfaces are switchable from the plugin's own settings form
  * (`showSidebarEntry` / `showCommitStatus` / `showRecallPanel` /
- * `showRecallExplain` / `showHealthPanel`). `feature-toggles.ts`
- * reads the live values from `ctx.configForms`; this file owns the mount/unmount
- * pairs and the order they run in:
+ * `showRecallExplain` / `showHealthPanel` / `showPreview` / `showExplore`).
+ * `feature-toggles.ts` reads the live values from `ctx.configForms`; this file
+ * owns the mount/unmount pairs and the order they run in:
  *
  *  - mount: main panel before the sidebar row that opens it, because a row whose
  *    `main` key is not registered throws when selected;
@@ -50,10 +51,17 @@ import { StudioPanel } from './studio-panel.tsx'
 import { CommitStatusPill } from './commit-status.tsx'
 // Exported for the server-rendered component tests; the shell only reads apply/inject.
 export { DiffEntry, DiffView } from './commit-status.tsx'
+export { PreviewPanel, previewUriParam } from './preview-panel.tsx'
+export { ExplorePanel } from './explore-panel.tsx'
+export { VikingUriLink } from './viking-uri-link.tsx'
+export { getPreviewTarget, openPreview, resetPreviewStore, setPreviewTarget } from './preview-store.ts'
 import { RecallPanel } from './recall-panel.tsx'
 import { RecallExplainTail } from './recall-explain.tsx'
 import { HealthPanel } from './health-panel.tsx'
 import { PluginHealthSection } from './plugin-health.tsx'
+import { PreviewPanel } from './preview-panel.tsx'
+import { ExplorePanel } from './explore-panel.tsx'
+import { setPreviewOpener } from './preview-store.ts'
 import { ConfigPage } from './config-page.tsx'
 import { attachLocale, t } from './locale.ts'
 import {
@@ -61,6 +69,7 @@ import {
   FEATURE_ORDER,
   watchFeatureFlags,
   type FeatureFlags,
+  type MountedFeature,
 } from './feature-toggles.ts'
 
 /** Client services this half waits for before `apply` runs. */
@@ -99,6 +108,18 @@ const RECALL_TAB_KIND = 'openviking-recall'
 /** The session-log/Doctor page: a second, independent right-Sidebar tab. */
 const HEALTH_TAB_ID = 'dsh-openviking-enhance:health'
 const HEALTH_TAB_KIND = 'openviking-health'
+
+/**
+ * The v0.4 preview page. Every `viking://` link in the plugin records its target
+ * in `preview-store.ts` and reveals this page through the sidebar service; a
+ * later link re-targets the already-open page instead of opening a second one.
+ */
+const PREVIEW_TAB_ID = 'dsh-openviking-enhance:preview'
+const PREVIEW_TAB_KIND = 'openviking-preview'
+
+/** The v0.4 Explore page: search, rules, skills and Experience in one tab. */
+const EXPLORE_TAB_ID = 'dsh-openviking-enhance:explore'
+const EXPLORE_TAB_KIND = 'openviking-explore'
 
 /**
  * The plugin's own row on the Plugins page.
@@ -180,7 +201,7 @@ function tryClosePage(
 export function apply(context: ClientContext): void {
   const disposers: Array<() => void> = []
   /** Live mounts, keyed by the switch that owns them. */
-  const mounted = new Map<keyof FeatureFlags, () => void>()
+  const mounted = new Map<MountedFeature, () => void>()
 
   // The app's language, for every string this half renders. Read live by `t()`,
   // so switching the app's locale does not need a reload.
@@ -214,7 +235,26 @@ export function apply(context: ClientContext): void {
   try {
     const watch = context.inject(['sidebarRight'], (scope) => {
       sidebarRight = scope.get('sidebarRight') as SidebarRightService | undefined
+      // Every `viking://` link routes through `openPreview`, which records the
+      // target and calls this opener. The target travels BOTH ways on purpose:
+      // `params` is the framework-blessed path (re-opening focuses the existing
+      // page and updates its navigation), and the store stays as the fallback for
+      // harness generations whose `openTab` ignores params. A sidebar without
+      // `openTab` at all keeps the store working (the guide can still open the
+      // page).
+      const disposeOpener = setPreviewOpener(
+        sidebarRight?.openTab === undefined
+          ? null
+          : (uri: string) => {
+              try {
+                sidebarRight?.openTab?.(PREVIEW_TAB_KIND, { params: { uri } })
+              } catch (error) {
+                report(context, error)
+              }
+            },
+      )
       return () => {
+        disposeOpener()
         sidebarRight = undefined
       }
     })
@@ -513,18 +553,112 @@ export function apply(context: ClientContext): void {
     return () => seat.dispose()
   }
 
-  const mounts: Record<keyof FeatureFlags, () => () => void> = {
+  /**
+   * The v0.4 `viking://` preview page.
+   *
+   * Registered exactly like the recall tab: the type on the SERVICE (the page is
+   * reachable only through the guide or through `openPreview`), then the body
+   * keyed by the type id. The body is session-scoped by the slot contract; the
+   * entry it shows comes from `preview-store`, not from the session.
+   */
+  function mountPreviewPanel(): () => void {
+    const seat = context.inject(['sidebarRightTabs'], (scope) => {
+      const tabs = scope.get('sidebarRightTabs') as SidebarRightTabRegistry | undefined
+      if (tabs === undefined) return
+      const disposeType = tabs.register({
+        id: PREVIEW_TAB_ID,
+        kind: PREVIEW_TAB_KIND,
+        title: () => t('preview.tabTitle'),
+        guide: [
+          {
+            id: 'preview',
+            order: 42,
+            title: () => t('preview.tabTitle'),
+            description: () => t('preview.tabDescription'),
+          },
+        ],
+      })
+      try {
+        const disposeBody = slots.inject('sidebar.right.pane.tab', () =>
+          slots.register(
+            {
+              name: 'sidebar.right.pane.tab',
+              key: PREVIEW_TAB_ID,
+              inject: (sessionId: string) => ({ sessionId }),
+            },
+            PreviewPanel,
+          ),
+        )
+        return () => {
+          // Body before type, same as every other page type here.
+          disposeBody()
+          disposeType()
+        }
+      } catch (error) {
+        disposeType()
+        throw error
+      }
+    })
+    return () => seat.dispose()
+  }
+
+  /** The v0.4 Explore page (search, rules, skills, Experience). */
+  function mountExplorePanel(): () => void {
+    const seat = context.inject(['sidebarRightTabs'], (scope) => {
+      const tabs = scope.get('sidebarRightTabs') as SidebarRightTabRegistry | undefined
+      if (tabs === undefined) return
+      const disposeType = tabs.register({
+        id: EXPLORE_TAB_ID,
+        kind: EXPLORE_TAB_KIND,
+        title: () => t('explore.tabTitle'),
+        guide: [
+          {
+            id: 'explore',
+            order: 43,
+            title: () => t('explore.tabTitle'),
+            description: () => t('explore.tabDescription'),
+          },
+        ],
+      })
+      try {
+        const disposeBody = slots.inject('sidebar.right.pane.tab', () =>
+          slots.register(
+            {
+              name: 'sidebar.right.pane.tab',
+              key: EXPLORE_TAB_ID,
+              inject: (sessionId: string) => ({ sessionId }),
+            },
+            ExplorePanel,
+          ),
+        )
+        return () => {
+          disposeBody()
+          disposeType()
+        }
+      } catch (error) {
+        disposeType()
+        throw error
+      }
+    })
+    return () => seat.dispose()
+  }
+
+  const mounts: Record<MountedFeature, () => () => void> = {
     sidebarEntry: mountSidebarEntry,
     commitStatus: mountCommitStatus,
     recallPanel: mountRecallPanel,
     recallExplain: mountRecallExplain,
     healthPanel: mountHealthPanel,
+    previewPanel: mountPreviewPanel,
+    explorePanel: mountExplorePanel,
   }
 
   /** The right-Sidebar page a feature owns, when it owns one. */
-  function pageKindOf(feature: keyof FeatureFlags): string | null {
+  function pageKindOf(feature: MountedFeature): string | null {
     if (feature === 'recallPanel') return RECALL_TAB_KIND
     if (feature === 'healthPanel') return HEALTH_TAB_KIND
+    if (feature === 'previewPanel') return PREVIEW_TAB_KIND
+    if (feature === 'explorePanel') return EXPLORE_TAB_KIND
     return null
   }
 
@@ -549,7 +683,7 @@ export function apply(context: ClientContext): void {
   }
 
   /** Mount or unmount one surface; a mount failure is logged, never thrown. */
-  function applyFeature(feature: keyof FeatureFlags, on: boolean): void {
+  function applyFeature(feature: MountedFeature, on: boolean): void {
     const live = mounted.get(feature)
     const kind = pageKindOf(feature)
     if (on && live === undefined) {

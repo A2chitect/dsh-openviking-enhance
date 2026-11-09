@@ -1,5 +1,5 @@
 /**
- * The plugin's three interface switches, read live from the settings form.
+ * The plugin's interface switches, read live from the settings form.
  *
  * The values live in the host `Config` as `.volatile()` booleans and are edited
  * on the Plugins page; this module is how the browser half hears about an edit.
@@ -17,6 +17,16 @@
  *  - **Only a `ready` snapshot is an answer.** A snapshot that has not arrived
  *    yet is not permission to hide a surface: the initial mount happens with
  *    the defaults, and a later answer with `false` disposes the surface then.
+ *
+ * ## v0.4 adds three fields
+ *
+ * `showPreview` and `showExplore` mount the two new right-Sidebar tabs and are
+ * ordinary switches. `enableCommands` is different in one way: the `/viking`
+ * command is registered by the HOST half, so the browser half cannot mount or
+ * unmount it. The field is carried here (and rendered by the settings form) so
+ * the switch set stays in one table and a save emits once; the host half watches
+ * the same value and registers/unregisters its command. It is deliberately not
+ * in `FEATURE_ORDER`: the browser half owns no mount for it.
  */
 import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { ClientContext } from './slot-service.ts'
@@ -33,7 +43,16 @@ export interface FeatureFlags {
   readonly recallExplain: boolean
   /** The Memory health tab and the Plugins-page health summary. */
   readonly healthPanel: boolean
+  /** The v0.4 `viking://` preview tab. */
+  readonly previewPanel: boolean
+  /** The v0.4 Explore tab (search, rules, skills, experience). */
+  readonly explorePanel: boolean
+  /** Host-side: the `/viking` command. Carried here; no browser mount owns it. */
+  readonly commands: boolean
 }
+
+/** The client-mounted surfaces: every flag except the host-owned command one. */
+export type MountedFeature = Exclude<keyof FeatureFlags, 'commands'>
 
 /** The state before any settings answer, and the fallback when there is none. */
 export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
@@ -42,6 +61,9 @@ export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   recallPanel: true,
   recallExplain: true,
   healthPanel: true,
+  previewPanel: true,
+  explorePanel: true,
+  commands: true,
 }
 
 /**
@@ -57,15 +79,20 @@ export const FEATURE_CONFIG_FIELDS = {
   recallPanel: 'showRecallPanel',
   recallExplain: 'showRecallExplain',
   healthPanel: 'showHealthPanel',
+  previewPanel: 'showPreview',
+  explorePanel: 'showExplore',
+  commands: 'enableCommands',
 } as const satisfies Record<keyof FeatureFlags, string>
 
 /** The surfaces in the order they are mounted (and reverse order for disposal). */
-export const FEATURE_ORDER: readonly (keyof FeatureFlags)[] = [
+export const FEATURE_ORDER: readonly MountedFeature[] = [
   'sidebarEntry',
   'commitStatus',
   'recallPanel',
   'recallExplain',
   'healthPanel',
+  'previewPanel',
+  'explorePanel',
 ]
 
 /** One boolean, or the default when the field is missing or not a boolean. */
@@ -75,7 +102,7 @@ function flagOf(config: Record<string, unknown>, field: string): boolean {
 }
 
 /**
- * Read the three switches out of a settings value.
+ * Read the switches out of a settings value.
  *
  * `undefined` (no value yet), a missing field, or a non-boolean all mean "on":
  * hiding a surface is the exceptional state, and it must come from a real
@@ -90,6 +117,9 @@ export function featureFlagsFrom(value: unknown): FeatureFlags {
     recallPanel: flagOf(config, FEATURE_CONFIG_FIELDS.recallPanel),
     recallExplain: flagOf(config, FEATURE_CONFIG_FIELDS.recallExplain),
     healthPanel: flagOf(config, FEATURE_CONFIG_FIELDS.healthPanel),
+    previewPanel: flagOf(config, FEATURE_CONFIG_FIELDS.previewPanel),
+    explorePanel: flagOf(config, FEATURE_CONFIG_FIELDS.explorePanel),
+    commands: flagOf(config, FEATURE_CONFIG_FIELDS.commands),
   }
 }
 
@@ -100,7 +130,10 @@ export function sameFeatureFlags(left: FeatureFlags, right: FeatureFlags): boole
     left.commitStatus === right.commitStatus &&
     left.recallPanel === right.recallPanel &&
     left.recallExplain === right.recallExplain &&
-    left.healthPanel === right.healthPanel
+    left.healthPanel === right.healthPanel &&
+    left.previewPanel === right.previewPanel &&
+    left.explorePanel === right.explorePanel &&
+    left.commands === right.commands
   )
 }
 
@@ -110,15 +143,15 @@ interface ConfigFormsService {
 }
 
 /**
- * Observe the three switches for as long as the plugin lives.
+ * Observe the switches for as long as the plugin lives.
  *
  * `namespace` is the Loader row id (`openviking-enhance`), which is what DSH
  * serves a row's form under (`plugins.row.config` is keyed by
  * `<package>#<row id>`, and the page hands the row id to `configForms.get`).
  *
  * The callback runs once per distinct state: immediately when a ready snapshot
- * is already held, then after every edit that changes one of the three values.
- * The returned disposer removes the listener and the optional service injection.
+ * is already held, then after every edit that changes a value. The returned
+ * disposer removes the listener and the optional service injection.
  */
 export function watchFeatureFlags(
   context: ClientContext,

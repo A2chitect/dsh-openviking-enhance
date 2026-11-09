@@ -32,7 +32,24 @@ import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 // Pulls in the right Sidebar's own augmentation: the two `sidebar.right.pane.tab*`
 // seats used by the recall tab. `SidebarRightTabDefinition` is the registry's real
 // definition type, so a tab type is checked against the framework, not our guess.
-import type { SidebarRightTabDefinition } from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
+import type {
+  SidebarRightTabDefinition,
+  SidebarRightTabParamsFor,
+} from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
+
+/**
+ * The v0.4 preview takes its target as navigation parameters.
+ *
+ * `openTab('openviking-preview', {params:{uri}})` is the framework's own way to
+ * hand a page a target: it focuses an already-open page, updates
+ * `navigation.params`, increments `navigation.revision`, and survives the page
+ * being restored. Declaring the parameters here is the supported merge.
+ */
+declare module '@deepseek-ai/dsh-client-ui-sidebar-right/client' {
+  interface SidebarRightTabParamsMap {
+    'openviking-preview': { uri?: string }
+  }
+}
 // Pulls in the Chat target's augmentation: `conversation.chat.turnTail` and the
 // `useChat` standard hook the recall-explanation tail reads the turn's prompt
 // through. (The conversation package declares the timeline; the chat package
@@ -140,7 +157,11 @@ export interface SidebarRightTabRegistry {
 
 /** `ctx.sidebarRight`, narrowed to the way in: opening a page by kind. */
 export interface SidebarRightNavigation {
-  openTab(kind: string, options?: { params?: unknown }): void
+  /** Open or re-navigate a page; the params are typed by the kind's declaration. */
+  openTab<K extends string>(
+    kind: K,
+    options?: { params?: SidebarRightTabParamsFor<K> },
+  ): void
 }
 
 /**
@@ -189,8 +210,12 @@ export interface SidebarRightService {
   active?(): SidebarRightTabRecord | undefined
   /** Close one tab of the on-screen session. */
   close?(tabId: string): void
-  /** Open a tab by registered kind, so the explain card can send readers there. */
-  openTab?(kind: string, options?: { params?: unknown }): void
+  /**
+   * Open a tab by registered kind, so the explain card and the URI links can
+   * send readers there. The params are typed by the kind's declaration; older
+   * harness generations that ignore them still receive the store fallback.
+   */
+  openTab?<K extends string>(kind: K, options?: { params?: SidebarRightTabParamsFor<K> }): void
   /** The mounted-Session observable; a change means a surface came back. */
   readonly mounted?: SidebarRightMounted
 }
