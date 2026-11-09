@@ -17,6 +17,7 @@
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import type { ConnectionFieldOrigin, ConnectionSource } from '../shared/protocol.ts'
 
 export interface OvConnection {
   /** Base URL without a trailing slash. */
@@ -24,6 +25,12 @@ export interface OvConnection {
   apiKey: string
   account: string
   user: string
+}
+
+/** The connection plus a secret-free record of where each field came from. */
+export interface ConnectionResolution {
+  connection: OvConnection
+  origins: ConnectionFieldOrigin[]
 }
 
 export interface ConnectionOverrides {
@@ -37,7 +44,8 @@ const DEFAULT_ENDPOINT = 'http://127.0.0.1:1933'
 const DEFAULT_ACCOUNT = 'default'
 const DEFAULT_USER = 'default'
 
-function ovHome(): string {
+/** The OpenViking home the CLI and the memory plugin use. */
+export function openVikingHome(): string {
   return process.env.OPENVIKING_HOME?.trim() || join(homedir(), '.openviking')
 }
 
@@ -53,13 +61,6 @@ function readJsonFile(path: string): Record<string, unknown> {
 
 function str(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
-}
-
-function firstNonEmpty(...values: (string | undefined)[]): string {
-  for (const value of values) {
-    if (value && value.length > 0) return value
-  }
-  return ''
 }
 
 /** Normalize to `scheme://host:port` with no trailing slash. */
@@ -78,40 +79,88 @@ export function resolveConnection(
   overrides: ConnectionOverrides = {},
   env: NodeJS.ProcessEnv = process.env,
 ): OvConnection {
-  const cli = readJsonFile(join(ovHome(), 'ovcli.conf'))
-  const cliLocal = readJsonFile(join(ovHome(), 'ovcli.conf.local'))
+  return resolveConnectionWithOrigins(overrides, env).connection
+}
 
-  const endpoint = normalizeEndpoint(
-    firstNonEmpty(
-      overrides.endpoint,
-      str(env.OPENVIKING_URL),
-      str(env.OPENVIKING_BASE_URL),
-      str(cli.url),
-      DEFAULT_ENDPOINT,
-    ),
+/** One resolved field, plus the layer that supplied it. */
+function pick(
+  candidates: Array<{ value: string; source: ConnectionSource; detail: string | null }>,
+  fallback: { value: string; source: ConnectionSource; detail: string | null },
+): { value: string; source: ConnectionSource; detail: string | null } {
+  for (const candidate of candidates) {
+    if (candidate.value.length > 0) return candidate
+  }
+  return fallback
+}
+
+/**
+ * Resolve the connection and record the provenance of every field.
+ *
+ * The Doctor needs to answer "why is it pointed there?"; the same precedence
+ * walk therefore also reports which layer won each field. Values themselves are
+ * never echoed for `apiKey` — only whether one is configured and from where.
+ */
+export function resolveConnectionWithOrigins(
+  overrides: ConnectionOverrides = {},
+  env: NodeJS.ProcessEnv = process.env,
+): ConnectionResolution {
+  const home = env.OPENVIKING_HOME?.trim() || openVikingHome()
+  const cli = readJsonFile(join(home, 'ovcli.conf'))
+  const cliLocal = readJsonFile(join(home, 'ovcli.conf.local'))
+
+  const endpoint = pick(
+    [
+      { value: overrides.endpoint ?? '', source: 'override', detail: 'plugin config' },
+      { value: str(env.OPENVIKING_URL), source: 'env', detail: 'OPENVIKING_URL' },
+      { value: str(env.OPENVIKING_BASE_URL), source: 'env', detail: 'OPENVIKING_BASE_URL' },
+      { value: str(cli.url), source: 'ovcli', detail: 'ovcli.conf' },
+    ],
+    { value: DEFAULT_ENDPOINT, source: 'default', detail: null },
   )
-  const apiKey = firstNonEmpty(
-    overrides.apiKey,
-    str(env.OPENVIKING_BEARER_TOKEN),
-    str(env.OPENVIKING_API_KEY),
-    str(cli.api_key),
+  const apiKey = pick(
+    [
+      { value: overrides.apiKey ?? '', source: 'override', detail: 'plugin config' },
+      { value: str(env.OPENVIKING_BEARER_TOKEN), source: 'env', detail: 'OPENVIKING_BEARER_TOKEN' },
+      { value: str(env.OPENVIKING_API_KEY), source: 'env', detail: 'OPENVIKING_API_KEY' },
+      { value: str(cli.api_key), source: 'ovcli', detail: 'ovcli.conf' },
+    ],
+    { value: '', source: 'none', detail: null },
   )
-  const account = firstNonEmpty(
-    overrides.account,
-    str(env.OPENVIKING_ACCOUNT),
-    str(cliLocal.account),
-    str(cli.account),
-    DEFAULT_ACCOUNT,
+  const account = pick(
+    [
+      { value: overrides.account ?? '', source: 'override', detail: 'plugin config' },
+      { value: str(env.OPENVIKING_ACCOUNT), source: 'env', detail: 'OPENVIKING_ACCOUNT' },
+      { value: str(cliLocal.account), source: 'ovcli.local', detail: 'ovcli.conf.local' },
+      { value: str(cli.account), source: 'ovcli', detail: 'ovcli.conf' },
+    ],
+    { value: DEFAULT_ACCOUNT, source: 'default', detail: null },
   )
-  const user = firstNonEmpty(
-    overrides.user,
-    str(env.OPENVIKING_USER),
-    str(cliLocal.user),
-    str(cli.user),
-    DEFAULT_USER,
+  const user = pick(
+    [
+      { value: overrides.user ?? '', source: 'override', detail: 'plugin config' },
+      { value: str(env.OPENVIKING_USER), source: 'env', detail: 'OPENVIKING_USER' },
+      { value: str(cliLocal.user), source: 'ovcli.local', detail: 'ovcli.conf.local' },
+      { value: str(cli.user), source: 'ovcli', detail: 'ovcli.conf' },
+    ],
+    { value: DEFAULT_USER, source: 'default', detail: null },
   )
 
-  return { endpoint, apiKey, account, user }
+  return {
+    connection: {
+      endpoint: normalizeEndpoint(endpoint.value),
+      apiKey: apiKey.value,
+      account: account.value,
+      user: user.value,
+    },
+    origins: [
+      { field: 'endpoint', source: endpoint.source, detail: endpoint.detail, configured: endpoint.value.length > 0 },
+      // The value of an API key never leaves this module; the origin record says
+      // only where it came from.
+      { field: 'apiKey', source: apiKey.source, detail: apiKey.detail, configured: apiKey.value.length > 0 },
+      { field: 'account', source: account.source, detail: account.detail, configured: account.value.length > 0 },
+      { field: 'user', source: user.source, detail: user.detail, configured: user.value.length > 0 },
+    ],
+  }
 }
 
 /** Diagnostic view: everything except the key. */

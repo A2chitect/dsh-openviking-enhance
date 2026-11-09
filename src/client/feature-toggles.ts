@@ -29,6 +29,10 @@ export interface FeatureFlags {
   readonly commitStatus: boolean
   /** The Memory recall tab in the right sidebar. */
   readonly recallPanel: boolean
+  /** The per-turn memory-sources tail in the conversation. */
+  readonly recallExplain: boolean
+  /** The Memory health tab and the Plugins-page health summary. */
+  readonly healthPanel: boolean
 }
 
 /** The state before any settings answer, and the fallback when there is none. */
@@ -36,6 +40,8 @@ export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   sidebarEntry: true,
   commitStatus: true,
   recallPanel: true,
+  recallExplain: true,
+  healthPanel: true,
 }
 
 /**
@@ -49,6 +55,8 @@ export const FEATURE_CONFIG_FIELDS = {
   sidebarEntry: 'showSidebarEntry',
   commitStatus: 'showCommitStatus',
   recallPanel: 'showRecallPanel',
+  recallExplain: 'showRecallExplain',
+  healthPanel: 'showHealthPanel',
 } as const satisfies Record<keyof FeatureFlags, string>
 
 /** The surfaces in the order they are mounted (and reverse order for disposal). */
@@ -56,6 +64,8 @@ export const FEATURE_ORDER: readonly (keyof FeatureFlags)[] = [
   'sidebarEntry',
   'commitStatus',
   'recallPanel',
+  'recallExplain',
+  'healthPanel',
 ]
 
 /** One boolean, or the default when the field is missing or not a boolean. */
@@ -78,6 +88,8 @@ export function featureFlagsFrom(value: unknown): FeatureFlags {
     sidebarEntry: flagOf(config, FEATURE_CONFIG_FIELDS.sidebarEntry),
     commitStatus: flagOf(config, FEATURE_CONFIG_FIELDS.commitStatus),
     recallPanel: flagOf(config, FEATURE_CONFIG_FIELDS.recallPanel),
+    recallExplain: flagOf(config, FEATURE_CONFIG_FIELDS.recallExplain),
+    healthPanel: flagOf(config, FEATURE_CONFIG_FIELDS.healthPanel),
   }
 }
 
@@ -86,7 +98,9 @@ export function sameFeatureFlags(left: FeatureFlags, right: FeatureFlags): boole
   return (
     left.sidebarEntry === right.sidebarEntry &&
     left.commitStatus === right.commitStatus &&
-    left.recallPanel === right.recallPanel
+    left.recallPanel === right.recallPanel &&
+    left.recallExplain === right.recallExplain &&
+    left.healthPanel === right.healthPanel
   )
 }
 

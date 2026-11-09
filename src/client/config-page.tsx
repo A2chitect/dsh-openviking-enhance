@@ -88,6 +88,16 @@ const FEATURE_TOGGLES: readonly ToggleSpec[] = [
     label: 'config.showRecallPanel',
     hint: 'config.showRecallPanelHint',
   },
+  {
+    key: 'showRecallExplain',
+    label: 'config.showRecallExplain',
+    hint: 'config.showRecallExplainHint',
+  },
+  {
+    key: 'showHealthPanel',
+    label: 'config.showHealthPanel',
+    hint: 'config.showHealthPanelHint',
+  },
 ]
 
 /** Every field `configOps` has to understand, text and switches alike. */

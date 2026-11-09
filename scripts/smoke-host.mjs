@@ -129,6 +129,9 @@ async function checkDegraded(base) {
     ['status', `${prefix}/status?sessionId=probe`],
     ['commits', `${prefix}/commits?sessionId=probe`],
     ['recall', `${prefix}/recall?sessionId=probe`],
+    ['explain', `${prefix}/recall/explain?sessionId=probe&query=probe`],
+    ['log', `${prefix}/session-log?sessionId=probe`],
+    ['doctor', `${prefix}/doctor?sessionId=probe`],
     ['diff', `${prefix}/diff?sessionId=probe&archive=viking://x/history/archive_001`],
     ['probe', `${prefix}/probe?endpoint=${encodeURIComponent('http://127.0.0.1:9')}`],
     ['content', `${prefix}/recall/content?uri=${encodeURIComponent('viking://user/default/memories/x.md')}`],
@@ -253,6 +256,103 @@ async function report(base, sessionId) {
         )
       }
     }
+  }
+
+  // The v0.3 explanation: the same context request the memory plugin makes,
+  // with the server's own accounting.
+  const explain = await get(
+    `${base}/api/openviking-enhance/recall/explain?sessionId=${encodeURIComponent(sessionId)}` +
+      `&query=${encodeURIComponent('what is this project about')}&source=turn`,
+  )
+  if (explain?.ok !== true) {
+    console.log(`[smoke] FAIL explain     ${explain?.error ?? 'no answer'}`)
+    process.exitCode = 1
+  } else {
+    const explanation = explain.explanation
+    const stats = explanation.stats
+    console.log(
+      `[smoke] explain     ${explanation.mode} · ${explanation.entries.length} entries · ` +
+        `${stats ? `${stats.usedTokens ?? '?'}/${stats.maxTokens ?? '?'} tokens · deduped ${stats.deduped ?? '?'}` : 'no stats'} · ` +
+        `${explanation.latencyMs} ms`,
+    )
+    const explainOk =
+      explanation.replay === true &&
+      explanation.query.source === 'turn' &&
+      Array.isArray(explanation.entries) &&
+      (explanation.mode === 'context' ? stats !== null : stats === null)
+    console.log(`[smoke] explain     ${explainOk ? 'ok  ' : 'FAIL'} replay/query/mode/entries shape`)
+    if (!explainOk) process.exitCode = 1
+    if (explanation.mode === 'context') {
+      const budgetOk = stats.maxTokens !== null && stats.returned !== null
+      console.log(`[smoke] explain     ${budgetOk ? 'ok  ' : 'FAIL'} context accounting present`)
+      if (!budgetOk) process.exitCode = 1
+    }
+  }
+
+  // The session log: one state out of the documented set, plus the local queue
+  // view that the Dashboard cannot get from the server alone.
+  const logAnswer = await get(
+    `${base}/api/openviking-enhance/session-log?sessionId=${encodeURIComponent(sessionId)}`,
+  )
+  if (logAnswer?.ok !== true) {
+    console.log(`[smoke] FAIL log         ${logAnswer?.error ?? 'no answer'}`)
+    process.exitCode = 1
+  } else {
+    const log = logAnswer.log
+    const states = ['no-messages', 'not-committed', 'extracting', 'failed', 'queued', 'committed', 'unknown']
+    const logOk =
+      states.includes(log.state) &&
+      typeof log.pending?.available === 'boolean' &&
+      Array.isArray(log.events) &&
+      Array.isArray(log.tasks)
+    console.log(
+      `[smoke] log         ${logOk ? 'ok  ' : 'FAIL'} state=${log.state} tasks=${log.tasks.length} ` +
+        `events=${log.events.length} queue=${log.pending.total}`,
+    )
+    if (!logOk) process.exitCode = 1
+  }
+
+  // The Doctor: connection, plugin, capabilities and checks. The secret must
+  // never appear in the payload.
+  const doctorAnswer = await get(
+    `${base}/api/openviking-enhance/doctor?sessionId=${encodeURIComponent(sessionId)}&probe=1`,
+  )
+  if (doctorAnswer?.ok !== true) {
+    console.log(`[smoke] FAIL doctor      ${doctorAnswer?.error ?? 'no answer'}`)
+    process.exitCode = 1
+  } else {
+    const report = doctorAnswer.report
+    const doctorOk =
+      typeof report.endpoint === 'string' &&
+      typeof report.health?.healthy === 'boolean' &&
+      Array.isArray(report.checks) &&
+      report.checks.length >= 10 &&
+      ['available', 'unavailable', 'legacy', 'unknown', 'skipped'].includes(report.capabilities?.contextFace?.state)
+    console.log(
+      `[smoke] doctor      ${doctorOk ? 'ok  ' : 'FAIL'} ${report.checks.filter((c) => c.status === 'ok').length} ok / ` +
+        `${report.checks.filter((c) => c.status === 'warn').length} warn · ` +
+        `context=${report.capabilities?.contextFace?.state} rules=${report.capabilities?.ruleSearch?.state}`,
+    )
+    if (!doctorOk) process.exitCode = 1
+    const apiKeyOrigin = (report.connection?.origins ?? []).find((origin) => origin.field === 'apiKey')
+    const leaked =
+      JSON.stringify(report).includes('"apiKey":') ||
+      JSON.stringify(report).includes('"api_key"') ||
+      JSON.stringify(report).includes('Authorization:')
+    // Read the key from the same resolved config the host under test received,
+    // not from a second resolution path.
+    const configuredKey = resolved.apiKey?.get?.() ?? ''
+    // A one-character key (or the dev placeholder) occurs in unrelated strings;
+    // only a key long enough to be meaningful makes the exact-value assertion
+    // evidence rather than noise.
+    const exactCheckable = configuredKey.length >= 8
+    const actualLeak = exactCheckable && JSON.stringify(doctorAnswer).includes(configuredKey)
+    const originOk = apiKeyOrigin !== undefined && typeof apiKeyOrigin.configured === 'boolean' && !('value' in apiKeyOrigin)
+    console.log(
+      `[smoke] doctor      ${!leaked && !actualLeak && originOk ? 'ok  ' : 'FAIL'} API key stays out of the diagnostics ` +
+        `(origin only${exactCheckable ? ', exact value absent' : '; configured key too short to search'})`,
+    )
+    if (leaked || actualLeak || !originOk) process.exitCode = 1
   }
 
   const archive = commits?.status?.archives?.at(-1)

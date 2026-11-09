@@ -9,21 +9,22 @@
  * below (or by `ctx.effect`), so an unload — or a feature switch — collapses it
  * cleanly and can mount it again later.
  *
- * Slot map, all verified against `@deepseek-ai/dsh-client-ui-{slots,sidebar,layout,conversation}@0.2.0-rc.2`,
- * and re-verified on 0.2.1-rc.2 and 0.2.1-rc.3:
+ * Slot map, all verified against the 0.2.2-rc.1 generation of the framework:
  *   sidebar.panellist          list, root      owner {size, active}  → panel icon
  *   main                       keyed, root     key must equal the panellist id
  *   conversation.composer.dock list, session   inject(sessionId)     → status pill
+ *   conversation.chat.turnTail list, session   inject(sessionId)     → memory-sources card
+ *   plugins.row.config         keyed, root     key = package#row      → settings form
+ *   plugins.detail.section     list, root      subject               → health summary
  *
- * Plus one tab type in the right Sidebar
- * (`@deepseek-ai/dsh-client-ui-sidebar-right@0.2.0-rc.2`, re-verified on
- * 0.2.1-rc.2 and 0.2.1-rc.3), registered in two
- * stages because that is the only contract the framework offers:
+ * Plus two tab types in the right Sidebar (recall and Memory health), registered
+ * in two stages because that is the only contract the framework offers:
  *   ctx.sidebarRightTabs.register({id, kind, title, guide})   stage one: a page type
  *   sidebar.right.pane.tab     keyed, session, key = that id → stage two: the body
  *
- * The three surfaces are switchable from the plugin's own settings form
- * (`showSidebarEntry` / `showCommitStatus` / `showRecallPanel`). `feature-toggles.ts`
+ * The five surfaces are switchable from the plugin's own settings form
+ * (`showSidebarEntry` / `showCommitStatus` / `showRecallPanel` /
+ * `showRecallExplain` / `showHealthPanel`). `feature-toggles.ts`
  * reads the live values from `ctx.configForms`; this file owns the mount/unmount
  * pairs and the order they run in:
  *
@@ -47,7 +48,12 @@ import { installStyles } from './styles.ts'
 import { OpenVikingIcon } from './openviking-icon.tsx'
 import { StudioPanel } from './studio-panel.tsx'
 import { CommitStatusPill } from './commit-status.tsx'
+// Exported for the server-rendered component tests; the shell only reads apply/inject.
+export { DiffEntry, DiffView } from './commit-status.tsx'
 import { RecallPanel } from './recall-panel.tsx'
+import { RecallExplainTail } from './recall-explain.tsx'
+import { HealthPanel } from './health-panel.tsx'
+import { PluginHealthSection } from './plugin-health.tsx'
 import { ConfigPage } from './config-page.tsx'
 import { attachLocale, t } from './locale.ts'
 import {
@@ -90,12 +96,9 @@ const SIDEBAR_ORDER = 1000
 const RECALL_TAB_ID = 'dsh-openviking-enhance:recall'
 const RECALL_TAB_KIND = 'openviking-recall'
 
-/**
- * The address a page tab is recorded under (`sidebar://<kind>`). Hiding the
- * recall surface closes the page first when it is the one on screen, so the
- * column does not keep a record whose body and type no longer exist.
- */
-const RECALL_PAGE_ADDRESS = `sidebar://${RECALL_TAB_KIND}`
+/** The session-log/Doctor page: a second, independent right-Sidebar tab. */
+const HEALTH_TAB_ID = 'dsh-openviking-enhance:health'
+const HEALTH_TAB_KIND = 'openviking-health'
 
 /**
  * The plugin's own row on the Plugins page.
@@ -133,7 +136,8 @@ function report(context: ClientContext, error: unknown): void {
 }
 
 /**
- * Whether one right-Sidebar record is the recall page this plugin contributed.
+ * Whether one right-Sidebar record is the page this plugin contributed for a
+ * kind.
  *
  * The live record is `{ id, kind, contentId, title }` and a page tab's address
  * (`sidebar://<kind>`) is `contentId`. Comparing only a field named `address`
@@ -142,16 +146,13 @@ function report(context: ClientContext, error: unknown): void {
  * ran. Match the content identity first, then the kind, and keep the legacy
  * field as a fallback for harness versions that sent it.
  */
-function isRecallPage(tab: SidebarRightTabRecord): boolean {
-  return (
-    tab.contentId === RECALL_PAGE_ADDRESS ||
-    tab.kind === RECALL_TAB_KIND ||
-    tab.address === RECALL_PAGE_ADDRESS
-  )
+function isPage(tab: SidebarRightTabRecord, kind: string): boolean {
+  const address = `sidebar://${kind}`
+  return tab.contentId === address || tab.kind === kind || tab.address === address
 }
 
 /**
- * Close the recall page when it is the one the right Sidebar is showing.
+ * Close one of our pages when it is the one the right Sidebar is showing.
  *
  * Returns whether a close was issued. Best effort on purpose: the service may be
  * absent, or — the common case when the user edits the settings form — there may
@@ -159,14 +160,15 @@ function isRecallPage(tab: SidebarRightTabRecord): boolean {
  * column, so `active()` answers `undefined`. Callers arm a deferred retry for
  * that case.
  */
-function tryCloseRecallTab(
+function tryClosePage(
   context: ClientContext,
   sidebarRight: SidebarRightService | undefined,
+  kind: string,
 ): boolean {
   if (sidebarRight === undefined) return false
   try {
     const active = sidebarRight.active?.()
-    if (active === undefined || !isRecallPage(active)) return false
+    if (active === undefined || !isPage(active, kind)) return false
     sidebarRight.close?.(active.id)
     return true
   } catch (error) {
@@ -204,9 +206,9 @@ export function apply(context: ClientContext): void {
   }
 
   /**
-   * The right Sidebar's outward face, kept for the recall mount to close that
-   * tab on the way out. Optional like the settings service: a composition
-   * without it keeps the recall surface, it just cannot pre-close the page.
+   * The right Sidebar's outward face, kept for the tab mounts to close an open
+   * page on the way out. Optional like the settings service: a composition
+   * without it keeps every surface, it just cannot pre-close the page.
    */
   let sidebarRight: SidebarRightService | undefined
   try {
@@ -224,37 +226,55 @@ export function apply(context: ClientContext): void {
   const slots = context.slots
 
   /**
-   * A recall-page close that has to wait for the right Sidebar to come back.
+   * A page close that has to wait for the right Sidebar to come back.
    *
    * The settings form lives on the Plugins page, and that page fills the main
    * column: while it is open the conversation — and with it the right Sidebar's
    * mounted surface — is unmounted, so `sidebarRight.active()` answers
-   * `undefined` and the open recall page cannot be found at save time. The switch
-   * still unmounts the surface immediately; this set remembers to close the page
-   * as soon as the column is mounted again. Re-enabling the switch, or unloading
-   * the plugin, cancels the pending work.
+   * `undefined` and the open page cannot be found at save time. The switch still
+   * unmounts the surface immediately; this remembers that a page from a hidden
+   * surface may still be open and closes it as soon as the column is mounted
+   * again. Re-enabling every hidden surface, or unloading the plugin, cancels
+   * the pending work.
    */
-  const pendingRecallCloses = new Set<() => void>()
+  const hiddenPageKinds = new Set<string>()
+  let pendingPageClose: (() => void) | null = null
 
-  function cancelPendingRecallCloses(): void {
-    for (const cancel of [...pendingRecallCloses]) {
-      pendingRecallCloses.delete(cancel)
-      try {
-        cancel()
-      } catch (error) {
-        report(context, error)
-      }
+  function cancelPendingPageClose(): void {
+    const cancel = pendingPageClose
+    pendingPageClose = null
+    if (cancel === null) return
+    try {
+      cancel()
+    } catch (error) {
+      report(context, error)
     }
   }
 
-  function armRecallTabClose(): void {
+  /** Close the active tab when it belongs to any surface hidden right now. */
+  function closeHiddenPage(right: SidebarRightService): boolean {
+    try {
+      const active = right.active?.()
+      if (active === undefined) return false
+      for (const kind of hiddenPageKinds) {
+        if (!isPage(active, kind)) continue
+        right.close?.(active.id)
+        return true
+      }
+      return false
+    } catch (error) {
+      report(context, error)
+      return false
+    }
+  }
+
+  /** Try now, then once the right Sidebar mounts again. One retry for them all. */
+  function armPageClose(): void {
     const right = sidebarRight
-    if (right === undefined) return
-    // The surface may actually be mounted (another window, a hot reload): try
-    // once before subscribing.
-    if (tryCloseRecallTab(context, right)) return
-    const mounted = right.mounted
-    if (mounted === undefined || typeof mounted.subscribe !== 'function') return
+    if (right === undefined || pendingPageClose !== null) return
+    if (closeHiddenPage(right)) return
+    const mountedRight = right.mounted
+    if (mountedRight === undefined || typeof mountedRight.subscribe !== 'function') return
 
     let stopped = false
     let unsubscribe: (() => void) | undefined
@@ -270,14 +290,14 @@ export function apply(context: ClientContext): void {
         report(context, error)
       }
       unsubscribe = undefined
-      pendingRecallCloses.delete(stop)
+      if (pendingPageClose === stop) pendingPageClose = null
     }
     // The mounted Session changes before React renders the arriving commit, so
     // the store the tab record lives in may not be adopted yet at notification
     // time. A handful of short retries covers that gap without a poll forever.
     const attempt = (remaining: number): void => {
       if (stopped) return
-      if (tryCloseRecallTab(context, right)) {
+      if (closeHiddenPage(right)) {
         stop()
         return
       }
@@ -288,12 +308,12 @@ export function apply(context: ClientContext): void {
       timer = setTimeout(() => attempt(remaining - 1), 60)
     }
     try {
-      unsubscribe = mounted.subscribe(() => attempt(6))
+      unsubscribe = mountedRight.subscribe(() => attempt(6))
     } catch (error) {
       report(context, error)
       return
     }
-    pendingRecallCloses.add(stop)
+    pendingPageClose = stop
   }
 
   /**
@@ -341,6 +361,37 @@ export function apply(context: ClientContext): void {
           inject: (sessionId: string) => ({ sessionId }),
         },
         CommitStatusPill,
+      ),
+    )
+  }
+
+  /**
+   * The per-turn recall explanation, contributed to the conversation itself.
+   *
+   * `conversation.chat.turnTail` is additive: it appends a row under a completed
+   * turn and never replaces the user or assistant renderers. The inject face
+   * carries the session and a way to open the full recall tab, because the tab
+   * service is not reachable from inside a conversation component.
+   */
+  function mountRecallExplain(): () => void {
+    return slots.inject('conversation.chat.turnTail', () =>
+      slots.register(
+        {
+          name: 'conversation.chat.turnTail',
+          id: 'openviking-recall-explain',
+          order: 10,
+          inject: (sessionId: string) => ({
+            sessionId,
+            openRecall: () => {
+              try {
+                sidebarRight?.openTab?.(RECALL_TAB_KIND)
+              } catch (error) {
+                report(context, error)
+              }
+            },
+          }),
+        },
+        RecallExplainTail,
       ),
     )
   }
@@ -408,19 +459,104 @@ export function apply(context: ClientContext): void {
     return () => seat.dispose()
   }
 
+  /**
+   * The session log and Doctor page, plus its compact Plugins-page summary.
+   *
+   * Registered in the same two stages as the recall tab. The Plugins summary is
+   * owned by this switch too: both answer "is memory healthy?", and a person who
+   * turns the page off did not ask to keep a health card on the plugin page.
+   */
+  function mountHealthPanel(): () => void {
+    const seat = context.inject(['sidebarRightTabs'], (scope) => {
+      const tabs = scope.get('sidebarRightTabs') as SidebarRightTabRegistry | undefined
+      if (tabs === undefined) return
+      const disposeType = tabs.register({
+        id: HEALTH_TAB_ID,
+        kind: HEALTH_TAB_KIND,
+        title: () => t('health.tabTitle'),
+        guide: [
+          {
+            id: 'health',
+            order: 41,
+            title: () => t('health.tabTitle'),
+            description: () => t('health.tabDescription'),
+          },
+        ],
+      })
+      try {
+        const disposeBody = slots.inject('sidebar.right.pane.tab', () =>
+          slots.register(
+            {
+              name: 'sidebar.right.pane.tab',
+              key: HEALTH_TAB_ID,
+              inject: (sessionId: string) => ({ sessionId }),
+            },
+            HealthPanel,
+          ),
+        )
+        const disposeSection = slots.inject('plugins.detail.section', () =>
+          slots.register(
+            { name: 'plugins.detail.section', id: 'openviking-health', order: 40 },
+            PluginHealthSection,
+          ),
+        )
+        return () => {
+          disposeSection()
+          disposeBody()
+          disposeType()
+        }
+      } catch (error) {
+        disposeType()
+        throw error
+      }
+    })
+    return () => seat.dispose()
+  }
+
   const mounts: Record<keyof FeatureFlags, () => () => void> = {
     sidebarEntry: mountSidebarEntry,
     commitStatus: mountCommitStatus,
     recallPanel: mountRecallPanel,
+    recallExplain: mountRecallExplain,
+    healthPanel: mountHealthPanel,
+  }
+
+  /** The right-Sidebar page a feature owns, when it owns one. */
+  function pageKindOf(feature: keyof FeatureFlags): string | null {
+    if (feature === 'recallPanel') return RECALL_TAB_KIND
+    if (feature === 'healthPanel') return HEALTH_TAB_KIND
+    return null
+  }
+
+  /**
+   * Whether a close may still be pending because the right column is off screen.
+   *
+   * A mounted column with no active tab is not the deferred case: our page is
+   * either closed or inactive, and an inactive tab cannot be found through the
+   * public face. Only an unmounted column (the Plugins page) guarantees that the
+   * page record will become visible again.
+   */
+  function shouldDeferPageClose(right: SidebarRightService | undefined): boolean {
+    if (right === undefined) return false
+    try {
+      if (typeof right.mounted?.getSnapshot === 'function') {
+        return right.mounted.getSnapshot() === undefined
+      }
+      return right.active?.() === undefined
+    } catch {
+      return false
+    }
   }
 
   /** Mount or unmount one surface; a mount failure is logged, never thrown. */
   function applyFeature(feature: keyof FeatureFlags, on: boolean): void {
     const live = mounted.get(feature)
+    const kind = pageKindOf(feature)
     if (on && live === undefined) {
       // A surface that is coming back cancels a "close the stale page" retry
-      // armed when it went away: the page may be the user's own, restored.
-      if (feature === 'recallPanel') cancelPendingRecallCloses()
+      // for the page it owns: the page may be the user's own, restored.
+      if (kind !== null) hiddenPageKinds.delete(kind)
+      if (hiddenPageKinds.size === 0) cancelPendingPageClose()
       try {
         mounted.set(feature, mounts[feature]())
       } catch (error) {
@@ -430,16 +566,20 @@ export function apply(context: ClientContext): void {
     }
     if (!on && live !== undefined) {
       mounted.delete(feature)
-      // Only the switch closes the recall page (see the mount's teardown for why
-      // an unload must not). When the settings form is what did the hiding, the
-      // right Sidebar is unmounted, so the close is retried on its return.
-      const closed = feature === 'recallPanel' ? tryCloseRecallTab(context, sidebarRight) : false
+      // Only the switch closes pages (see the mount's teardown for why an unload
+      // must not). Close before the page's body and type go away; when the
+      // settings form is what did the hiding, the right Sidebar is unmounted, so
+      // the close is retried on its return.
+      const right = sidebarRight
+      const active = right?.active?.()
+      if (kind !== null) hiddenPageKinds.add(kind)
+      const closed = kind !== null && active !== undefined && right !== undefined ? closeHiddenPage(right) : false
       try {
         live()
       } catch (error) {
         report(context, error)
       }
-      if (feature === 'recallPanel' && !closed) armRecallTabClose()
+      if (kind !== null && !closed && shouldDeferPageClose(right)) armPageClose()
     }
   }
 
@@ -484,7 +624,7 @@ export function apply(context: ClientContext): void {
         report(context, error)
       }
       // An unload must not fire a deferred close after the surfaces are gone.
-      cancelPendingRecallCloses()
+      cancelPendingPageClose()
       for (const feature of [...FEATURE_ORDER].reverse()) {
         const live = mounted.get(feature)
         if (live === undefined) continue

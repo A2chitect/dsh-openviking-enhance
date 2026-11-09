@@ -63,6 +63,17 @@ const DIFFS = {
   ),
 }
 
+/**
+ * The archive directory names: the host's diff guard only accepts
+ * `…/history/archive_00N`, so the fixture must use the server's real naming even
+ * though its `memory_diff.json` bodies are keyed by timestamp.
+ */
+const ARCHIVES = [
+  { id: 'archive_001', stamp: '20261002T071000Z', modTime: '2026-10-02T07:10:00Z' },
+  { id: 'archive_002', stamp: '20261002T073000Z', modTime: '2026-10-02T07:30:00Z' },
+  { id: 'archive_003', stamp: '20261002T075500Z', modTime: '2026-10-02T07:55:00Z' },
+]
+
 const search = (query) => ({
   memories: [
     { uri: MEMORY('release-checklist'), score: 0.91, context_type: 'memory', level: 2, abstract: 'Bump the version, promote the changelog section, tag, publish.' },
@@ -80,6 +91,51 @@ const search = (query) => ({
   total: 7,
   query_plan: {
     reasoning: `Recalled ${query ? `“${query}”` : 'the latest turn'} against the session's own space first, then widened to the shared resources and the skill playbooks.`,
+  },
+})
+
+/** The v0.3 context face: one assembled block plus the server's accounting. */
+const contextAnswer = (query) => ({
+  entries: [
+    { uri: MEMORY('release-checklist'), category: 'entities', score: 0.912, detail: 'overview', origin: 'self', text: 'Release checklist for the plugin: bump the version, promote the changelog section, tag, then publish the tarball.' },
+    { uri: MEMORY('workspace-conventions'), category: 'entities', score: 0.781, detail: 'full', origin: 'self', text: 'TypeScript strict, node --test, one commit per finished piece of work.' },
+    { uri: MEMORY('review-notes-0930'), category: 'events', score: 0.664, detail: 'abstract', origin: 'self', text: 'Sidebar review: the status pill moved under the composer.' },
+    { uri: RESOURCE('plugin-manifest'), category: 'resources', score: 0.841, detail: 'overview', origin: 'self', text: 'What `dsh.bundle`, `dsh.client` and the patch layer mean.' },
+    { uri: RESOURCE('openviking-api'), category: 'resources', score: 0.712, detail: 'full', origin: 'self', text: 'Endpoints for sessions, history archives and retrieval.' },
+    { uri: SKILL('screenshot-a-plugin'), category: 'skills', score: 0.883, detail: 'overview', origin: 'actor_peer', text: 'Boot a scratch profile and capture the surfaces without leaking a real workspace.' },
+    { uri: SKILL('write-a-changelog'), category: 'skills', score: 0.691, detail: 'uri', origin: 'actor_peer', text: 'Keep a changelog: one section per release, newest first.' },
+  ],
+  rendered: [
+    '<openviking-context>',
+    'Relevant memory from OpenViking. It is this user\'s own saved history.',
+    `<memory uri="${MEMORY('release-checklist')}" type="entities" score="0.91" detail="overview">`,
+    'Release checklist for the plugin: bump the version, promote the changelog section, tag, then publish the tarball.',
+    '</memory>',
+    `<memory uri="${MEMORY('workspace-conventions')}" type="entities" score="0.78" detail="full">`,
+    'TypeScript strict, node --test, one commit per finished piece of work.',
+    '</memory>',
+    '</openviking-context>',
+  ].join('\n'),
+  digest: '',
+  stats: {
+    searched: { events: 18, entities: 12, preferences: 10, experiences: 0, resources: 9, skills: 1 },
+    candidates: 12,
+    returned: 7,
+    dropped: 0,
+    deduped: 2,
+    excluded: 1,
+    max_tokens: 1600,
+    used_tokens: 1466,
+    quotas: { events: 1, entities: 2, preferences: 1, experiences: 1, resources: 3, skills: 2 },
+    tier_counts: { overview: 4, full: 2, abstract: 1 },
+    origins: { self: 6, actor_peer: 1, other_peer: 0 },
+    peer_scope: 'actor',
+    planned_queries: [query || 'the latest turn', 'release process for this plugin'],
+    query_expansion: 'auto',
+    rewrite: 'off',
+    score_threshold: 0.35,
+    dedup: { turns: 5, status: 'on', cooled: 1, turn: 12 },
+    fill: { floor_tokens: 1257, overview_upgrades: 0, full_upgrades: 1, spare_upgrades: 0 },
   },
 })
 
@@ -141,58 +197,124 @@ createServer((req, res) => {
   const path = url.pathname
 
   if (path === '/health') {
-    return json(res, { result: { status: 'ok', healthy: true, version: '0.4.22', auth_mode: 'dev' } })
+    return json(res, { status: 'ok', healthy: true, version: '0.5.3', auth_mode: 'dev' })
+  }
+  if (path === '/api/v1/system/status') {
+    return json(res, { status: 'ok', result: { initialized: true, user: 'demo' }, error: null })
+  }
+  if (path === '/api/v1/skills') {
+    return json(res, {
+      status: 'ok',
+      result: {
+        root_uris: [`${USER}/skills`, 'viking://agent/skills'],
+        skills: [
+          { type: 'skill', name: 'screenshot-a-plugin', uri: `${USER}/skills/screenshot-a-plugin`, description: 'Capture a plugin without leaking a real workspace.' },
+          { type: 'skill', name: 'write-a-changelog', uri: `${USER}/skills/write-a-changelog`, description: 'Keep a changelog with one section per release.' },
+        ],
+      },
+    })
+  }
+  if (path === '/api/v1/observer/retrieval') {
+    return json(res, {
+      status: 'ok',
+      result: {
+        name: 'retrieval',
+        is_healthy: true,
+        status: { total_queries: 233, total_results: 1765, zero_result_rate: 0.1159, avg_results_per_query: 7.58, avg_latency_ms: 546.9 },
+      },
+    })
+  }
+  if (path === '/api/v1/fs/stat') {
+    return json(res, {
+      status: 'ok',
+      result: { uri: `${USER}`, name: 'demo', size: 320, isDir: true, modTime: '2026-10-02T07:00:00Z', count: 108 },
+    })
+  }
+  if (path === '/api/v1/rules/search') {
+    return json(res, {
+      status: 'ok',
+      result: { rules: [], scenarios: [], rendered: '# Applicable OpenViking Rules\n\nMatched 0 active Rule(s).', delivery: { complete: true, rule_count: 0 }, warning: 'rule library is empty' },
+    })
   }
   if (path.startsWith('/api/v1/sessions/')) {
+    const requestedId = decodeURIComponent(path.split('/').pop() ?? 'demo-session')
     return json(res, {
       result: {
-        session_id: decodeURIComponent(path.split('/').pop() ?? 'demo-session'),
-        uri: SESSION_URI,
+        session_id: requestedId,
+        uri: `${USER}/sessions/${requestedId}`,
         created_by_user_id: 'demo',
         user: { account_id: 'demo', user_id: 'demo' },
         message_count: 24,
         commit_count: 3,
         memories_extracted: { total: 9, memory_write: 7, memory_edit: 2 },
         last_commit_at: '2026-10-02T07:55:00Z',
+        last_auto_commit_at: '2026-10-02T07:30:00Z',
+        last_message_at: '2026-10-02T08:10:00Z',
+        created_at: '2026-10-02T06:00:00Z',
+        updated_at: '2026-10-02T08:10:00Z',
         pending_tokens: 4820,
         threshold: 20000,
+        total_message_count: 42,
       },
     })
   }
   if (path === '/api/v1/fs/ls') {
     const uri = url.searchParams.get('uri') ?? ''
     // Only the history directory is asked for; answer with the three archives.
-    const entries = Object.keys(DIFFS).map((stamp, index) => ({
-      uri: `${uri.replace(/\/+$/, '')}/${stamp}`,
+    const entries = ARCHIVES.map((archive) => ({
+      uri: `${uri.replace(/\/+$/, '')}/${archive.id}`,
       size: 0,
       isDir: true,
-      modTime: `2026-10-02T0${7 + index}:${index === 0 ? '10' : index === 1 ? '30' : '55'}:00Z`,
-      abstract: `commit archive ${stamp}`,
+      modTime: archive.modTime,
+      abstract: `commit archive ${archive.id}`,
     }))
     return json(res, { result: entries })
   }
   if (path === '/api/v1/content/read') {
     const uri = url.searchParams.get('uri') ?? ''
-    const stamp = Object.keys(DIFFS).find((key) => uri.includes(key))
-    if (stamp === undefined) return json(res, { result: null }, 404)
+    const archive = ARCHIVES.find((candidate) => uri.includes(`/${candidate.id}/`))
+    if (archive === undefined) return json(res, { result: null }, 404)
     // The real server hands this back as a JSON *string*; the plugin unwraps both.
-    return json(res, { result: JSON.stringify(DIFFS[stamp]) })
+    return json(res, { result: JSON.stringify(DIFFS[archive.stamp]) })
   }
   if (path === '/api/v1/tasks') {
-    return json(res, { result: [] })
+    const resourceId = url.searchParams.get('resource_id') ?? 'dsh-demo-session'
+    const archiveUri = `${USER}/sessions/${resourceId}/history/archive_003`
+    return json(res, {
+      status: 'ok',
+      result: [
+        {
+          task_id: 'task_demo_003',
+          task_type: 'session_commit',
+          status: 'completed',
+          stage: 'extract',
+          error: null,
+          created_at_iso: '2026-10-02T07:55:00Z',
+          updated_at_iso: '2026-10-02T07:55:20Z',
+          processing_seconds: 20,
+          resource_id: resourceId,
+          result: { archive_uri: archiveUri, memory_diff_uri: `${archiveUri}/memory_diff.json` },
+        },
+      ],
+    })
   }
   if (path === '/api/v1/search/search') {
     let body = ''
     req.on('data', (chunk) => (body += chunk))
     req.on('end', () => {
       let query = ''
+      let mode = 'list'
       try {
         const parsed = JSON.parse(body || '{}')
         query = typeof parsed.query === 'string' ? parsed.query : ''
+        mode = parsed.mode === 'context' ? 'context' : 'list'
       } catch {
         query = ''
       }
-      json(res, { result: search(query) })
+      if (mode === 'context') {
+        return json(res, { status: 'ok', result: contextAnswer(query) })
+      }
+      json(res, { status: 'ok', result: search(query) })
     })
     return
   }

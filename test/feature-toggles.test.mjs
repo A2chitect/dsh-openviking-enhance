@@ -24,19 +24,35 @@ import {
   watchFeatureFlags,
 } from '../src/client/feature-toggles.ts'
 
-const ALL_ON = { sidebarEntry: true, commitStatus: true, recallPanel: true }
-const ALL_OFF = { sidebarEntry: false, commitStatus: false, recallPanel: false }
+const ALL_ON = {
+  sidebarEntry: true,
+  commitStatus: true,
+  recallPanel: true,
+  recallExplain: true,
+  healthPanel: true,
+}
+const ALL_OFF = {
+  sidebarEntry: false,
+  commitStatus: false,
+  recallPanel: false,
+  recallExplain: false,
+  healthPanel: false,
+}
 
 /** The same states as the settings form carries them: Config field names. */
 const FORM_ALL_ON = {
   showSidebarEntry: true,
   showCommitStatus: true,
   showRecallPanel: true,
+  showRecallExplain: true,
+  showHealthPanel: true,
 }
 const FORM_ALL_OFF = {
   showSidebarEntry: false,
   showCommitStatus: false,
   showRecallPanel: false,
+  showRecallExplain: false,
+  showHealthPanel: false,
 }
 
 test('the defaults are all on, which is the pre-switch behaviour', () => {
@@ -50,8 +66,16 @@ test('each surface names the Config field that carries it', () => {
     sidebarEntry: 'showSidebarEntry',
     commitStatus: 'showCommitStatus',
     recallPanel: 'showRecallPanel',
+    recallExplain: 'showRecallExplain',
+    healthPanel: 'showHealthPanel',
   })
-  assert.deepEqual([...FEATURE_ORDER], ['sidebarEntry', 'commitStatus', 'recallPanel'])
+  assert.deepEqual([...FEATURE_ORDER], [
+    'sidebarEntry',
+    'commitStatus',
+    'recallPanel',
+    'recallExplain',
+    'healthPanel',
+  ])
 })
 
 test('only a literal boolean false hides a surface', () => {
@@ -60,8 +84,16 @@ test('only a literal boolean false hides a surface', () => {
       showSidebarEntry: false,
       showCommitStatus: true,
       showRecallPanel: false,
+      showRecallExplain: false,
+      showHealthPanel: false,
     }),
-    { sidebarEntry: false, commitStatus: true, recallPanel: false },
+    {
+      sidebarEntry: false,
+      commitStatus: true,
+      recallPanel: false,
+      recallExplain: false,
+      healthPanel: false,
+    },
   )
   // Truthy values are not `false`: a stale string, 0, null or an object must all
   // keep the surface visible rather than hide it.
@@ -69,6 +101,8 @@ test('only a literal boolean false hides a surface', () => {
     showSidebarEntry: 'false',
     showCommitStatus: 0,
     showRecallPanel: null,
+    showRecallExplain: 'no',
+    showHealthPanel: {},
   })
   assert.deepEqual(malformed, ALL_ON)
 })
@@ -82,6 +116,8 @@ test('a missing value, missing fields or a malformed container mean on', () => {
     sidebarEntry: true,
     commitStatus: true,
     recallPanel: false,
+    recallExplain: true,
+    healthPanel: true,
   })
 })
 
@@ -89,13 +125,21 @@ test('reading the flags never mutates the settings value', () => {
   const value = { showSidebarEntry: false, showCommitStatus: true }
   const before = JSON.stringify(value)
   const flags = featureFlagsFrom(value)
-  assert.deepEqual(flags, { sidebarEntry: false, commitStatus: true, recallPanel: true })
+  assert.deepEqual(flags, {
+    sidebarEntry: false,
+    commitStatus: true,
+    recallPanel: true,
+    recallExplain: true,
+    healthPanel: true,
+  })
   assert.equal(JSON.stringify(value), before, 'the form\'s value is read, not written')
 })
 
 test('sameFeatureFlags compares surface by surface', () => {
   assert.equal(sameFeatureFlags(ALL_ON, { ...ALL_ON }), true)
   assert.equal(sameFeatureFlags(ALL_ON, { ...ALL_ON, recallPanel: false }), false)
+  assert.equal(sameFeatureFlags(ALL_ON, { ...ALL_ON, recallExplain: false }), false)
+  assert.equal(sameFeatureFlags(ALL_ON, { ...ALL_ON, healthPanel: false }), false)
   assert.equal(sameFeatureFlags(ALL_OFF, ALL_OFF), true)
 })
 
@@ -151,20 +195,40 @@ function fakeShell({ status = 'ready', value = {} } = {}) {
 test('the watcher emits immediately from a ready snapshot and then on changes', () => {
   const shell = fakeShell({
     status: 'ready',
-    value: { showSidebarEntry: false, showCommitStatus: true, showRecallPanel: true },
+    value: {
+      showSidebarEntry: false,
+      showCommitStatus: true,
+      showRecallPanel: true,
+      showRecallExplain: true,
+      showHealthPanel: true,
+    },
   })
   const calls = []
   const dispose = watchFeatureFlags(shell.context, 'openviking-enhance', (flags) => calls.push(flags))
 
   assert.equal(shell.state.entryIds.length, 1, 'the form is read once at subscribe')
   assert.equal(shell.state.entryIds[0], 'openviking-enhance', 'under the namespace it was given')
-  assert.deepEqual(calls, [{ sidebarEntry: false, commitStatus: true, recallPanel: true }])
+  assert.deepEqual(calls, [
+    { sidebarEntry: false, commitStatus: true, recallPanel: true, recallExplain: true, healthPanel: true },
+  ])
 
   shell.controller.setSnapshot({
     status: 'ready',
-    value: { showSidebarEntry: true, showCommitStatus: false, showRecallPanel: true },
+    value: {
+      showSidebarEntry: true,
+      showCommitStatus: false,
+      showRecallPanel: true,
+      showRecallExplain: true,
+      showHealthPanel: true,
+    },
   })
-  assert.deepEqual(calls.at(-1), { sidebarEntry: true, commitStatus: false, recallPanel: true })
+  assert.deepEqual(calls.at(-1), {
+    sidebarEntry: true,
+    commitStatus: false,
+    recallPanel: true,
+    recallExplain: true,
+    healthPanel: true,
+  })
   assert.equal(calls.length, 2)
 
   dispose()

@@ -33,6 +33,11 @@ import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 // seats used by the recall tab. `SidebarRightTabDefinition` is the registry's real
 // definition type, so a tab type is checked against the framework, not our guess.
 import type { SidebarRightTabDefinition } from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
+// Pulls in the Chat target's augmentation: `conversation.chat.turnTail` and the
+// `useChat` standard hook the recall-explanation tail reads the turn's prompt
+// through. (The conversation package declares the timeline; the chat package
+// owns the transcript seats.)
+import type {} from '@deepseek-ai/dsh-client-ui-chat/client'
 // ...and the Plugins page's, which declares `plugins.row.config` — the seat the
 // configuration form registers into.
 import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
@@ -141,7 +146,7 @@ export interface SidebarRightNavigation {
 /**
  * One open tab as the right Sidebar's own controller reports it.
  *
- * The live 0.2.1-rc.3 record is `{ id, kind, contentId, title }`: a page tab's
+ * The live 0.2.2-rc.1 record is `{ id, kind, contentId, title }`: a page tab's
  * address (`sidebar://<kind>`) lives in `contentId`, not in `address`. An earlier
  * build of this plugin compared only `address` and therefore never closed the
  * open recall page — keep all three shapes here so the check cannot silently go
@@ -184,6 +189,8 @@ export interface SidebarRightService {
   active?(): SidebarRightTabRecord | undefined
   /** Close one tab of the on-screen session. */
   close?(tabId: string): void
+  /** Open a tab by registered kind, so the explain card can send readers there. */
+  openTab?(kind: string, options?: { params?: unknown }): void
   /** The mounted-Session observable; a change means a surface came back. */
   readonly mounted?: SidebarRightMounted
 }

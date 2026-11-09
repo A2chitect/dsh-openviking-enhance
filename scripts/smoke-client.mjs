@@ -97,6 +97,9 @@ const PANEL_ID = 'openviking'
 const RECALL_TAB_ID = 'dsh-openviking-enhance:recall'
 /** The tab kind the guide registers. */
 const RECALL_TAB_KIND = 'openviking-recall'
+/** The session-log/Doctor tab type's identity and kind. */
+const HEALTH_TAB_ID = 'dsh-openviking-enhance:health'
+const HEALTH_TAB_KIND = 'openviking-health'
 /** The address a page tab is recorded under, as the container addresses it. */
 const RECALL_PAGE_ADDRESS = `sidebar://${RECALL_TAB_KIND}`
 /** The config seat's key on the Plugins page. */
@@ -104,17 +107,20 @@ const CONFIG_ROW_KEY = `${pkg.name}#openviking-enhance`
 /** The settings namespace the config form lives under (the Loader row id). */
 const SETTINGS_NAMESPACE = 'openviking-enhance'
 
-const ALL_ON = { showSidebarEntry: true, showCommitStatus: true, showRecallPanel: true }
-const ALL_OFF = { showSidebarEntry: false, showCommitStatus: false, showRecallPanel: false }
+const ALL_ON = { showSidebarEntry: true, showCommitStatus: true, showRecallPanel: true, showRecallExplain: true, showHealthPanel: true }
+const ALL_OFF = { showSidebarEntry: false, showCommitStatus: false, showRecallPanel: false, showRecallExplain: false, showHealthPanel: false }
 const BOOT_SEATS = [
+  'conversation.chat.turnTail',
   'conversation.composer.dock',
   'main',
+  'plugins.detail.section',
   'plugins.row.config',
   'sidebar.panellist',
   'sidebar.right.pane.tab',
+  'sidebar.right.pane.tab',
 ].sort()
 
-/** The recall page as an open tab, in the LIVE 0.2.1-rc.3 record shape.
+/** The recall page as an open tab, in the LIVE 0.2.2-rc.1 record shape.
  *
  * A page tab's address lives in `contentId`; `contentId === sidebar://<kind>`
  * is also how the framework itself identifies a page tab (`pageKind`). The
@@ -498,7 +504,7 @@ check(dock.length === 1, `registers one dock entry (saw ${dock.length})`)
 const pill = dock[0]
 check(pill?.id === 'openviking-commit', 'dock entry is the commit pill')
 check(typeof pill?.inject === 'function', 'status pill declares a session inject face')
-check(onState.injectedKeys.length === 5, `all five slots are injected (saw ${onState.injectedKeys.join(', ')})`)
+check(onState.injectedKeys.length === 8, `all eight slots are injected (saw ${onState.injectedKeys.join(', ')})`)
 check(onState.awaited.includes('locale'), 'the app locale is reached through a scoped injection, not the browser')
 
 // The configuration form. DSH renders no form for a plugin's Config on its own:
@@ -526,13 +532,17 @@ check(onState.awaited.includes('sidebarRight'), 'the tab-closing navigation face
 // registry keys the body seat by the type's `id`, so a body registered under
 // anything else renders the framework's "nothing can view this" notice.
 check(onState.awaited.includes('sidebarRightTabs'), 'waits for the tab registry (a service), not the slot declaration')
-check(onState.tabTypes.length === 1, `registers one right-Sidebar tab type (saw ${onState.tabTypes.length})`)
+check(onState.tabTypes.length === 2, `registers both right-Sidebar tab types (saw ${onState.tabTypes.length})`)
 const tabType = onState.tabTypes[0]?.definition
 check(
   typeof tabType?.id === 'string' && tabType.id.includes(':'),
   `tab id is namespaced, since the registry's key domain is open (${tabType?.id})`,
 )
-check(tabType?.kind === RECALL_TAB_KIND, `tab kind is namespaced (${tabType?.kind})`)
+check(tabType?.kind === RECALL_TAB_KIND, `recall tab kind is namespaced (${tabType?.kind})`)
+const healthType = onState.tabTypes[1]?.definition
+check(healthType?.id === HEALTH_TAB_ID, `health tab id is namespaced (${healthType?.id})`)
+check(healthType?.kind === HEALTH_TAB_KIND, `health tab kind is namespaced (${healthType?.kind})`)
+check(Array.isArray(healthType?.guide) && healthType.guide.length === 1, 'the health tab carries a guide entry')
 check(typeof tabType?.title === 'function' && tabType.title('').length > 0, 'the tab type names its chip')
 check(
   Array.isArray(tabType?.guide) && tabType.guide.length === 1,
@@ -573,6 +583,9 @@ check(
   'the manifest depends on the settings package (the form and the live switches)',
 )
 check(injectedCss?.includes('.ove-recall'), 'installs the recall panel stylesheet')
+check(injectedCss?.includes('.ove-explain-card'), 'installs the recall explanation stylesheet')
+check(injectedCss?.includes('.ove-health'), 'installs the memory health stylesheet')
+check(injectedCss?.includes('.ove-diff-line-add') && injectedCss?.includes('.ove-diff-line-remove'), 'installs the diff line styles')
 
 // ---------------------------------------------------------------------------
 // Scenario 2 — a saved all-off answer: nothing surface-mounted, form still there
@@ -582,13 +595,15 @@ check(off.threw === null, `apply() does not throw with every switch off${throwRe
 const offState = off.state
 check(
   liveNames(offState).length === 1 && liveNames(offState)[0] === 'plugins.row.config',
-  `an entry saved off mounts none of the three surfaces (saw ${liveNames(offState).join(', ') || 'nothing'})`,
+  `an entry saved off mounts none of the five surfaces (saw ${liveNames(offState).join(', ') || 'nothing'})`,
 )
 check(!isLive(offState, 'sidebar.panellist'), 'the left-sidebar row stays unmounted')
 check(!isLive(offState, 'main'), 'the Studio main panel stays unmounted')
 check(!isLive(offState, 'conversation.composer.dock'), 'the commit pill stays unmounted')
-check(!isLive(offState, 'sidebar.right.pane.tab'), 'the recall tab body stays unmounted')
-check(offState.tabTypes.length === 0, 'the recall tab type stays unregistered')
+check(!isLive(offState, 'sidebar.right.pane.tab'), 'both tab bodies stay unmounted')
+check(!isLive(offState, 'conversation.chat.turnTail'), 'the recall explanation tail stays unmounted')
+check(!isLive(offState, 'plugins.detail.section'), 'the plugin-page health summary stays unmounted')
+check(offState.tabTypes.length === 0, 'both tab types stay unregistered')
 check(
   optionsByName(offState, 'plugins.row.config')?.key === CONFIG_ROW_KEY,
   'the configuration row is registered anyway — it is the way back',
@@ -601,15 +616,15 @@ check(offState.reports.length === 0, `hiding everything reports no failure (saw 
 const boot = mountShell({ status: 'loading', activeTab: openRecallTab() })
 check(boot.threw === null, `apply() does not throw while the form is loading${throwReason(boot.threw)}`)
 check(
-  liveNames(boot.state).length === 5 && boot.state.tabTypes.length === 1,
-  `the initial mount is the pre-switch behaviour: all three surfaces on (saw ${liveNames(boot.state).join(', ') || 'nothing'})`,
+  liveNames(boot.state).length === 8 && boot.state.tabTypes.length === 2,
+  `the initial mount is the pre-switch behaviour: all five surfaces on (saw ${liveNames(boot.state).join(', ') || 'nothing'})`,
 )
 boot.controller.setSnapshot({ status: 'ready', value: { ...ALL_OFF } })
 check(
   liveNames(boot.state).length === 1 && liveNames(boot.state)[0] === 'plugins.row.config',
   'a later answer with false hides the surfaces then',
 )
-check(boot.state.tabTypes.length === 0, 'and the recall tab type is disposed then')
+check(boot.state.tabTypes.length === 0, 'and both tab types are disposed then')
 
 // ---------------------------------------------------------------------------
 // Scenario 4 — hide and show again, live, with ordering and no churn
@@ -623,7 +638,7 @@ const live = mountShell({
   activeTab: openRecallTab(),
 })
 check(live.threw === null, `apply() does not throw when all switches are on${throwReason(live.threw)}`)
-check(liveNames(live.state).length === 5, `a saved all-on answer leaves every surface mounted (saw ${liveNames(live.state).length})`)
+check(liveNames(live.state).length === 8, `a saved all-on answer leaves every surface mounted (saw ${liveNames(live.state).length})`)
 
 // (b) turn everything off through the form listener.
 const hideCursor = live.state.events.length
@@ -636,8 +651,10 @@ check(
 check(!isLive(hidden, 'sidebar.panellist'), 'the sidebar row is unmounted live')
 check(!isLive(hidden, 'main'), 'the Studio page is unmounted live')
 check(!isLive(hidden, 'conversation.composer.dock'), 'the commit pill is unmounted live')
-check(!isLive(hidden, 'sidebar.right.pane.tab'), 'the recall body is unmounted live')
-check(hidden.tabTypes.length === 0, 'the recall tab type is unregistered live')
+check(!isLive(hidden, 'sidebar.right.pane.tab'), 'both tab bodies are unmounted live')
+check(!isLive(hidden, 'conversation.chat.turnTail'), 'the recall explanation tail is unmounted live')
+check(!isLive(hidden, 'plugins.detail.section'), 'the plugin-page health summary is unmounted live')
+check(hidden.tabTypes.length === 0, 'both tab types are unregistered live')
 const hiddenRow = disposeIndex(hidden, hideCursor, 'sidebar.panellist')
 const hiddenMain = disposeIndex(hidden, hideCursor, 'main')
 check(
@@ -712,7 +729,7 @@ const showCursor = hidden.events.length
 live.controller.setFlags({ ...ALL_ON })
 const shown = live.state
 check(
-  liveNames(shown).length === 5 && [...liveNames(shown)].sort().join(',') === BOOT_SEATS.join(','),
+  liveNames(shown).length === 8 && [...liveNames(shown)].sort().join(',') === BOOT_SEATS.join(','),
   `switching back on re-registers every seat (saw ${liveNames(shown).join(', ') || 'nothing'})`,
 )
 const shownMain = registerIndex(shown, showCursor, 'main')
@@ -723,8 +740,8 @@ check(
 )
 check(optionsByName(shown, 'conversation.composer.dock')?.id === 'openviking-commit', 'the commit pill comes back')
 check(
-  shown.tabTypes.length === 1 && shown.tabTypes[0]?.definition.id === RECALL_TAB_ID,
-  'the recall tab type comes back',
+  shown.tabTypes.length === 2 && shown.tabTypes.some((held) => held.definition.id === RECALL_TAB_ID) && shown.tabTypes.some((held) => held.definition.id === HEALTH_TAB_ID),
+  'both tab types come back',
 )
 check(
   optionsByName(shown, 'sidebar.right.pane.tab')?.key === RECALL_TAB_ID,
@@ -757,7 +774,7 @@ check(
   'only the commit switch off leaves the sidebar entry mounted',
 )
 check(
-  noCommit.state.tabTypes.length === 1 && isLive(noCommit.state, 'sidebar.right.pane.tab'),
+  noCommit.state.tabTypes.length === 2 && liveOf(noCommit.state, 'sidebar.right.pane.tab').length === 2,
   'only the commit switch off leaves the recall surface mounted',
 )
 check(!isLive(noCommit.state, 'conversation.composer.dock'), 'the commit pill is the only surface removed')
@@ -774,7 +791,7 @@ check(
 )
 check(
   optionsByName(noSidebar.state, 'conversation.composer.dock')?.id === 'openviking-commit' &&
-    noSidebar.state.tabTypes.length === 1,
+    noSidebar.state.tabTypes.length === 2,
   'only the sidebar switch off keeps the pill and the recall tab',
 )
 
@@ -790,7 +807,7 @@ const tolerant = mountShell({
 })
 check(tolerant.threw === null, `apply() does not throw on malformed switch values${throwReason(tolerant.threw)}`)
 check(
-  liveNames(tolerant.state).length === 5,
+  liveNames(tolerant.state).length === 8,
   `only a literal boolean false hides a surface (saw ${liveNames(tolerant.state).join(', ') || 'nothing'})`,
 )
 const absentFlags = mountShell({
@@ -799,7 +816,7 @@ const absentFlags = mountShell({
   activeTab: openRecallTab(),
 })
 check(
-  liveNames(absentFlags.state).length === 5,
+  liveNames(absentFlags.state).length === 8,
   'a settings value that does not carry the switches keeps every surface mounted',
 )
 // A composition without the settings service (a remote Web deployment, or a
@@ -813,7 +830,7 @@ const noSettings = mountShell({
 })
 check(noSettings.threw === null, `apply() does not throw without the settings service${throwReason(noSettings.threw)}`)
 check(
-  liveNames(noSettings.state).length === 5,
+  liveNames(noSettings.state).length === 8,
   'a composition without the settings service keeps every surface mounted',
 )
 check(noSettings.state.entryIds.length === 0, 'and it never asks a missing service for a form')
@@ -893,7 +910,7 @@ check(cancelled.state.closes.length === 0, 'nothing is closed by the cancel itse
 cancelled.controller.setMounted('session-1')
 check(cancelled.state.closes.length === 0, 'mounting the column afterwards does not run a cancelled close')
 check(
-  isLive(cancelled.state, 'sidebar.right.pane.tab') && cancelled.state.tabTypes.length === 1,
+  liveOf(cancelled.state, 'sidebar.right.pane.tab').length === 2 && cancelled.state.tabTypes.length === 2,
   'the recall surface is mounted again, not closed',
 )
 check(cancelled.state.reports.length === 0, 'the cancel reports no failure')

@@ -4,10 +4,14 @@ English | [中文](README.zh.md)
 
 **v0.2.3** · [Changelog](CHANGELOG.md)
 
+> The v0.3 Explain feature set below is under `Unreleased`; the version line and
+> package stay at 0.2.3 until `pnpm run release 0.3.0` promotes and tags it.
+
 Brings your local [OpenViking](https://docs.openviking.ai) memory server into the
-DeepSeek Harness (DSH) Web GUI: a Studio panel in the left sidebar, and a commit
-status pill under the message box that shows what each session commit did to your
-memories.
+DeepSeek Harness (DSH) Web GUI: a Studio panel in the left sidebar, a commit
+status pill and diff browser under the message box, a per-turn explanation of
+what the memory plugin retrieved, and a Memory health tab that answers "why is
+this memory session not working?".
 
 Nothing needs to be patched in DSH or in the OpenViking plugin — it mounts as an
 ordinary DSH bundle.
@@ -40,11 +44,14 @@ Click the pill for details:
 - a **timeline** of the most recent 3 commits — when each happened, whether its
   extraction finished or failed, and how many memories it added, updated or
   deleted (the rest are one click away);
-- clicking a commit lists the **exact memories it changed**, with their
-  `viking://` paths;
-- any **failed extraction**, with the time and the reason the server reported.
-  Failures older than the newest commit stay listed there without changing the
-  pill.
+- clicking a commit opens a **diff browser**: filter by added, updated or
+  deleted, expand any change to see its before/after text with a line diff, copy
+  a `viking://` URI, or export the commit as JSON:
+
+  ![The commit diff browser showing an updated memory](assets/v03-after-commit-updated.png)
+- any **failed extraction**, with the time, the server error and the task id
+  while the task record is still retained, plus a copy-error control. Failures
+  older than the newest commit stay listed there without changing the pill.
 
 The panel and the pill read only. This plugin never commits, writes or deletes
 anything in OpenViking.
@@ -58,6 +65,44 @@ opening a row loads that entry's whole text. The plan the server retrieved with 
 too. Open it from the right sidebar's `+`
 guide; it is per session, like the column itself.
 
+![The Memory sources card under a completed reply](assets/v03-after-explain.png)
+
+**Why did this turn use that memory?** Under every completed reply the
+conversation gains a small *Memory sources* entry. Opening it replays that
+turn's prompt against the server's context face and shows the query, every hit
+with its score, category, `viking://` URI, read tier and provenance, the token
+budget (used/max), quotas, tier counts, exclusions, cross-turn de-duplication,
+the retrieval plan and the assembled injection block.
+
+The card is explicit that it is a **replay**: DSH does not retain the memory
+plugin's injected block, so claiming to show the historical injection would be
+false. Servers without the context face fall back to the per-target search and
+say so.
+
+![The Memory health tab with the session log and Doctor](assets/v03-after-health.png)
+
+**Is this session being captured?** A second right-sidebar tab, *Memory health*,
+answers the five questions that used to require guessing: nothing captured,
+captured but not committed, extracting after a commit, extraction failed, or
+writes queued locally. It shows messages, pending tokens and the threshold,
+commits, last commit and last auto-commit, recent tasks, and a timestamped
+activity timeline. It also reads the official plugin's local pending queue
+(counts, types and times only — never payloads).
+
+**Why is it not working?** The same tab carries the **Doctor**: endpoint,
+health, server version, identity, the mounted memory plugin's version and
+effective recall/capture/commit settings, where each connection value came from
+(profile override, environment, `ovcli.conf`/`.local`, or default), and live
+probes for the context face, rule search, skills, the model-visible
+`mcp__openviking__*` tools, `fs/stat` and retrieval metrics. Every check points at
+a likely fix, and the diagnostic JSON or
+`curl /health` command is one click away. API keys are never included.
+
+![The Doctor's checks and capability probes](assets/v03-after-doctor.png)
+
+The plugin's own page under **Plugins** also gets a compact health summary, so
+"is it working?" can be answered without opening a session.
+
 ![The OpenViking Studio panel inside the DSH web GUI](assets/studio-panel.png)
 
 The Studio panel, the sidebar row that opens it, and the commit pill below the composer.
@@ -66,8 +111,8 @@ The Studio panel, the sidebar row that opens it, and the commit pill below the c
 
 | | |
 | --- | --- |
-| DSH | 0.2.0-rc.2 or newer (desktop or web profile; verified on 0.2.1-rc.3) |
-| OpenViking | A local server; 0.5.1.1 tested. Studio is served at `/studio/` on the same port |
+| DSH | 0.2.0-rc.2 or newer (desktop or web profile; verified on 0.2.0-rc.2, 0.2.1-rc.5 and 0.2.2-rc.1) |
+| OpenViking | A local server; 0.5.1.1–0.5.3 tested (0.5.3 with the context face). Studio is served at `/studio/` on the same port |
 | Memory plugin | `@openviking/dsh-memory-plugin` recommended — it is what commits sessions. Without it the panel still works, but pending-token thresholds are unknown |
 
 ## Install
@@ -126,8 +171,12 @@ The same settings can still be written by hand in your profile's patch file
 | `showSidebarEntry` | `true` | Interface switch: the OpenViking entry in the left sidebar |
 | `showCommitStatus` | `true` | Interface switch: the commit status pill under the message box |
 | `showRecallPanel` | `true` | Interface switch: the Memory recall tab in the right sidebar |
+| `showRecallExplain` | `true` | Interface switch: the per-turn Memory sources entry in the conversation |
+| `showHealthPanel` | `true` | Interface switch: the Memory health tab and the Plugins-page health summary |
 
-The three **interface switches** control the three surfaces independently. They
+![The five interface switches in the plugin's Configure form](assets/v03-after-settings.png)
+
+The five **interface switches** control the five surfaces independently. They
 take effect as soon as you save — the GUI mounts or unmounts the surface without
 a reload or a restart. The **Configure** form itself is never hidden, so a
 surface switched off can always be switched back on there. Hiding the sidebar
@@ -144,9 +193,9 @@ First check the plugin's own switches (Plugins → this plugin → **Configure**
 Otherwise the client half is served as a file and picked up on page load. Reload
 the window (⌘R). If it is still missing, restart the app.
 
-**I hid the OpenViking row / pill / recall tab and want it back.**
+**I hid the OpenViking row / pill / recall tab / explanation / health tab and want it back.**
 Open **Plugins** → *dsh-openviking-enhance* → **Configure** on its row and switch
-it back on, then save. That form is always available, even with all three
+it back on, then save. That form is always available, even with all five
 surfaces hidden.
 
 **The panel says it cannot reach OpenViking.**
@@ -158,6 +207,12 @@ The commit was archived but OpenViking could not turn it into memories — those
 memories are not in your library. Click the pill for the server's own error; it is
 usually a problem with the extraction model configured in `~/.openviking/ov.conf`.
 
+**No memories appear in a reply, or a recall is empty.**
+Open *Memory health* → *Doctor*: it distinguishes an unreachable server, a missing
+or disabled memory plugin, recall/capture being off, an unknown commit threshold,
+a legacy server without the context face, and a local write queue. Then open the
+*Memory recall* tab and search the same prompt to see the server's own ranking.
+
 **The pill shows a token count instead of a commit count.**
 `@openviking/dsh-memory-plugin` is not installed, so the commit threshold is
 unknown. Commits themselves still work; only the progress denominator is missing.
@@ -165,11 +220,11 @@ unknown. Commits themselves still work; only the progress denominator is missing
 **The timeline shows only 3 commits.**
 That is the default. Click *show all*.
 
-**There is no recall tab in the right sidebar.**
-The tab is reached through that column's own `+` guide, and it only exists after a
-window reload (the client half is a file the page loads). If DSH is older than
-0.2.0-rc.2 it has no right sidebar to contribute to: the row is skipped and the
-Studio panel and the pill keep working.
+**There is no recall or Memory health tab in the right sidebar.**
+The tabs are reached through that column's own `+` guide, and they only exist
+after a window reload (the client half is a file the page loads). If DSH is older
+than 0.2.0-rc.2 it has no right sidebar to contribute to: the rows are skipped and
+the Studio panel and the pill keep working.
 
 **I changed the code and nothing happened.**
 The two halves reload differently: the client half after a window reload, the host
@@ -184,6 +239,10 @@ half only after an app restart.
   covers recent commits only. The archives themselves are permanent.
 - The plugin's internal routes answer loopback requests only, and only from the
   DSH window's own origin.
+- The v0.3 screenshots in `assets/` were captured against the stand-in server in
+  `scripts/screenshot-fixture.mjs` and a mock model, with a light theme at a
+  1440×900 viewport. The `v03-before-*` images are the released v0.2.3 build in
+  the same DSH 0.2.2 web profile; no real memory data or account is involved.
 
 ## Development
 

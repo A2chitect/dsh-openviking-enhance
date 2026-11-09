@@ -20,11 +20,37 @@
  * Nothing here writes: retrieval is read-only on the server, and the session log
  * is only read.
  */
-import type { PluginNotice, RecallBucket, RecallContent, RecallItem, RecallPayload, RecallQuerySource } from '../shared/protocol.ts'
-import { RECALL_BUCKETS, RECALL_CONTENT_MAX_CHARS, RECALL_DEFAULT_LIMIT, RECALL_MAX_LIMIT } from '../shared/protocol.ts'
-import type { OpenVikingApi, OvSearchItem, OvSearchResponse } from './openviking-api.ts'
+import type {
+  PluginNotice,
+  RecallBucket,
+  RecallContent,
+  RecallEffectiveSettings,
+  RecallExplainEntry,
+  RecallExplainStats,
+  RecallExplanation,
+  RecallItem,
+  RecallPayload,
+  RecallQuerySource,
+} from '../shared/protocol.ts'
+import {
+  RECALL_BUCKETS,
+  RECALL_CONTENT_MAX_CHARS,
+  RECALL_DEFAULT_LIMIT,
+  RECALL_EXPLAIN_MAX_CHARS,
+  RECALL_MAX_LIMIT,
+} from '../shared/protocol.ts'
+import type {
+  OpenVikingApi,
+  OvContextItem,
+  OvContextRequest,
+  OvContextResponse,
+  OvContextStats,
+  OvSearchItem,
+  OvSearchResponse,
+} from './openviking-api.ts'
 import { resolveSessionUri } from './commit-service.ts'
 import type { CommitService } from './commit-service.ts'
+import { memoActive, readPluginMemo, type ContextFaceMemo, type LocalStateOptions } from './local-state.ts'
 
 /** Longest query taken from a session log; longer text is truncated, not sent whole. */
 const MAX_QUERY_CHARS = 2000
@@ -35,6 +61,8 @@ export interface RecallServiceOptions {
   commit: CommitService
   /** How long one query's answer is reused for re-renders. */
   cacheTtlMs?: number
+  /** Test seam for the official plugin's local capability memo. */
+  localState?: LocalStateOptions
   now?: () => number
 }
 
@@ -79,6 +107,147 @@ export class RecallService {
     // retry and caching it would pin a dead server into the panel.
     if (value.query.text.length > 0) this.cache.set(cacheKey, { at: this.now(), value })
     return value
+  }
+
+  /**
+   * Explain one recall: the query, every hit with the server's own score and
+   * provenance, the token budget and, above all, the server's accounting.
+   *
+   * Two data paths, in the order the official memory plugin tries them:
+   *
+   *  1. the **context face** (`mode: "context"`), which returns one assembled
+   *     block plus `stats` — quotas, budget, de-duplication, exclusions;
+   *  2. the **per-target search** the recall panel already uses, for servers
+   *     that predate the context face. It has no accounting, so `stats` is null
+   *     and the card says the server is the legacy path.
+   *
+   * `replay` is always true and deliberately not configurable: DSH does not
+   * retain the memory plugin's injected block, so this is the same request
+   * replayed under the session's current state. Saying so is more useful than
+   * pretending the numbers are the historical injection's.
+   */
+  async explain(
+    sessionId: string,
+    query?: string,
+    options: { fresh?: boolean; source?: RecallQuerySource } = {},
+  ): Promise<RecallExplanation> {
+    const started = this.now()
+    const warnings: PluginNotice[] = []
+    const { api, commit } = this.options
+
+    const ovSessionId = commit.ovSessionId(sessionId)
+    const peer = commit.actorPeer(sessionId) ?? null
+    const request = peer === null ? {} : { actorPeerId: peer }
+    const config = commit.pluginConfig(sessionId)
+    const effective = effectiveRecallSettings(config)
+
+    const explicit = (query ?? '').trim().slice(0, MAX_QUERY_CHARS)
+    const source: RecallQuerySource = options.source ?? (explicit.length > 0 ? 'manual' : 'session')
+
+    const meta = await api.getSession(ovSessionId, request)
+    const sessionUri = meta.ok && meta.result ? resolveSessionUri(meta.result, ovSessionId, api.user) : null
+    if (!meta.ok) hints(warnings, 'sessionFailed', { error: meta.error ?? `HTTP ${meta.status}` })
+
+    let queryText = explicit
+    if (queryText.length === 0 && sessionUri !== null) {
+      const prompt = await this.sessionPrompt(sessionUri, request)
+      if (prompt === null) hints(warnings, 'noPrompt')
+      else queryText = prompt
+    }
+
+    const base = {
+      sessionId,
+      ovSessionId,
+      sessionUri,
+      peer,
+      effective,
+      replay: true as const,
+      searchedAt: new Date().toISOString(),
+    }
+
+    if (queryText.length === 0) {
+      return {
+        ...base,
+        query: { text: '', source },
+        mode: 'search',
+        entries: [],
+        stats: null,
+        rendered: null,
+        renderedTruncated: false,
+        plan: null,
+        targets: [],
+        total: 0,
+        latencyMs: this.now() - started,
+        warnings,
+      }
+    }
+
+    // The official plugin remembers a server without a context face for a few
+    // hours; honouring that memo avoids one guaranteed 400 on every explanation.
+    const memo = await readPluginMemo<ContextFaceMemo>('context-face.json', this.options.localState)
+    let contextError: string | null = null
+    if (!memoActive(memo, this.now())) {
+      const body = contextRequestBody(queryText, ovSessionId, config)
+      const timeoutMs = contextRequestTimeoutMs(config, body)
+      const reply = await api.searchContext(
+        body,
+        timeoutMs === undefined ? request : { ...request, timeoutMs },
+      )
+      if (reply.ok && reply.result !== null) {
+        return this.contextExplanation(base, queryText, source, reply.result, started, warnings)
+      }
+      contextError = reply.error ?? `HTTP ${reply.status}`
+    }
+
+    const fallback = await this.collect(sessionId, queryText, RECALL_DEFAULT_LIMIT)
+    if (contextError !== null) {
+      hints(warnings, 'contextUnavailable', { error: contextError })
+    }
+    for (const warning of fallback.warnings) warnings.push(warning)
+    return {
+      ...base,
+      query: { text: fallback.query.text, source },
+      mode: 'search',
+      entries: entriesFromPayload(fallback),
+      stats: null,
+      rendered: null,
+      renderedTruncated: false,
+      plan: fallback.plan,
+      targets: fallback.targets,
+      total: fallback.total,
+      latencyMs: this.now() - started,
+      warnings,
+    }
+  }
+
+  /** The context-face answer, mapped onto the explanation contract. */
+  private contextExplanation(
+    base: Pick<
+      RecallExplanation,
+      'sessionId' | 'ovSessionId' | 'sessionUri' | 'peer' | 'effective' | 'replay' | 'searchedAt'
+    >,
+    queryText: string,
+    source: RecallQuerySource,
+    response: OvContextResponse,
+    started: number,
+    warnings: PluginNotice[],
+  ): RecallExplanation {
+    const entries = (response.entries ?? []).map(toExplainEntry)
+    const rendered = typeof response.rendered === 'string' ? response.rendered : null
+    return {
+      ...base,
+      query: { text: queryText, source },
+      mode: 'context',
+      entries,
+      stats: toExplainStats(response.stats),
+      rendered: rendered === null ? null : rendered.slice(0, RECALL_EXPLAIN_MAX_CHARS),
+      renderedTruncated: rendered !== null && rendered.length > RECALL_EXPLAIN_MAX_CHARS,
+      plan: null,
+      targets: [],
+      total: entries.length,
+      latencyMs: this.now() - started,
+      warnings,
+    }
   }
 
   private async collect(sessionId: string, explicitQuery: string, limit: number): Promise<RecallPayload> {
@@ -289,6 +458,236 @@ function textOfParts(parts: unknown): string {
 function reasoningOf(response: OvSearchResponse): string | null {
   const reasoning = response.query_plan?.reasoning
   return typeof reasoning === 'string' && reasoning.trim().length > 0 ? reasoning.trim() : null
+}
+
+/** Push one host notice; the wording lives in the client's `notice.*` table. */
+function hints(list: PluginNotice[], code: string, params?: Record<string, string | number>): void {
+  list.push(params === undefined ? { code } : { code, params })
+}
+
+function asNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function asText(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null
+}
+
+/**
+ * The context-face request the mounted memory plugin would build for this
+ * session, minus the parts that depend on its local compressor.
+ *
+ * `recallLimitConfigured` / `recallMaxTokensConfigured` are the plugin's own
+ * "was this knob explicitly set" flags: it sends `quotas` and `max_tokens` only
+ * when they are, so a default install keeps the server's policy. Sending them
+ * unconditionally would change the very ranking the explanation is meant to
+ * show.
+ */
+export function contextRequestBody(
+  query: string,
+  ovSessionId: string,
+  config: Record<string, unknown> | null,
+): OvContextRequest {
+  // These fallbacks only feed the two `*Configured` branches below; when the
+  // knobs are unset the fields are omitted and the server's own defaults apply.
+  // Keeping the fallbacks aligned with 0.5.32's DEFAULT_CONTEXT_* values is a
+  // last-resort guard, not a claim about a future server.
+  const limit = Math.max(1, Math.floor(asNumber(config?.recallLimit) ?? 10))
+  const maxTokens = Math.max(64, Math.floor(asNumber(config?.recallMaxTokens) ?? 1600))
+  const body: OvContextRequest = {
+    query,
+    mode: 'context',
+    purpose: 'coding',
+    score_threshold: asNumber(config?.scoreThreshold) ?? 0.35,
+    session_id: ovSessionId,
+  }
+  if (config?.recallLimitConfigured === true) body.quotas = codingQuotas(limit)
+  if (config?.recallMaxTokensConfigured === true) body.max_tokens = maxTokens
+  const dedup = asNumber(config?.recallDedupTurns)
+  const dedupTurns = dedup === null ? 5 : Math.max(0, Math.floor(dedup))
+  if (dedupTurns > 0) body.dedup_turns = dedupTurns
+  if (config?.recallQueryExpansionConfigured === true) {
+    body.query_expansion = String(config.recallQueryExpansion).trim().toLowerCase() === 'off' ? 'off' : 'auto'
+  }
+  if (config?.recallPeerScope === 'actor') body.peer_scope = 'actor'
+  const decay = asText(config?.recallEventsDecayProtection)?.trim()
+  if (decay !== undefined && decay.length > 0) body.events_time_decay_protection = decay
+  const exclude = config?.recallExcludeUris
+  if (Array.isArray(exclude)) {
+    const uris = exclude.filter((value): value is string => typeof value === 'string' && value.length > 0)
+    if (uris.length > 0) body.exclude_uris = uris.slice(0, 200)
+  }
+  const rewrite = asText(config?.recallRewrite)?.trim().toLowerCase() ?? null
+  // The official plugin's real call site never passes `localCompressorAvailable`,
+  // so `auto` always sends the server-side rewrite. Mirror it rather than quietly
+  // sending a different request than the one the turn made.
+  if (rewrite === 'server') body.rewrite = true
+  else if (rewrite === 'auto') body.rewrite = 'auto'
+  if (body.rewrite !== undefined) {
+    const bullets = asNumber(config?.recallCompressMaxBullets)
+    if (config?.recallCompressMaxBulletsConfigured === true && bullets !== null) {
+      body.rewrite_max_bullets = Math.max(1, Math.floor(bullets))
+    }
+  }
+  return body
+}
+
+/**
+ * The HTTP deadline for one context request, derived the way the memory plugin
+ * derives it.
+ *
+ * The server pipeline is serial and the expansion and rewrite stages have their
+ * own fuses; a request that asks for either must survive the longest of them or
+ * the card would report a healthy server as unreachable. An explicit
+ * `recallContextTimeoutMs` wins; otherwise the floor is 45 s for rewrite and 15 s
+ * for expansion, never below the plugin's `timeoutMs`.
+ */
+export function contextRequestTimeoutMs(
+  config: Record<string, unknown> | null,
+  body: Pick<OvContextRequest, 'rewrite' | 'session_id' | 'query_expansion'>,
+): number | undefined {
+  const configured = asNumber(config?.recallContextTimeoutMs)
+  if (configured !== null && configured > 0) return Math.max(1000, Math.floor(configured))
+  const wantsRewrite = body.rewrite !== undefined
+  const wantsExpansion = body.session_id !== undefined && body.query_expansion !== 'off'
+  if (!wantsRewrite && !wantsExpansion) return undefined
+  const floor = wantsRewrite ? 45_000 : 15_000
+  return Math.max(asNumber(config?.timeoutMs) ?? 0, floor)
+}
+
+/**
+ * The plugin's coding-purpose quota split, mirrored exactly.
+ *
+ * This is only used when the person explicitly configured a recall limit. The
+ * weights and the largest-remainder loop are copied from the memory plugin's
+ * `codingQuotas`; a different split would send a different request than the one
+ * a real turn makes.
+ */
+export function codingQuotas(limit: number): Record<string, number> {
+  const weights: Record<string, number> = {
+    events: 1,
+    entities: 2,
+    preferences: 1,
+    experiences: 1,
+    resources: 3,
+    skills: 2,
+  }
+  const slots = Math.max(1, Math.floor(limit))
+  const order = Object.keys(weights)
+  const quotas: Record<string, number> = Object.fromEntries(order.map((key) => [key, 0]))
+  if (slots < order.length) {
+    for (const key of order) quotas[key] = 1
+    return quotas
+  }
+  for (const key of order) quotas[key] = 1
+  const totalWeight = Object.values(weights).reduce((sum, weight) => sum + weight, 0)
+  const ideals: Record<string, number> = Object.fromEntries(
+    order.map((key) => [key, (slots * (weights[key] ?? 0)) / totalWeight]),
+  )
+  const allocated = () => order.reduce((sum, key) => sum + (quotas[key] ?? 0), 0)
+  while (allocated() < slots) {
+    const key = order.reduce((best, candidate) =>
+      (ideals[candidate] ?? 0) - (quotas[candidate] ?? 0) > (ideals[best] ?? 0) - (quotas[best] ?? 0)
+        ? candidate
+        : best,
+    )
+    quotas[key] = (quotas[key] ?? 0) + 1
+  }
+  return quotas
+}
+
+/** The effective, non-secret memory-plugin values the explanation used. */
+export function effectiveRecallSettings(
+  config: Record<string, unknown> | null,
+): RecallEffectiveSettings | null {
+  if (config === null) return null
+  return {
+    scoreThreshold: asNumber(config.scoreThreshold),
+    recallLimit: asNumber(config.recallLimit),
+    recallMaxTokens: asNumber(config.recallMaxTokens),
+    recallTokenBudget: asNumber(config.recallTokenBudget),
+    dedupTurns: asNumber(config.recallDedupTurns),
+    queryExpansion: asText(config.recallQueryExpansion),
+    rewrite: asText(config.recallRewrite),
+    peerScope: asText(config.recallPeerScope),
+    commitTokenThreshold: asNumber(config.commitTokenThreshold),
+  }
+}
+
+/** The display group for a hit, from its URI or the server's category. */
+export function bucketOf(uri: string, category: string | null): string {
+  if (category === 'skills' || uri.includes('/skills/')) return 'skills'
+  if (category === 'resources' || uri.includes('/resources/')) return 'resources'
+  return 'memories'
+}
+
+function toExplainEntry(item: OvContextItem): RecallExplainEntry {
+  const category = asText(item.category) ?? memoryTypeOf(item.uri)
+  const text = asText(item.text) ?? asText(item.abstract) ?? ''
+  return {
+    uri: item.uri,
+    score: Number.isFinite(item.score) ? item.score : 0,
+    bucket: bucketOf(item.uri, category),
+    category: category.length > 0 ? category : 'memory',
+    detail: asText(item.detail),
+    origin: asText(item.origin),
+    abstract: text,
+    memoryType: memoryTypeOf(item.uri) || category,
+    level: typeof item.level === 'number' && Number.isFinite(item.level) ? item.level : null,
+    tags: Array.isArray(item.tags) ? item.tags.filter((tag): tag is string => typeof tag === 'string') : [],
+  }
+}
+
+function toExplainStats(stats: OvContextStats | undefined): RecallExplainStats | null {
+  if (stats === undefined) return null
+  const dedup = stats.dedup
+  return {
+    searched: stats.searched ?? {},
+    candidates: stats.candidates ?? null,
+    returned: stats.returned ?? null,
+    dropped: stats.dropped ?? null,
+    deduped: stats.deduped ?? null,
+    excluded: stats.excluded ?? null,
+    maxTokens: stats.max_tokens ?? null,
+    usedTokens: stats.used_tokens ?? null,
+    quotas: stats.quotas ?? {},
+    tierCounts: stats.tier_counts ?? {},
+    origins: stats.origins ?? {},
+    peerScope: asText(stats.peer_scope),
+    plannedQueries: Array.isArray(stats.planned_queries)
+      ? stats.planned_queries.filter((value): value is string => typeof value === 'string')
+      : [],
+    queryExpansion: asText(stats.query_expansion),
+    rewrite: asText(stats.rewrite),
+    scoreThreshold: asNumber(stats.score_threshold),
+    dedup:
+      dedup === undefined
+        ? null
+        : {
+            turns: asNumber(dedup.turns),
+            status: asText(dedup.status),
+            cooled: asNumber(dedup.cooled),
+            turn: asNumber(dedup.turn),
+          },
+    fill: stats.fill ?? null,
+  }
+}
+
+function entriesFromPayload(payload: RecallPayload): RecallExplainEntry[] {
+  return payload.buckets.flatMap((bucket) =>
+    bucket.items.map((item) => ({
+      uri: item.uri,
+      score: item.score,
+      bucket: bucket.bucket,
+      category: item.memoryType || item.contextType || bucket.bucket,
+      detail: item.level === null ? null : `L${item.level}`,
+      origin: null,
+      abstract: item.abstract,
+      memoryType: item.memoryType,
+      level: item.level,
+      tags: item.tags,
+    })),
+  )
 }
 
 /** Plural path segment → the singular kind a tag names. */

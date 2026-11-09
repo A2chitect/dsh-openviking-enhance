@@ -232,7 +232,7 @@ export interface RecallBucket {
 }
 
 /** Where the query being shown came from. */
-export type RecallQuerySource = 'session' | 'manual'
+export type RecallQuerySource = 'session' | 'manual' | 'turn'
 
 export interface RecallPayload {
   sessionId: string
@@ -261,6 +261,306 @@ export interface RecallContent {
   uri: string
   text: string
   truncated: boolean
+}
+
+/**
+ * One hit as the recall explanation shows it.
+ *
+ * The context face returns a flat list with the server's own category, read
+ * tier and provenance; the fallback search returns the old bucketed shape.
+ * `bucket` is the display group either way, and `category` is the server's
+ * finer answer (`events`, `entities`, `resources`, …).
+ */
+export interface RecallExplainEntry {
+  uri: string
+  score: number
+  /** `memories` | `resources` | `skills` — the group the panel renders. */
+  bucket: string
+  /** The server's own category, when it names one. */
+  category: string
+  /** `overview` | `full` | `abstract` | `uri` — the read tier the server served. */
+  detail: string | null
+  /** `self` | `actor_peer` | `other_peer`, when the server reports provenance. */
+  origin: string | null
+  abstract: string
+  memoryType: string
+  level: number | null
+  tags: string[]
+}
+
+/**
+ * The context face's own accounting for one answer.
+ *
+ * Every field is optional on the wire: these are the server's diagnostics, and a
+ * version that omits one must degrade to "unknown", not fail the whole card.
+ * The panel explains a recall with exactly these numbers rather than guessing
+ * from the hit list.
+ */
+export interface RecallExplainStats {
+  /** Per-category searched counts, e.g. `{ events: 18, entities: 12 }`. */
+  searched: Record<string, number>
+  candidates: number | null
+  returned: number | null
+  dropped: number | null
+  deduped: number | null
+  excluded: number | null
+  maxTokens: number | null
+  usedTokens: number | null
+  quotas: Record<string, number>
+  tierCounts: Record<string, number>
+  origins: Record<string, number>
+  peerScope: string | null
+  plannedQueries: string[]
+  queryExpansion: string | null
+  rewrite: string | null
+  scoreThreshold: number | null
+  /** Cross-turn de-duplication: how many turns, whether it ran, how many cooled. */
+  dedup: { turns: number | null; status: string | null; cooled: number | null; turn: number | null } | null
+  fill: Record<string, number> | null
+}
+
+/** Effective values read from the mounted memory plugin, when it exposes them. */
+export interface RecallEffectiveSettings {
+  scoreThreshold: number | null
+  recallLimit: number | null
+  recallMaxTokens: number | null
+  recallTokenBudget: number | null
+  dedupTurns: number | null
+  queryExpansion: string | null
+  rewrite: string | null
+  peerScope: string | null
+  commitTokenThreshold: number | null
+}
+
+/**
+ * "Why did this turn recall these?" — the answer to the question the dashboard
+ * could never answer.
+ *
+ * `replay: true` is deliberate and is never omitted: DSH does not retain the
+ * memory plugin's injected block, so this is the same context request replayed
+ * for the turn's prompt under the session's current state. The card says so
+ * instead of pretending to show the historical injection. `rendered` is the
+ * server-assembled block this replay would inject.
+ */
+export interface RecallExplanation {
+  sessionId: string
+  ovSessionId: string
+  sessionUri: string | null
+  peer: string | null
+  query: { text: string; source: RecallQuerySource }
+  /** The server's assembled context face, or the per-target search fallback. */
+  mode: 'context' | 'search'
+  entries: RecallExplainEntry[]
+  stats: RecallExplainStats | null
+  rendered: string | null
+  renderedTruncated: boolean
+  plan: string | null
+  targets: string[]
+  total: number
+  latencyMs: number
+  searchedAt: string
+  warnings: PluginNotice[]
+  /** Always true: the original injection is not retained; this is a replay. */
+  replay: true
+  effective: RecallEffectiveSettings | null
+}
+
+/** Cap on the assembled block returned by `/recall/explain`. */
+export const RECALL_EXPLAIN_MAX_CHARS = 20000
+
+/**
+ * The one state the session log reports.
+ *
+ * These are the five states the dashboard must distinguish — plus the normal
+ * committed state and "the host could not ask":
+ *
+ *  - `no-messages`   nothing was ever captured for this session
+ *  - `not-committed` messages are captured and accumulate toward the threshold
+ *  - `extracting`    a commit archived and its memory extraction is still running
+ *  - `failed`        the newest extraction failed; its memories are missing
+ *  - `queued`        the official plugin's local pending queue holds writes
+ *  - `committed`     the newest commit finished and nothing is waiting
+ *  - `unknown`       the server or its session answer could not be read
+ */
+export type SessionMemoryState =
+  | 'no-messages'
+  | 'not-committed'
+  | 'extracting'
+  | 'failed'
+  | 'queued'
+  | 'committed'
+  | 'unknown'
+
+export interface SessionLogMeta {
+  /** Captured, not-yet-committed messages on the server. */
+  messageCount: number
+  /** Every message the server has ever received for this session. */
+  totalMessageCount: number
+  commitCount: number
+  pendingTokens: number
+  keepRecentCount: number | null
+  createdAt: string | null
+  updatedAt: string | null
+  lastMessageAt: string | null
+  lastCommitAt: string | null
+  lastAutoCommitAt: string | null
+  memoriesExtracted: { total: number; memoryWrite: number; memoryEdit: number } | null
+  llmTokens: { prompt: number; completion: number; total: number } | null
+}
+
+/** One `session_commit` task, flattened for the log. */
+export interface SessionLogTask {
+  taskId: string
+  status: string
+  stage: string | null
+  error: string | null
+  createdAt: string | null
+  updatedAt: string | null
+  processingSeconds: number | null
+  archiveUri: string | null
+  memoryDiffUri: string | null
+}
+
+/**
+ * One write the official memory plugin queued locally while the server was
+ * unreachable. The payload is deliberately never read: it can contain transcript
+ * content, and the log only needs to say that a write is waiting.
+ */
+export interface PendingQueueItem {
+  type: string
+  createdAt: string | null
+  retries: number
+  processing: boolean
+}
+
+export interface PendingQueueSummary {
+  /** Whether the local queue directory could be read at all. */
+  available: boolean
+  /** `OPENVIKING_PENDING_DIR`, when it overrides the default location. */
+  directory: string | null
+  total: number
+  items: PendingQueueItem[]
+  error: string | null
+}
+
+export type SessionLogEventKind = 'created' | 'message' | 'commit' | 'auto-commit' | 'failed' | 'queued'
+
+/** One timestamped fact on the session's activity timeline. */
+export interface SessionLogEvent {
+  at: string
+  kind: SessionLogEventKind
+  /** A server-side detail, e.g. the failed stage. Never memory content. */
+  detail: string | null
+}
+
+/** The session memory log: capture, pending tokens and commit progress. */
+export interface SessionMemoryLog {
+  sessionId: string
+  ovSessionId: string
+  sessionUri: string | null
+  peer: string | null
+  state: SessionMemoryState
+  /** Effective commit threshold from the memory plugin; null when unknown. */
+  threshold: number | null
+  meta: SessionLogMeta
+  tasks: SessionLogTask[]
+  archives: CommitArchive[]
+  summaries: ArchiveSummary[]
+  pending: PendingQueueSummary
+  /** Recent timestamped facts, newest first. Not a full state-transition audit. */
+  events: SessionLogEvent[]
+  warnings: PluginNotice[]
+  observedAt: string
+  /** The queue is the official plugin's local state, not this plugin's. */
+  queueSource: 'official-plugin'
+}
+
+/** Where one connection value came from. */
+export type ConnectionSource = 'override' | 'env' | 'ovcli.local' | 'ovcli' | 'default' | 'none'
+
+export interface ConnectionFieldOrigin {
+  field: 'endpoint' | 'apiKey' | 'account' | 'user'
+  source: ConnectionSource
+  /** Environment variable or config file name; never a secret value. */
+  detail: string | null
+  /** Whether a value is set (for apiKey: whether one is configured). */
+  configured: boolean
+}
+
+export type DoctorCapabilityState = 'available' | 'unavailable' | 'legacy' | 'unknown' | 'skipped'
+
+export interface DoctorCapability {
+  state: DoctorCapabilityState
+  /** A short server fact, e.g. `233 queries`, or the failing status. */
+  detail: string | null
+}
+
+export type DoctorCheckStatus = 'ok' | 'warn' | 'error' | 'unknown' | 'skipped'
+
+export interface DoctorCheck {
+  id: string
+  status: DoctorCheckStatus
+  /** A short, already-readable fact. */
+  value: string | null
+  /** What to do when this check is not ok. Copy key under `doctor.hint.*`. */
+  hint: string | null
+}
+
+export interface DoctorReport {
+  observedAt: string
+  endpoint: string
+  health: { healthy: boolean; version: string | null; authMode: string | null; latencyMs: number; error: string | null }
+  connection: {
+    endpoint: string
+    origins: ConnectionFieldOrigin[]
+  }
+  identity: {
+    configuredAccount: string
+    configuredUser: string
+    serverUser: string | null
+    serverInitialized: boolean | null
+    sessionAccount: string | null
+    sessionUser: string | null
+  }
+  plugin: {
+    mounted: boolean
+    version: string | null
+    peer: string | null
+    peerSource: string | null
+    ovSessionId: string | null
+    /** Effective, non-secret settings the mounted plugin exposes. */
+    effective: Record<string, string | number | boolean | null>
+  }
+  session: {
+    known: boolean
+    uri: string | null
+    messageCount: number | null
+    commitCount: number | null
+    pendingTokens: number | null
+    lastCommitAt: string | null
+  }
+  capabilities: {
+    contextFace: DoctorCapability
+    ruleSearch: DoctorCapability
+    skills: DoctorCapability & { count: number | null }
+    /** Whether the memory plugin's MCP tools are visible to the model. */
+    mcpTools: DoctorCapability & { count: number; names: string[] }
+    fsStat: DoctorCapability
+    observer: DoctorCapability & { avgLatencyMs: number | null; queries: number | null }
+  }
+  checks: DoctorCheck[]
+  compatibility: {
+    /** DSH version detected from the running web host, when it exposes one. */
+    dshVersion: string | null
+    /** The semver range this plugin's manifest declares. */
+    pluginRange: string
+    dshCompatible: boolean | null
+    /** The OpenViking range this release is tested against. */
+    testedRange: string
+  }
+  warnings: PluginNotice[]
+  /** A copyable, secret-free snapshot of everything above. */
+  diagnostics: Record<string, unknown>
 }
 
 /** Entries shown per bucket before the panel offers "show all". */
