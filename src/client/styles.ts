@@ -866,6 +866,327 @@ button.ove-pill-errored:hover, button.ove-pill-errored[aria-expanded="true"] {
 }
 .ove-explore-pick:hover { background: var(--dsw-alias-interactive-bg-hover); }
 .ove-explore-pick-active { border-color: var(--dsw-alias-state-business-primary); color: var(--dsw-alias-state-business-primary); }
+/* ======================================================================
+ * v0.5 "Collaborate" — scope chip, write dialogs/toast, Activity tab,
+ * command card, profile editor.
+ *
+ * Same token vocabulary as the rest of the file: DSH alias variables for
+ * colour/border/radius, the shell's secondary font size for chrome text.
+ * The overlay layer is click-through; every entry here opts back in with
+ * 'pointer-events: auto' on its visible surface.
+ * ==================================================================== */
+
+/* ---- the scope chip (F12) -------------------------------------------- */
+.ove-scope { position: relative; display: inline-flex; align-items: center; min-width: 0; }
+.ove-scope-compact { flex: none; }
+.ove-scope-chip {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+  padding: 1px 8px; font: inherit; font-size: 12px; line-height: 20px;
+  color: var(--dsw-alias-label-tertiary); background: 0 0; border: 0;
+  border-radius: 999px; cursor: pointer;
+}
+.ove-scope-chip:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-secondary); }
+.ove-scope-dot {
+  width: 6px; height: 6px; border-radius: 50%; flex: none;
+  background: var(--dsw-alias-state-business-primary);
+}
+.ove-scope-label { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ove-scope-identity { color: var(--dsw-alias-label-tertiary); white-space: nowrap; }
+.ove-scope-warn-glyph { color: var(--dsw-alias-state-warning-primary, #d29922); }
+.ove-scope-loading,
+.ove-scope-error { font-size: 12px; color: var(--dsw-alias-label-tertiary); }
+.ove-scope-detail {
+  position: absolute; z-index: 40; top: calc(100% + 6px); left: 0; width: 340px; max-width: 80vw;
+  padding: 10px 12px; text-align: left;
+  background: var(--dsw-alias-bg-l1, var(--dsw-alias-bg-base)); color: var(--dsw-alias-label-primary);
+  border: .5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .24);
+}
+.ove-scope-detail-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ove-scope-detail-title { font-size: 12px; font-weight: 600; }
+.ove-scope-close {
+  font: inherit; font-size: 14px; line-height: 1; color: var(--dsw-alias-label-tertiary);
+  background: 0 0; border: 0; cursor: pointer; padding: 2px 4px;
+}
+.ove-scope-rows { margin: 8px 0; }
+.ove-scope-row {
+  display: grid; grid-template-columns: minmax(84px, auto) minmax(0, 1fr);
+  gap: 2px 10px; padding: 1px 0; font-size: 12px;
+}
+.ove-scope-row dt { margin: 0; color: var(--dsw-alias-label-tertiary); }
+.ove-scope-row dd { margin: 0; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }
+.ove-scope-profiles { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.ove-scope-profiles-title { font-size: 12px; color: var(--dsw-alias-label-secondary); }
+.ove-scope-profile {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+  padding: 4px 8px; font: inherit; font-size: 12px; text-align: left;
+  color: var(--dsw-alias-label-secondary); background: 0 0; cursor: pointer;
+  border: .5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-sm);
+}
+.ove-scope-profile:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.ove-scope-profile:disabled { cursor: default; opacity: .65; }
+.ove-scope-profile-active { border-color: var(--dsw-alias-state-business-primary); color: var(--dsw-alias-state-business-primary); }
+.ove-scope-profile-meta { color: var(--dsw-alias-label-tertiary); font-size: 11px; overflow-wrap: anywhere; }
+.ove-scope-hint { margin: 6px 0 0; font-size: 11px; color: var(--dsw-alias-label-tertiary); overflow-wrap: anywhere; }
+.ove-scope-warn { font-size: 11px; color: var(--dsw-alias-state-warning-primary, #d29922); overflow-wrap: anywhere; }
+
+/* ---- the write dialog (F9/F10) --------------------------------------- */
+.ove-overlay { position: fixed; inset: 0; z-index: 60; pointer-events: none; }
+.ove-write-overlay { display: flex; align-items: center; justify-content: center; }
+.ove-write-backdrop {
+  position: absolute; inset: 0; pointer-events: auto;
+  background: rgba(0, 0, 0, .42);
+}
+.ove-write-dialog {
+  position: relative; pointer-events: auto; width: min(560px, calc(100vw - 32px));
+  max-height: min(84vh, 720px); overflow-y: auto; padding: 14px 16px;
+  background: var(--dsw-alias-bg-l1, var(--dsw-alias-bg-base)); color: var(--dsw-alias-label-primary);
+  border: .5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-lg, 12px);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, .36);
+}
+.ove-write-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+.ove-write-title { font-size: 14px; font-weight: 600; flex: none; }
+.ove-write-target {
+  font-size: 12px; color: var(--dsw-alias-label-tertiary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ove-write-scope {
+  display: flex; flex-wrap: wrap; gap: 4px 18px; margin: 0 0 10px; padding: 8px 10px;
+  background: var(--dsw-alias-bg-base); border: .5px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-sm);
+}
+.ove-write-scope > div { display: flex; flex-direction: column; min-width: 0; }
+.ove-write-scope dt { font-size: 11px; color: var(--dsw-alias-label-tertiary); }
+.ove-write-scope dd { margin: 0; font-size: 12px; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }
+.ove-write-hint { margin: 4px 0; font-size: 12px; color: var(--dsw-alias-label-tertiary); }
+.ove-write-warning {
+  margin: 6px 0; padding: 6px 8px; font-size: 12px; color: var(--dsw-alias-label-secondary);
+  background: var(--dsw-alias-bg-base); border-left: 2px solid var(--dsw-alias-state-warning-primary, #d29922);
+  border-radius: var(--dsw-radius-sm);
+}
+.ove-write-error { margin: 6px 0; font-size: 12px; color: var(--dsw-alias-state-error-primary, #f85149); overflow-wrap: anywhere; }
+.ove-write-diffbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 4px 0; font-size: 12px; color: var(--dsw-alias-label-tertiary); }
+.ove-write-link { font: inherit; font-size: 12px; color: var(--dsw-alias-state-business-primary); background: 0 0; border: 0; cursor: pointer; padding: 0; }
+.ove-write-editor {
+  width: 100%; box-sizing: border-box; min-height: 220px; max-height: 40vh; resize: vertical;
+  padding: 8px; font-family: var(--dsh-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px; line-height: 1.55; color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-base); border: .5px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-sm);
+}
+.ove-write-editor:focus, .ove-write-input:focus { outline: 0; border-color: var(--dsw-alias-state-business-primary); }
+.ove-write-diff {
+  max-height: 40vh; overflow: auto; padding: 6px 8px; font-family: var(--dsh-font-mono, ui-monospace, monospace);
+  font-size: 11px; line-height: 1.5; background: var(--dsw-alias-bg-base);
+  border: .5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-sm);
+}
+.ove-write-diff-row { display: flex; gap: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ove-write-diff-add { color: var(--dsw-alias-state-success-primary, #3fb950); }
+.ove-write-diff-remove { color: var(--dsw-alias-state-error-primary, #f85149); }
+.ove-write-diff-mark { flex: none; width: 10px; color: var(--dsw-alias-label-dimmed); }
+.ove-write-field { display: block; margin: 8px 0; font-size: 12px; color: var(--dsw-alias-label-secondary); }
+.ove-write-input {
+  width: 100%; box-sizing: border-box; margin-top: 4px; padding: 6px 8px;
+  font: inherit; font-size: 12px; color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-base); border: .5px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-sm);
+}
+.ove-write-tags { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
+.ove-write-tag {
+  display: inline-flex; align-items: center; gap: 4px; padding: 0 6px; font-size: 11px; line-height: 20px;
+  border: .5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-sm);
+  color: var(--dsw-alias-label-secondary);
+}
+.ove-write-tag-remove {
+  font: inherit; font-size: 12px; line-height: 1; color: var(--dsw-alias-label-tertiary);
+  background: 0 0; border: 0; cursor: pointer; padding: 0 1px;
+}
+.ove-write-append { display: flex; align-items: center; gap: 8px; }
+.ove-write-append .ove-config-check { width: auto; }
+.ove-write-tagbar { display: flex; align-items: center; gap: 6px; }
+.ove-write-tagbar .ove-write-input { margin-top: 0; flex: 1; }
+.ove-write-facts { display: flex; flex-wrap: wrap; gap: 4px 18px; margin: 6px 0; }
+.ove-write-facts dt { font-size: 11px; color: var(--dsw-alias-label-tertiary); }
+.ove-write-facts dd { margin: 0; font-size: 12px; color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; }
+.ove-write-footnote { margin: 8px 0 0; font-size: 11px; color: var(--dsw-alias-label-tertiary); }
+.ove-write-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.ove-write-button {
+  font: inherit; font-size: 12px; padding: 4px 12px; cursor: pointer;
+  color: var(--dsw-alias-label-secondary); background: 0 0;
+  border: .5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-md);
+}
+.ove-write-button:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
+.ove-write-button:disabled { cursor: default; opacity: .5; }
+.ove-write-primary { color: #fff; background: var(--dsw-alias-state-business-primary); border-color: transparent; }
+.ove-write-primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--dsw-alias-state-business-primary); }
+.ove-write-danger { background: var(--dsw-alias-state-error-primary, #da3633); }
+.ove-write-plan { margin: 6px 0; }
+.ove-write-plan-title { display: block; font-size: 11px; color: var(--dsw-alias-label-tertiary); margin-top: 6px; }
+.ove-write-plan pre {
+  margin: 4px 0 0; padding: 6px 8px; background: var(--dsw-alias-bg-base);
+  border-radius: var(--dsw-radius-sm); font-family: var(--dsh-font-mono, ui-monospace, monospace);
+  font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 200px; overflow: auto;
+}
+
+/* ---- the outcome toast ----------------------------------------------- */
+.ove-toast-layer { display: flex; justify-content: center; align-items: flex-end; padding-bottom: 48px; }
+.ove-toast {
+  pointer-events: auto; display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  max-width: min(720px, calc(100vw - 32px)); padding: 8px 12px;
+  font-size: 12px; color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-l1, var(--dsw-alias-bg-base));
+  border: .5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .28);
+}
+.ove-toast-success { border-left: 2px solid var(--dsw-alias-state-success-primary, #3fb950); }
+.ove-toast-warning { border-left: 2px solid var(--dsw-alias-state-warning-primary, #d29922); }
+.ove-toast-error { border-left: 2px solid var(--dsw-alias-state-error-primary, #f85149); }
+.ove-toast-text { overflow-wrap: anywhere; }
+.ove-toast-scope { flex-basis: 100%; font-size: 11px; color: var(--dsw-alias-label-tertiary); }
+.ove-toast-action {
+  font: inherit; font-size: 12px; color: var(--dsw-alias-state-business-primary);
+  background: 0 0; border: 0; cursor: pointer; padding: 0 2px;
+}
+.ove-toast-action:disabled { opacity: .5; cursor: default; }
+.ove-toast-details { color: var(--dsw-alias-label-tertiary); }
+.ove-toast-dismiss {
+  margin-left: auto; font: inherit; font-size: 14px; line-height: 1;
+  color: var(--dsw-alias-label-tertiary); background: 0 0; border: 0; cursor: pointer; padding: 0 2px;
+}
+.ove-toast-error-line, .ove-toast-detail-line {
+  flex-basis: 100%; margin: 2px 0 0; font-size: 11px; color: var(--dsw-alias-label-tertiary); overflow-wrap: anywhere;
+}
+.ove-toast-error-line { color: var(--dsw-alias-state-error-primary, #f85149); }
+
+/* ---- the /viking command card ---------------------------------------- */
+.ove-cmd {
+  margin: 6px 0; padding: 8px 10px; background: var(--dsw-alias-bg-l1, var(--dsw-alias-bg-base));
+  border: .5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-md);
+}
+.ove-cmd-plain {
+  margin: 0; font-family: var(--dsh-font-mono, ui-monospace, monospace); font-size: 11px;
+  line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.ove-cmd-head { display: flex; align-items: baseline; gap: 8px; }
+.ove-cmd-title { font-size: 12px; font-weight: 600; flex: none; }
+.ove-cmd-target { font-size: 11px; color: var(--dsw-alias-label-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ove-cmd-scope { margin: 2px 0; font-size: 11px; color: var(--dsw-alias-label-tertiary); }
+.ove-cmd-hint { margin: 4px 0; font-size: 12px; color: var(--dsw-alias-label-tertiary); }
+.ove-cmd-error { margin: 4px 0; font-size: 12px; color: var(--dsw-alias-state-error-primary, #f85149); overflow-wrap: anywhere; }
+.ove-cmd-tags { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; }
+.ove-cmd-tag {
+  padding: 0 6px; font-size: 11px; line-height: 18px; color: var(--dsw-alias-label-tertiary);
+  border: .5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-sm);
+}
+.ove-cmd-done { margin: 4px 0; font-size: 12px; color: var(--dsw-alias-state-success-primary, #3fb950); }
+.ove-cmd-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+
+/* ---- the Activity tab (F10/F11) -------------------------------------- */
+.ove-act { display: flex; flex-direction: column; height: 100%; min-height: 0; font-size: 12px; }
+.ove-act-head {
+  display: flex; align-items: center; gap: 8px; padding: 6px 10px; flex: none;
+  border-bottom: .5px solid var(--dsw-alias-border-l3);
+}
+.ove-act-tabs { display: flex; align-items: center; gap: 4px; flex: 1; }
+.ove-act-tab {
+  font: inherit; font-size: 12px; padding: 2px 10px; cursor: pointer; color: var(--dsw-alias-label-tertiary);
+  background: 0 0; border: 0; border-radius: 999px;
+}
+.ove-act-tab:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.ove-act-tab-active { color: var(--dsw-alias-label-primary); background: var(--dsw-alias-interactive-bg-hover); font-weight: 500; }
+.ove-act-section { padding: 8px 10px; overflow-y: auto; min-height: 0; }
+.ove-act-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 8px; }
+.ove-act-filters { display: flex; flex-wrap: wrap; gap: 4px; }
+.ove-act-spacer { flex: 1; }
+.ove-act-chip {
+  font: inherit; font-size: 11px; line-height: 18px; padding: 0 8px; cursor: pointer;
+  color: var(--dsw-alias-label-tertiary); background: 0 0;
+  border: .5px solid var(--dsw-alias-border-l3); border-radius: 999px;
+}
+.ove-act-chip:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.ove-act-chip-active { border-color: var(--dsw-alias-state-business-primary); color: var(--dsw-alias-state-business-primary); }
+.ove-act-button {
+  font: inherit; font-size: 12px; padding: 2px 10px; cursor: pointer;
+  color: var(--dsw-alias-label-secondary); background: 0 0;
+  border: .5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-md);
+}
+.ove-act-button:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.ove-act-note { margin: 6px 0; color: var(--dsw-alias-label-tertiary); overflow-wrap: anywhere; }
+.ove-act-error { margin: 6px 0; color: var(--dsw-alias-state-error-primary, #f85149); overflow-wrap: anywhere; }
+.ove-act-error-inline { color: var(--dsw-alias-state-error-primary, #f85149); overflow-wrap: anywhere; }
+.ove-act-task { border-bottom: .5px solid var(--dsw-alias-border-l3); padding: 2px 0; }
+.ove-act-task-line { display: flex; align-items: center; gap: 6px; }
+.ove-act-task-toggle {
+  display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; padding: 3px 2px;
+  font: inherit; font-size: 12px; text-align: left; color: var(--dsw-alias-label-secondary);
+  background: 0 0; border: 0; cursor: pointer;
+}
+.ove-act-caret { flex: none; color: var(--dsw-alias-label-tertiary); width: 10px; }
+.ove-act-task-type { flex: none; color: var(--dsw-alias-label-primary); }
+.ove-act-task-id { flex: none; color: var(--dsw-alias-label-tertiary); font-variant-numeric: tabular-nums; }
+.ove-act-task-stage { color: var(--dsw-alias-label-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ove-act-task-error { color: var(--dsw-alias-state-error-primary, #f85149); font-weight: 600; }
+.ove-act-task-age { margin-left: auto; flex: none; color: var(--dsw-alias-label-tertiary); font-variant-numeric: tabular-nums; }
+.ove-act-task-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+.ove-act-link {
+  font: inherit; font-size: 11px; color: var(--dsw-alias-state-business-primary);
+  background: 0 0; border: 0; cursor: pointer; padding: 0; text-decoration: none;
+}
+.ove-act-danger { color: var(--dsw-alias-state-error-primary, #f85149); }
+.ove-act-badge {
+  flex: none; padding: 0 6px; font-size: 10px; line-height: 16px; border-radius: 999px;
+  border: .5px solid var(--dsw-alias-border-l3); color: var(--dsw-alias-label-tertiary);
+}
+.ove-act-badge-ok { color: var(--dsw-alias-state-success-primary, #3fb950); }
+.ove-act-badge-bad { color: var(--dsw-alias-state-error-primary, #f85149); }
+.ove-act-badge-busy { color: var(--dsw-alias-state-warning-primary, #d29922); }
+.ove-act-detail { padding: 4px 0 8px 16px; }
+.ove-act-facts { display: flex; flex-wrap: wrap; gap: 2px 16px; margin: 4px 0; }
+.ove-act-facts dt { font-size: 11px; color: var(--dsw-alias-label-tertiary); }
+.ove-act-facts dd { margin: 0; font-size: 12px; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }
+.ove-act-events { margin-top: 6px; }
+.ove-act-subtitle { display: block; margin: 8px 0 2px; font-size: 11px; color: var(--dsw-alias-label-tertiary); }
+.ove-act-event {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; padding: 1px 0;
+  color: var(--dsw-alias-label-tertiary); font-size: 11px;
+}
+.ove-act-event-seq { font-variant-numeric: tabular-nums; width: 18px; flex: none; }
+.ove-act-event-kind { color: var(--dsw-alias-label-secondary); }
+.ove-act-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; }
+.ove-act-card {
+  padding: 8px 10px; background: var(--dsw-alias-bg-l1, var(--dsw-alias-bg-base));
+  border: .5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-md);
+}
+.ove-act-card-title { display: block; margin-bottom: 4px; font-size: 12px; font-weight: 600; color: var(--dsw-alias-label-primary); }
+.ove-act-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.ove-act-table th { text-align: left; font-weight: 500; color: var(--dsw-alias-label-tertiary); padding: 2px 4px; }
+.ove-act-table td { color: var(--dsw-alias-label-secondary); padding: 2px 4px; font-variant-numeric: tabular-nums; }
+.ove-act-diagnosis { margin-top: 6px; }
+.ove-act-audit { margin: 4px 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 3px; }
+.ove-act-audit li { display: flex; align-items: baseline; gap: 6px; font-size: 11px; color: var(--dsw-alias-label-tertiary); }
+.ove-act-audit-kind { color: var(--dsw-alias-label-secondary); }
+.ove-act-audit-target { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 160px; }
+.ove-act-audit-time { margin-left: auto; flex: none; }
+
+/* ---- preview action bar + settings profile editor -------------------- */
+.ove-preview-actions { display: flex; align-items: center; gap: 6px; margin: 8px 0 4px; }
+.ove-preview-actions-title { font-size: 12px; color: var(--dsw-alias-label-tertiary); }
+.ove-preview-danger { color: var(--dsw-alias-state-error-primary, #f85149); }
+.ove-preview-spacer { flex: 1; }
+.ove-config-profiles { display: flex; flex-direction: column; gap: 6px; }
+.ove-config-profile-list { display: flex; flex-direction: column; gap: 4px; }
+.ove-config-profile-row {
+  display: flex; align-items: center; gap: 8px; padding: 4px 8px;
+  border: .5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-sm);
+}
+.ove-config-profile-label { display: flex; flex-direction: column; min-width: 0; flex: 1; font-size: 12px; color: var(--dsw-alias-label-primary); }
+.ove-config-profile-meta { font-size: 11px; color: var(--dsw-alias-label-tertiary); overflow-wrap: anywhere; }
+.ove-config-profile-actions { display: flex; align-items: center; gap: 4px; flex: none; }
+.ove-config-profile-form { display: flex; flex-direction: column; gap: 2px; }
+.ove-pop-actions { display: flex; align-items: center; justify-content: flex-end; margin: 2px 0 6px; }
+.ove-config-input[type='checkbox'] { width: auto; }
+.ove-config-control select.ove-config-input { min-width: 0; }
+
 `
 
 /** Install the stylesheet once per document. */

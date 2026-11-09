@@ -126,6 +126,17 @@ export class CommitService {
     this.pendingRetryMs = options.pendingArchiveRetryMs ?? PENDING_ARCHIVE_RETRY_MS
   }
 
+  /**
+   * Drop every cached read (an identity switch changes what the same session id
+   * answers; a cache keyed only by session would show the old profile's data).
+   */
+  resetCaches(): void {
+    this.cache.clear()
+    this.probes.clear()
+    this.probeRetryAt.clear()
+    this.inflight.clear()
+  }
+
   /** OpenViking session key for a DSH session. */
   ovSessionId(sessionId: string): string {
     const fromPlugin = this.options.memoryRuntime()?.states?.get(sessionId)?.ovSessionId

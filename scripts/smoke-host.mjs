@@ -97,8 +97,10 @@ if (sessionId) {
     // no-server branch now asserts the degraded answers every route gives.
     await checkDegraded(base)
   }
-  await checkFence(base)
 }
+
+await checkV05(base, sessionId)
+await checkFence(base)
 
 server.close()
 
@@ -106,7 +108,10 @@ server.close()
 function rawStatus(base, path, { method = 'GET', headers = {}, body } = {}) {
   const url = new URL(base)
   return new Promise((resolve) => {
-    const request = http.request({ host: url.hostname, port: url.port, path, method, headers }, (response) => {
+    // A fresh socket per request: a keep-alive socket the agent pooled earlier can
+    // be closed by the server's idle timeout, and Node does not retry a POST on a
+    // stale socket — which surfaced as a spurious status 0 in these probes.
+    const request = http.request({ host: url.hostname, port: url.port, path, method, headers, agent: false }, (response) => {
       response.resume()
       response.on('end', () => resolve(response.statusCode))
     })
@@ -173,6 +178,17 @@ async function checkDegraded(base) {
     ['rules', `${prefix}/rules`],
     ['skills', `${prefix}/skills`],
     ['experience', `${prefix}/experience?kind=trajectories`],
+    // v0.5 reads: identity scope, profiles, task centre, metrics, audit and the
+    // F10 session-control read model. Every one must answer a JSON envelope even
+    // with no server behind it.
+    ['scope', `${prefix}/scope`],
+    ['profiles', `${prefix}/profiles`],
+    ['tasks', `${prefix}/tasks?limit=2`],
+    ['task', `${prefix}/task?taskId=probe&events=1`],
+    ['task export', `${prefix}/task/export?taskId=probe`],
+    ['metrics', `${prefix}/metrics?sessionId=probe`],
+    ['audit', `${prefix}/audit?limit=5`],
+    ['session-control', `${prefix}/session-control?sessionId=probe`],
   ]
   for (const [label, path] of routes) {
     const body = await get(`${base}${path}`)
@@ -200,6 +216,91 @@ async function checkDegraded(base) {
   const refused = probe?.ok === true && probe.reachable === false
   console.log(`[offline] ${refused ? 'ok  ' : 'FAIL'} probe reports a dead address as unreachable`)
   if (!refused) process.exitCode = 1
+}
+
+/**
+ * v0.5 read routes and the write-transport fence.
+ *
+ * Two things are verified here that no unit test can:
+ *
+ *  1. the new read routes answer the documented envelopes against whatever server
+ *     this machine has (the shape is stable; the values degrade);
+ *  2. **no mutation route exists on the loopback `webServer` fence**. Decision B
+ *     puts every write on the authenticated `ctx.connection.fetch` transport, and
+ *     this fake host has no connection service, so a POST to a write path must be
+ *     a 404 — anything else would mean a raw loopback write path shipped.
+ */
+async function checkV05(base, sessionId) {
+  const prefix = '/api/openviking-enhance'
+  const check = (ok, message) => {
+    console.log(`[v05] ${ok ? 'ok  ' : 'FAIL'} ${message}`)
+    if (!ok) process.exitCode = 1
+  }
+
+  const scope = await get(`${base}${prefix}/scope`)
+  check(
+    scope?.ok === true && typeof scope.scope?.identity?.fingerprint === 'string' && scope.scope.identity.fingerprint.startsWith('sha256:'),
+    'the scope route reports a fingerprint',
+  )
+  check(
+    scope?.scope?.writes?.enabled === false,
+    `writes are off by default (enabled=${scope?.scope?.writes?.enabled})`,
+  )
+  check(
+    scope?.scope?.writes?.transport === false && typeof scope?.scope?.writes?.reason === 'string',
+    `without ctx.connection.fetch the write gates fail closed (${scope?.scope?.writes?.reason})`,
+  )
+  check(
+    scope?.scope?.identity !== undefined && !JSON.stringify(scope.scope.identity).toLowerCase().includes('apikey'),
+    'the scope payload carries no secret',
+  )
+
+  const profiles = await get(`${base}${prefix}/profiles`)
+  check(
+    profiles?.ok === true && Array.isArray(profiles.profiles?.profiles) && typeof profiles.profiles.storePath === 'string',
+    `the profiles route answers a redacted list (${profiles?.profiles?.profiles?.length ?? '?'} profile(s))`,
+  )
+  check(!JSON.stringify(profiles).includes('apiKey'), 'no profile payload ever returns a key')
+
+  const tasks = await get(`${base}${prefix}/tasks?limit=2`)
+  check(tasks?.ok === true && Array.isArray(tasks.tasks) && typeof tasks.available === 'boolean', 'the tasks route answers a bounded page')
+
+  const metrics = await get(`${base}${prefix}/metrics${sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ''}`)
+  check(
+    metrics?.ok === true && metrics.metrics?.prometheus === false && typeof metrics.metrics.dashboard?.available === 'boolean',
+    'the metrics route answers per-card availability and never probes Prometheus',
+  )
+
+  const audit = await get(`${base}${prefix}/audit?limit=5`)
+  check(audit?.ok === true && Array.isArray(audit.entries), 'the audit route answers a bounded tail')
+
+  const control = await get(`${base}${prefix}/session-control?sessionId=${encodeURIComponent(sessionId ?? 'probe')}`)
+  check(
+    control?.ok === true && control.capture?.canPause === false,
+    'the session-control read model states that capture pause is not available',
+  )
+
+  // Decision B: mutations must not exist on the raw loopback fence.
+  for (const path of [
+    '/write/prepare',
+    '/write/execute',
+    '/write/undo',
+    '/write/plan',
+    '/task/cancel',
+    '/profiles/save',
+    '/profiles/delete',
+    '/profiles/test',
+  ]) {
+    // No body: the keep-alive probe only needs the dispatch decision, and the
+    // fake server's 404 handler does not consume a request body.
+    const posted = await rawStatus(base, `${prefix}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: new URL(base).origin },
+    })
+    check(posted === 404, `no loopback write route at ${path} (POST -> ${posted}, expected 404)`)
+    const fetched = await rawStatus(base, `${prefix}${path}`)
+    check(fetched === 405 || fetched === 404, `no read-shaped mutation route at ${path} (GET -> ${fetched})`)
+  }
 }
 
 /**

@@ -50,10 +50,26 @@ export interface FeatureFlags {
   readonly explorePanel: boolean
   /** Host-side: the `/viking` command. Carried here; no browser mount owns it. */
   readonly commands: boolean
+  /** v0.5: the Activity tab (task centre + metrics + capture state). */
+  readonly activityPanel: boolean
+  /** v0.5: the persistent scope chip in the composer dock. */
+  readonly scopeBanner: boolean
+  /**
+   * v0.5: `enableWrites`. Carried here for the action bars and buttons; the
+   * host reads the same value live for every mutation, so the client switch can
+   * never authorize a write the host refuses.
+   */
+  readonly writes: boolean
 }
 
-/** The client-mounted surfaces: every flag except the host-owned command one. */
-export type MountedFeature = Exclude<keyof FeatureFlags, 'commands'>
+/**
+ * The client-mounted surfaces.
+ *
+ * `commands` is host-owned; `writes`/`scopeBanner` gate buttons/content inside
+ * mounts rather than mounting anything themselves (a hidden `scopeBanner` still
+ * leaves the dialogs' scope block, by design).
+ */
+export type MountedFeature = Exclude<keyof FeatureFlags, 'commands' | 'writes'>
 
 /** The state before any settings answer, and the fallback when there is none. */
 export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
@@ -65,6 +81,11 @@ export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   previewPanel: true,
   explorePanel: true,
   commands: true,
+  activityPanel: true,
+  scopeBanner: true,
+  // v0.5 writes are opt-in: before a settings answer arrives, every write
+  // surface stays hidden (the host's default is the same `false`).
+  writes: false,
 }
 
 /**
@@ -83,6 +104,9 @@ export const FEATURE_CONFIG_FIELDS = {
   previewPanel: 'showPreview',
   explorePanel: 'showExplore',
   commands: 'enableCommands',
+  activityPanel: 'enableActivity',
+  scopeBanner: 'showScopeBanner',
+  writes: 'enableWrites',
 } as const satisfies Record<keyof FeatureFlags, string>
 
 /** The surfaces in the order they are mounted (and reverse order for disposal). */
@@ -94,12 +118,20 @@ export const FEATURE_ORDER: readonly MountedFeature[] = [
   'healthPanel',
   'previewPanel',
   'explorePanel',
+  'activityPanel',
+  'scopeBanner',
 ]
 
-/** One boolean, or the default when the field is missing or not a boolean. */
-function flagOf(config: Record<string, unknown>, field: string): boolean {
+/**
+ * One boolean, or the fallback when the field is missing or not a boolean.
+ *
+ * The fallback is per-field: a missing `enableWrites` must mean OFF (the schema
+ * default and the safety rule), while a missing `show*` field means ON (the
+ * pre-switch behaviour).
+ */
+function flagOf(config: Record<string, unknown>, field: string, fallback = true): boolean {
   const value = config[field]
-  return typeof value === 'boolean' ? value : true
+  return typeof value === 'boolean' ? value : fallback
 }
 
 /**
@@ -121,6 +153,9 @@ export function featureFlagsFrom(value: unknown): FeatureFlags {
     previewPanel: flagOf(config, FEATURE_CONFIG_FIELDS.previewPanel),
     explorePanel: flagOf(config, FEATURE_CONFIG_FIELDS.explorePanel),
     commands: flagOf(config, FEATURE_CONFIG_FIELDS.commands),
+    activityPanel: flagOf(config, FEATURE_CONFIG_FIELDS.activityPanel),
+    scopeBanner: flagOf(config, FEATURE_CONFIG_FIELDS.scopeBanner),
+    writes: flagOf(config, FEATURE_CONFIG_FIELDS.writes, false),
   }
 }
 
@@ -134,7 +169,10 @@ export function sameFeatureFlags(left: FeatureFlags, right: FeatureFlags): boole
     left.healthPanel === right.healthPanel &&
     left.previewPanel === right.previewPanel &&
     left.explorePanel === right.explorePanel &&
-    left.commands === right.commands
+    left.commands === right.commands &&
+    left.activityPanel === right.activityPanel &&
+    left.scopeBanner === right.scopeBanner &&
+    left.writes === right.writes
   )
 }
 
@@ -157,10 +195,11 @@ interface ConfigFormsService {
 export function watchFeatureFlags(
   context: ClientContext,
   namespace: string,
-  onChange: (flags: FeatureFlags) => void,
+  onChange: (flags: FeatureFlags, configValue: Record<string, unknown>) => void,
 ): () => void {
   let unsubscribe: (() => void) | undefined
   let last: FeatureFlags | undefined
+  let lastProfile: string | undefined
 
   const publish = (form: ConfigForm<Record<string, unknown>>): void => {
     const snapshot = form.getSnapshot()
@@ -168,9 +207,16 @@ export function watchFeatureFlags(
     // already drew rather than resetting a hidden surface to visible.
     if (snapshot.status !== 'ready') return
     const next = featureFlagsFrom(snapshot.value)
-    if (last !== undefined && sameFeatureFlags(last, next)) return
+    // The raw value travels too: `activeProfile` is a string the panels need in
+    // order to know when to re-read the scope, and it is not a surface flag.
+    const value = snapshot.value !== null && typeof snapshot.value === 'object' ? snapshot.value : {}
+    const profile = typeof value.activeProfile === 'string' ? value.activeProfile : ''
+    const flagsChanged = last === undefined || !sameFeatureFlags(last, next)
+    const profileChanged = lastProfile !== undefined && lastProfile !== profile
+    if (!flagsChanged && !profileChanged) return
     last = next
-    onChange(next)
+    lastProfile = profile
+    onChange(next, value)
   }
 
   const handle = context.inject(['configForms'], (scope) => {

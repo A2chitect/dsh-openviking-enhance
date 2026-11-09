@@ -112,6 +112,11 @@ const FORM = {
       showPreview: true,
       showExplore: true,
       enableCommands: true,
+      // v0.5 switches.
+      enableWrites: true,
+      enableActivity: true,
+      showScopeBanner: true,
+      activeProfile: '',
     },
     base: { endpoint: '', studioPath: '/studio/', cacheTtlMs: 2500, recallCacheTtlMs: 15000 },
     user: { endpoint: 'http://127.0.0.1:1933' },
@@ -150,12 +155,17 @@ test('the bundle registers every seat, and all of them render', () => {
   const { find, contributions, exports } = loadBundle('en')
   const seats = contributions.map((entry) => entry.options.name).sort()
   assert.deepEqual(seats, [
+    'conversation.chat.commandview',
     'conversation.chat.turnTail',
+    'conversation.composer.dock',
     'conversation.composer.dock',
     'main',
     'plugins.detail.section',
     'plugins.row.config',
+    'shell.overlay',
+    'shell.overlay',
     'sidebar.panellist',
+    'sidebar.right.pane.tab',
     'sidebar.right.pane.tab',
     'sidebar.right.pane.tab',
     'sidebar.right.pane.tab',
@@ -185,6 +195,13 @@ test('the bundle registers every seat, and all of them render', () => {
     'URI preview tab',
     'Explore tab',
     '/viking command',
+    // v0.5: the write master switch, the Activity tab and the scope banner.
+    'Enable writes (curation / force commit)',
+    'Activity tab',
+    'Show the scope banner',
+    // ...and the identity profile editor.
+    'Identity profiles',
+    'Active profile',
   ]) {
     assert.ok(markup.includes(label), `the form shows ${label}`)
   }
@@ -347,6 +364,11 @@ test('the same components render in Chinese when the app is set to it', () => {
     'URI 预览 tab',
     '探索 tab',
     '/viking 命令',
+    '启用写入（策展 / 强制提交）',
+    '活动标签页',
+    '显示作用域提示',
+    '身份配置档',
+    '当前配置档',
   ]) {
     assert.ok(markup.includes(label), `the form shows ${label}`)
   }
@@ -355,27 +377,27 @@ test('the same components render in Chinese when the app is set to it', () => {
   assert.ok(!markup.includes('Save'), 'nothing falls back to English')
 })
 
-test('the form renders the eight interface switches as checkboxes that follow the saved values', () => {
+test('the form renders the eleven interface switches as checkboxes that follow the saved values', () => {
   const { find } = loadBundle('en')
   const markup = renderPage(find, FORM)
 
   const boxes = checkboxes(markup)
-  assert.equal(boxes.length, 8, 'exactly eight checkbox inputs, one per switch')
+  assert.equal(boxes.length, 11, 'exactly eleven checkbox inputs, one per switch')
   assert.deepEqual(
     boxes.map((tag) => hasAttribute(tag, 'checked')),
-    [true, true, true, true, true, true, true, true],
-    'all eight are checked when the saved values are on',
+    [true, true, true, true, true, true, true, true, true, true, true],
+    'all eleven are checked when the saved values are on',
   )
   assert.deepEqual(
     boxes.map((tag) => hasAttribute(tag, 'disabled')),
-    [false, false, false, false, false, false, false, false],
+    [false, false, false, false, false, false, false, false, false, false, false],
     'a writable form leaves them enabled',
   )
 
   // The eight switches have their own rows, in the order the sidebar, the
   // composer and the conversation, then the right sidebar, appear.
   const blocks = toggleBlocks(markup)
-  assert.equal(blocks.length, 8, 'each switch is its own labelled row')
+  assert.equal(blocks.length, 11, 'each switch is its own labelled row')
   for (const [index, label] of [
     'Sidebar entry',
     'Commit status pill',
@@ -385,6 +407,9 @@ test('the form renders the eight interface switches as checkboxes that follow th
     'URI preview tab',
     'Explore tab',
     '/viking command',
+    'Enable writes (curation / force commit)',
+    'Activity tab',
+    'Show the scope banner',
   ].entries()) {
     assert.ok(blocks[index].includes(label), `switch ${index + 1} is the ${label} row`)
     assert.equal(checkboxes(blocks[index]).length, 1, `the ${label} row has exactly one checkbox`)
@@ -402,7 +427,7 @@ test('the form renders the eight interface switches as checkboxes that follow th
     },
   })
   const offBlocks = toggleBlocks(off)
-  assert.equal(checkboxes(off).length, 8)
+  assert.equal(checkboxes(off).length, 11)
   assert.equal(
     hasAttribute(checkboxes(offBlocks[0])[0], 'checked'),
     true,
@@ -439,22 +464,22 @@ test('the form renders the eight interface switches as checkboxes that follow th
   const previewBlocks = toggleBlocks(previewOff)
   assert.deepEqual(
     previewBlocks.map((block) => hasAttribute(checkboxes(block)[0], 'checked')),
-    [true, true, true, true, true, false, false, false],
+    [true, true, true, true, true, false, false, false, true, true, true],
     'the three v0.4 switches turn off independently',
   )
   // An override is marked where it is edited, the same as every other field.
   assert.ok(offBlocks[1].includes('overridden'), 'the overridden switch carries the override badge')
 })
 
-test('a read-only form disables the eight switches instead of pretending they can be edited', () => {
+test('a read-only form disables the eleven switches instead of pretending they can be edited', () => {
   const { find } = loadBundle('en')
   const readOnly = { ...FORM, state: { ...FORM.state, writable: false } }
   const markup = renderPage(find, readOnly)
   const boxes = checkboxes(markup)
-  assert.equal(boxes.length, 8)
+  assert.equal(boxes.length, 11)
   assert.deepEqual(
     boxes.map((tag) => hasAttribute(tag, 'disabled')),
-    [true, true, true, true, true, true, true, true],
+    [true, true, true, true, true, true, true, true, true, true, true],
     'every switch is disabled when the profile cannot be written',
   )
   assert.ok(markup.includes('read-only'), 'the form also explains why it cannot be edited')
@@ -484,4 +509,276 @@ test('the row summary is the one-liner the page asks for', () => {
     createElement(find('plugins.row.config').Component, { view: 'summary', form: FORM }),
   )
   assert.ok(summary.includes('http://127.0.0.1:1933'), 'the summary names the endpoint in force')
+})
+
+/* ========================================================================
+ * v0.5 "Collaborate" surfaces
+ *
+ * The same server-render contract as above: the built bundle's real components,
+ * the real copy layer, the first paint before any host fetch resolves. The
+ * write store and the scope store expose documented test seams, so each
+ * screenshot-worthy state (dialog, plan, toast, chip, activity, command card) is
+ * rendered deterministically without a host.
+ * ===================================================================== */
+
+const TEST_SCOPE = {
+  profileId: 'local-default',
+  profileLabel: 'Local dev',
+  endpoint: 'http://127.0.0.1:1933',
+  authMode: 'dev',
+  account: 'default',
+  user: 'default',
+  peer: null,
+  fingerprint: `sha256:${'b'.repeat(64)}`,
+}
+
+const TEST_SCOPE_PAYLOAD = {
+  identity: TEST_SCOPE,
+  activeProfileId: 'local-default',
+  role: 'ROOT',
+  version: '0.5.3',
+  healthy: true,
+  writes: { enabled: true, transport: true, reason: null },
+  capabilities: {},
+  warnings: [],
+  observedAt: '2026-11-09T00:00:00Z',
+}
+
+/** The same shape `/write/prepare` returns; a fixture, not a real token. */
+function prepareFixture(overrides = {}) {
+  return {
+    token: 'f'.repeat(64),
+    action: 'edit-memory',
+    target: 'viking://user/default/memories/preferences/tools.md',
+    scope: TEST_SCOPE,
+    expiresAt: Date.now() + 120_000,
+    revision: { sha256: `sha256:${'c'.repeat(64)}`, size: 88, modifiedAt: null },
+    preCommit: '3f2a'.repeat(10),
+    content: 'Original body',
+    contentTruncated: false,
+    beforeChars: 13,
+    afterChars: null,
+    tagsBefore: null,
+    tagsAfter: null,
+    confirmWord: null,
+    session: null,
+    summary: ['Edit memory/preferences/tools.md'],
+    ...overrides,
+  }
+}
+
+/** Render one overlay entry by its registration id. */
+function renderOverlay(contributions, id, props = {}) {
+  const entry = contributions.find((candidate) => candidate.options.id === id)
+  assert.ok(entry, `the ${id} overlay entry is registered`)
+  return renderToStaticMarkup(createElement(entry.Component, props))
+}
+
+/** Reset the two module stores between tests (they are process-global). */
+function resetV05Stores(exports) {
+  exports.__setWriteStateForTests({
+    confirm: null,
+    plan: null,
+    notice: null,
+    busy: false,
+    lastWriteSeq: 0,
+    lastWriteTarget: null,
+    lastWriteAction: null,
+  })
+  exports.__setScopeStateForTests({ status: 'idle', scope: null, error: null, switchError: null })
+}
+
+test('the scope chip renders the active identity, and warns about a remote endpoint', () => {
+  const { contributions, exports } = loadBundle('en')
+  try {
+    exports.__setScopeStateForTests({ status: 'ready', scope: TEST_SCOPE_PAYLOAD, error: null })
+    const markup = renderToStaticMarkup(createElement(exports.ScopeChip, {}))
+    assert.ok(markup.includes('ove-scope-chip'), 'the chip renders as a real control')
+    assert.ok(markup.includes('Local dev'), 'the profile label is shown')
+    assert.ok(markup.includes('default/default'), 'the account/user scope is shown')
+    assert.ok(!markup.includes('⚠'), 'a loopback identity needs no warning glyph')
+
+    exports.__setScopeStateForTests({
+      status: 'ready',
+      scope: {
+        ...TEST_SCOPE_PAYLOAD,
+        identity: { ...TEST_SCOPE, endpoint: 'http://10.0.0.2:1933' },
+      },
+    })
+    const remote = renderToStaticMarkup(createElement(exports.ScopeChip, {}))
+    assert.ok(remote.includes('⚠'), 'a remote endpoint is flagged')
+
+    exports.__setScopeStateForTests({
+      status: 'ready',
+      scope: { ...TEST_SCOPE_PAYLOAD, identity: { ...TEST_SCOPE, authMode: 'api_key' } },
+    })
+    const keyBound = renderToStaticMarkup(createElement(exports.ScopeChip, {}))
+    assert.ok(keyBound.includes('⚠'), 'a key-bound identity is flagged')
+  } finally {
+    resetV05Stores(exports)
+    assert.ok(contributions.length > 0)
+  }
+})
+
+test('the edit dialog renders the body, the revision and the scope block', () => {
+  const { contributions, exports } = loadBundle('en')
+  try {
+    exports.__setWriteStateForTests({ confirm: prepareFixture() })
+    const markup = renderOverlay(contributions, 'openviking-write-dialog')
+    for (const text of [
+      'Edit memory file',
+      'Original body',
+      'Current revision',
+      'Local dev',
+      'http://127.0.0.1:1933',
+      'default/default',
+      'Cancel',
+      'Save and write',
+    ]) {
+      assert.ok(markup.includes(text), `the edit dialog shows ${text}`)
+    }
+    assert.ok(markup.includes('ove-write-editor'), 'the body is editable')
+    // The body is unchanged, so the write button is present but disabled.
+    const primary = /<button[^>]*class="[^"]*ove-write-primary[^"]*"[^>]*>/.exec(markup)?.[0] ?? ''
+    assert.ok(hasAttribute(primary, 'disabled'), 'nothing to save yet')
+  } finally {
+    resetV05Stores(exports)
+  }
+})
+
+test('the delete dialog needs the typed file name, and the tag dialog needs a change', () => {
+  const { contributions, exports } = loadBundle('en')
+  try {
+    exports.__setWriteStateForTests({
+      confirm: prepareFixture({ action: 'delete-memory', content: null, confirmWord: 'tools.md' }),
+    })
+    const remove = renderOverlay(contributions, 'openviking-write-dialog')
+    assert.ok(remove.includes('Delete memory file'), 'the delete dialog is titled')
+    assert.ok(remove.includes('type the file name'.replace('type', 'Type')), 'the typed confirmation is explained')
+    assert.ok(remove.includes('tools.md'), 'the expected word is shown')
+    assert.ok(remove.includes('this deletes immediately') || remove.includes('no recycle bin'), 'the permanence is stated')
+    const deleteButton = /<button[^>]*class="[^"]*ove-write-danger[^"]*"[^>]*>/.exec(remove)?.[0] ?? ''
+    assert.ok(hasAttribute(deleteButton, 'disabled'), 'delete stays disabled until the name is typed')
+
+    exports.__setWriteStateForTests({
+      confirm: prepareFixture({ action: 'set-tags', content: null, tagsBefore: ['env=prod'], revision: null }),
+    })
+    const tags = renderOverlay(contributions, 'openviking-write-dialog')
+    assert.ok(tags.includes('Edit tags'), 'the tags dialog is titled')
+    assert.ok(tags.includes('env=prod'), 'existing tags are chips')
+    assert.ok(tags.includes('Clear'), 'and can be cleared')
+    assert.ok(tags.includes('Add to the existing tags instead of replacing them'), 'and can be appended rather than replaced')
+    const apply = /<button[^>]*class="[^"]*ove-write-primary[^"]*"[^>]*>/.exec(tags)?.[0] ?? ''
+    assert.ok(hasAttribute(apply, 'disabled'), 'an unchanged tag set is not written')
+
+    exports.__setWriteStateForTests({
+      confirm: prepareFixture({
+        action: 'force-commit',
+        content: null,
+        target: 'session-1',
+        session: { sessionId: 'session-1', ovSessionId: 'dsh-session-1', pendingTokens: 123, messageCount: 9, commitCount: 3, lastCommitAt: null },
+      }),
+    })
+    const commit = renderOverlay(contributions, 'openviking-write-dialog')
+    assert.ok(commit.includes('Force-commit session'), 'the force-commit dialog is titled')
+    assert.ok(commit.includes('cannot be rolled back'), 'it says extraction is irreversible')
+    assert.ok(commit.includes('123'), 'it shows the pending token count')
+  } finally {
+    resetV05Stores(exports)
+  }
+})
+
+test('the undo toast renders Undo, Details and the audit id', () => {
+  const { contributions, exports } = loadBundle('en')
+  try {
+    exports.__setWriteStateForTests({
+      notice: { seq: 1, tone: 'success', text: 'Deleted memory/preferences/tools.md', undoId: 'u'.repeat(32), auditId: 'aud-abc' },
+    })
+    const markup = renderOverlay(contributions, 'openviking-write-toast')
+    assert.ok(markup.includes('Deleted memory/preferences/tools.md'), 'the outcome line is shown')
+    assert.ok(markup.includes('Undo'), 'the undo action is offered')
+    assert.ok(markup.includes('Details'), 'details are offered')
+    assert.ok(markup.includes('ove-toast'), 'the toast renders its own surface')
+  } finally {
+    resetV05Stores(exports)
+  }
+})
+
+test('the undo plan lists the paths and warns about extra changes', () => {
+  const { contributions, exports } = loadBundle('en')
+  try {
+    exports.__setWriteStateForTests({
+      plan: {
+        undoId: 'u'.repeat(32),
+        action: 'edit-memory',
+        target: 'viking://user/default/memories/preferences/tools.md',
+        projectDir: 'viking://user/default/memories/preferences',
+        sourceCommit: 'abc123',
+        toWrite: [{ path: 'tools.md', expected: true }, { path: 'other.md', expected: false }],
+        toDelete: [],
+        unchanged: 4,
+        extraChanges: true,
+        tagsOnly: false,
+      },
+    })
+    const markup = renderOverlay(contributions, 'openviking-write-dialog')
+    assert.ok(markup.includes('Undo plan'), 'the plan dialog is titled')
+    assert.ok(markup.includes('would also revert'), 'the extra-change warning is shown')
+    assert.ok(markup.includes('tools.md') && markup.includes('other.md'), 'the plan paths are listed')
+    assert.ok(markup.includes('Revert those changes too'), 'the explicit second confirmation is offered')
+  } finally {
+    resetV05Stores(exports)
+  }
+})
+
+test('the Activity tab renders both sections and its task/mode controls', () => {
+  const { contributions, exports } = loadBundle('en')
+  try {
+    exports.__setScopeStateForTests({ status: 'ready', scope: TEST_SCOPE_PAYLOAD, error: null })
+    const activity = contributions.find((entry) => entry.options.key === 'dsh-openviking-enhance:activity')
+    assert.ok(activity !== undefined, 'the Activity page type is registered')
+    const markup = renderToStaticMarkup(createElement(activity.Component, { sessionId: 'session-1' }))
+    for (const text of ['ove-act', 'Tasks', 'Status', 'Loading…', 'All types', 'All statuses', 'Refresh']) {
+      assert.ok(markup.includes(text), `the Activity tab renders ${text}`)
+    }
+    assert.ok(markup.includes('ove-scope'), 'and carries the scope chip')
+  } finally {
+    resetV05Stores(exports)
+  }
+})
+
+test('the /viking command card parses the envelope and renders Confirm/Cancel', () => {
+  const { contributions, exports } = loadBundle('en')
+  try {
+    const card = contributions.find((entry) => entry.options.name === 'conversation.chat.commandview')
+    assert.ok(card !== undefined, 'the keyed command renderer is registered')
+    const prepare = prepareFixture({ action: 'delete-memory', content: null, confirmWord: 'tools.md' })
+    const text = `Prepared a delete.\n${JSON.stringify({ ov: '1', kind: 'confirm', prepare, hint: 'Type the file name.' })}`
+    const markup = renderToStaticMarkup(
+      createElement(card.Component, { node: { name: 'viking', outcome: { kind: 'success', text } }, sessionId: 's1' }),
+    )
+    assert.ok(markup.includes('Delete memory'), 'the card names the action')
+    assert.ok(markup.includes('Cancel') && markup.includes('Confirm'), 'it offers Confirm/Cancel')
+    assert.ok(markup.includes('Local dev'), 'it repeats the identity scope')
+    assert.ok(!markup.includes('Original body'), 'a delete envelope carries no body')
+
+    const editor = renderToStaticMarkup(
+      createElement(card.Component, {
+        node: {
+          name: 'viking',
+          outcome: { kind: 'success', text: `Open the editor.\n${JSON.stringify({ ov: '1', kind: 'open-editor', uri: 'viking://user/default/memories/preferences/tools.md' })}` },
+        },
+        sessionId: 's1',
+      }),
+    )
+    assert.ok(editor.includes('Open the editor'), 'the edit verb renders its editor button')
+    assert.ok(editor.includes('Open editor'), 'with the button label')
+
+    const plain = renderToStaticMarkup(
+      createElement(card.Component, { node: { name: 'viking', outcome: { kind: 'success', text: 'plain line' } }, sessionId: 's1' }),
+    )
+    assert.ok(plain.includes('plain line'), 'a command without an envelope falls back to plain text')
+  } finally {
+    resetV05Stores(exports)
+  }
 })

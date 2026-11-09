@@ -33,6 +33,14 @@ export interface OvResult<T> {
    * exist", which the human-readable message alone cannot.
    */
   errorCode?: string | null
+  /** The server's structured error detail, e.g. `{type:"git_ref"}` on a snapshot 404. */
+  errorDetails?: unknown
+  /**
+   * `x-request-id` from the response, when present. Every OpenViking response
+   * carries one, which is what correlates a plugin audit entry with the server's
+   * own request log (`GET /console/audit`).
+   */
+  requestId?: string | null
 }
 
 export interface OvSessionMeta {
@@ -98,8 +106,14 @@ export class OpenVikingApi {
   private headers(options: RequestOptions): Record<string, string> {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
     if (this.connection.apiKey) headers.Authorization = `Bearer ${this.connection.apiKey}`
-    if (this.connection.account) headers['X-OpenViking-Account'] = this.connection.account
-    if (this.connection.user) headers['X-OpenViking-User'] = this.connection.user
+    // Auth-mode correction (docs/api-v05.md §5.1): in api_key mode the server
+    // derives the identity from the key and ignores identity headers, so they are
+    // omitted rather than implying a switch that cannot work. Not-probed keeps
+    // the v0.4 behaviour, which is correct for dev/trusted.
+    if (this.connection.authMode !== 'api_key') {
+      if (this.connection.account) headers['X-OpenViking-Account'] = this.connection.account
+      if (this.connection.user) headers['X-OpenViking-User'] = this.connection.user
+    }
     if (options.actorPeerId) headers['X-OpenViking-Actor-Peer'] = options.actorPeerId
     return headers
   }
@@ -128,6 +142,7 @@ export class OpenVikingApi {
         ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
       })
       const body: unknown = await response.json().catch(() => null)
+      const requestId = response.headers.get('x-request-id')
       if (!response.ok) {
         const failure = extractFailure(body)
         return {
@@ -136,9 +151,11 @@ export class OpenVikingApi {
           result: null,
           error: failure?.message ?? `HTTP ${response.status}`,
           errorCode: failure?.code ?? null,
+          errorDetails: failure?.details ?? null,
+          requestId,
         }
       }
-      return { ok: true, status: response.status, result: unwrap<T>(body), error: null, errorCode: null }
+      return { ok: true, status: response.status, result: unwrap<T>(body), error: null, errorCode: null, requestId }
     } catch (error) {
       return {
         ok: false,
@@ -152,17 +169,46 @@ export class OpenVikingApi {
     }
   }
 
-  /** `/health` answers bare, without the `{status, result}` envelope. */
+  /**
+   * `/health` answers bare, without the `{status, result}` envelope.
+   *
+   * `role`, `account_id` and `user_id` appear only when the request carried
+   * credentials (or trusted headers); they are reported as null otherwise, which
+   * the scope banner renders as "unknown identity". The optional request options
+   * carry the caller's abort signal so a cancelled /viking command stops the
+   * probe instead of waiting out its timeout.
+   */
   async health(
     options: RequestOptions = {},
-  ): Promise<{ ok: boolean; version: string | null; authMode: string | null; error: string | null }> {
+  ): Promise<{
+    ok: boolean
+    version: string | null
+    authMode: string | null
+    role: string | null
+    accountId: string | null
+    userId: string | null
+    error: string | null
+  }> {
     const response = await this.request<Record<string, unknown>>('/health', { timeoutMs: 4000, ...options })
-    if (!response.ok) return { ok: false, version: null, authMode: null, error: response.error }
+    if (!response.ok) {
+      return {
+        ok: false,
+        version: null,
+        authMode: null,
+        role: null,
+        accountId: null,
+        userId: null,
+        error: response.error,
+      }
+    }
     const body = response.result
     return {
       ok: body?.healthy === true || body?.status === 'ok',
       version: typeof body?.version === 'string' ? body.version : null,
       authMode: typeof body?.auth_mode === 'string' ? body.auth_mode : null,
+      role: typeof body?.role === 'string' ? body.role : null,
+      accountId: typeof body?.account_id === 'string' ? body.account_id : null,
+      userId: typeof body?.user_id === 'string' ? body.user_id : null,
       error: null,
     }
   }
@@ -368,6 +414,205 @@ export class OpenVikingApi {
       `/api/v1/agent-evolution/experiences/outcomes?experience_uri=${encodeURIComponent(experienceUri)}`,
       { timeoutMs: 8000, ...options },
     )
+  }
+
+  /* ---- v0.5: curation writes (F9) ---------------------------------------- */
+
+  /**
+   * Replace the body of one `viking://` text file.
+   *
+   * `wait:false` is deliberate: the semantic/vector refresh runs in the
+   * background and the caller verifies with its own read-back; waiting here
+   * would block a GUI dialog on indexing. `expected_sha256` is NOT sent — 0.5.3
+   * removed the field (`extra="forbid"` would reject it), so the plugin's own
+   * read→hash→write→verify choreography is the safety net.
+   */
+  async writeContent(
+    uri: string,
+    content: string,
+    options: RequestOptions & { mode?: 'replace' | 'append' } = {},
+  ): Promise<OvResult<OvWriteResult>> {
+    return this.request<OvWriteResult>('/api/v1/content/write', { timeoutMs: 20000, ...options }, {
+      method: 'POST',
+      body: { uri, content, mode: options.mode ?? 'replace', wait: false },
+    })
+  }
+
+  /** Delete one file (non-recursive): the only delete the plugin ever issues. */
+  async deletePath(uri: string, options: RequestOptions & { recursive?: boolean } = {}): Promise<OvResult<OvDeleteResult>> {
+    const query = new URLSearchParams({ uri, recursive: options.recursive === true ? 'true' : 'false' })
+    return this.request<OvDeleteResult>(`/api/v1/fs?${query.toString()}`, {
+      timeoutMs: 20000,
+      ...options,
+    }, { method: 'DELETE' })
+  }
+
+  /** Replace/append/clear retrieval tags on one entry. */
+  async setTags(
+    uri: string,
+    tags: string[],
+    mode: 'replace' | 'append' | 'clear',
+    options: RequestOptions = {},
+  ): Promise<OvResult<OvSetTagsResult>> {
+    return this.request<OvSetTagsResult>('/api/v1/content/set_tags', { timeoutMs: 10000, ...options }, {
+      method: 'POST',
+      body: { uri, tags, mode, recursive: false },
+    })
+  }
+
+  /* ---- v0.5: snapshots, the only content undo (F9) ----------------------- */
+
+  /**
+   * Commit the current state of `paths` to the account snapshot repository.
+   *
+   * Non-ROOT identities **must** pass `paths`; an empty array is a no-op scope,
+   * so callers always name at least the target. `noop` still returns the current
+   * HEAD, which is a valid restore point — that is why the plugin treats a
+   * returned `commit_oid` as the foundation of every undoable action.
+   */
+  async snapshotCommit(
+    message: string,
+    paths: string[],
+    options: RequestOptions = {},
+  ): Promise<OvResult<OvSnapshotCommit>> {
+    return this.request<OvSnapshotCommit>('/api/v1/snapshot/commit', { timeoutMs: 30000, ...options }, {
+      method: 'POST',
+      body: { message, paths },
+    })
+  }
+
+  /**
+   * Restore (or dry-run) a directory scope from one commit.
+   *
+   * A forward-commit restore: the diff `source_commit → HEAD` inside
+   * `project_dir` is written back and a new commit is created on top of HEAD.
+   * `dry_run:true` returns the plan and writes nothing — the undo preview.
+   */
+  async snapshotRestore(
+    projectDir: string,
+    sourceCommit: string,
+    options: RequestOptions & { dryRun?: boolean; message?: string } = {},
+  ): Promise<OvResult<OvSnapshotRestore>> {
+    return this.request<OvSnapshotRestore>('/api/v1/snapshot/restore', { timeoutMs: 30000, ...options }, {
+      method: 'POST',
+      body: {
+        project_dir: projectDir,
+        source_commit: sourceCommit,
+        dry_run: options.dryRun === true,
+        ...(options.message === undefined ? {} : { message: options.message }),
+      },
+    })
+  }
+
+  /** Snapshot history for one branch/path scope; also the capability probe. */
+  async snapshotLog(
+    options: RequestOptions & { branch?: string; limit?: number; paths?: string[] } = {},
+  ): Promise<OvResult<OvSnapshotLogEntry[]>> {
+    const params = new URLSearchParams({
+      branch: options.branch ?? 'main',
+      limit: String(Math.min(Math.max(Math.trunc(options.limit ?? 1), 1), 100)),
+    })
+    for (const path of options.paths ?? []) params.append('paths', path)
+    return this.request<OvSnapshotLogEntry[]>(`/api/v1/snapshot/log?${params.toString()}`, {
+      timeoutMs: 8000,
+      ...options,
+    })
+  }
+
+  /* ---- v0.5: force commit and the task centre (F10/F11) ------------------ */
+
+  /** Archive + extract a session's live messages. Phase 1 is synchronous. */
+  async commitSession(
+    ovSessionId: string,
+    body: { keep_recent_count: number },
+    options: RequestOptions = {},
+  ): Promise<OvResult<OvCommitSessionResult>> {
+    return this.request<OvCommitSessionResult>(
+      `/api/v1/sessions/${encodeURIComponent(ovSessionId)}/commit`,
+      { timeoutMs: 30000, ...options },
+      { method: 'POST', body },
+    )
+  }
+
+  /** One task, optionally with its execution events. */
+  async getTask(
+    taskId: string,
+    options: RequestOptions & { includeEvents?: boolean } = {},
+  ): Promise<OvResult<OvTask>> {
+    const suffix = options.includeEvents === true ? '?include_events=true' : ''
+    return this.request<OvTask>(`/api/v1/tasks/${encodeURIComponent(taskId)}${suffix}`, {
+      timeoutMs: 8000,
+      ...options,
+    })
+  }
+
+  /**
+   * A bounded task page.
+   *
+   * `pagination=cursor` makes the server answer `{items, has_more, next_cursor}`;
+   * the non-cursor default returns an array of summaries.
+   */
+  async listTasks(
+    filters: {
+      taskType?: string
+      status?: string
+      resourceId?: string
+      limit?: number
+      cursor?: string
+    } = {},
+    options: RequestOptions = {},
+  ): Promise<OvResult<OvTaskList | OvTask[]>> {
+    const params = new URLSearchParams({
+      pagination: 'cursor',
+      limit: String(Math.min(Math.max(Math.trunc(filters.limit ?? 20), 1), 200)),
+    })
+    if (filters.taskType !== undefined && filters.taskType.length > 0) params.set('task_type', filters.taskType)
+    if (filters.status !== undefined && filters.status.length > 0) params.set('status', filters.status)
+    if (filters.resourceId !== undefined && filters.resourceId.length > 0) params.set('resource_id', filters.resourceId)
+    if (filters.cursor !== undefined && filters.cursor.length > 0) params.set('cursor', filters.cursor)
+    return this.request<OvTaskList | OvTask[]>(`/api/v1/tasks?${params.toString()}`, {
+      timeoutMs: 8000,
+      ...options,
+    })
+  }
+
+  /** Cooperative cancel. Never claims rollback; the server may settle later. */
+  async cancelTask(taskId: string, options: RequestOptions = {}): Promise<OvResult<OvTask>> {
+    return this.request<OvTask>(`/api/v1/tasks/${encodeURIComponent(taskId)}/cancel`, {
+      timeoutMs: 8000,
+      ...options,
+    }, { method: 'POST' })
+  }
+
+  /* ---- v0.5: cheap metrics (F11) ---------------------------------------- */
+
+  async dashboardSummary(options: RequestOptions = {}): Promise<OvResult<OvDashboardSummary>> {
+    return this.request<OvDashboardSummary>('/api/v1/console/dashboard/summary', { timeoutMs: 5000, ...options })
+  }
+
+  async observerQueue(options: RequestOptions = {}): Promise<OvResult<OvObserverQueue>> {
+    return this.request<OvObserverQueue>('/api/v1/observer/queue?format=json', { timeoutMs: 5000, ...options })
+  }
+
+  async memoryStats(options: RequestOptions = {}): Promise<OvResult<OvMemoryStats>> {
+    return this.request<OvMemoryStats>('/api/v1/stats/memories', { timeoutMs: 5000, ...options })
+  }
+
+  async sessionStats(sessionId: string, options: RequestOptions = {}): Promise<OvResult<OvSessionStats>> {
+    return this.request<OvSessionStats>(
+      `/api/v1/stats/sessions/${encodeURIComponent(sessionId)}`,
+      { timeoutMs: 5000, ...options },
+    )
+  }
+
+  /* ---- v0.5: ACL read (read-only "not enabled" state only) --------------- */
+
+  /** The ACL report for a resource URI; resources only, and inert by default. */
+  async getAcl(uri: string, options: RequestOptions = {}): Promise<OvResult<OvAclReport>> {
+    return this.request<OvAclReport>(`/api/v1/acl?uri=${encodeURIComponent(uri)}`, {
+      timeoutMs: 5000,
+      ...options,
+    })
   }
 }
 
@@ -633,6 +878,8 @@ function unwrap<T>(body: unknown): T | null {
 export interface OvFailure {
   message: string
   code: string | null
+  /** Structured `error.details`, e.g. `{type:"git_ref"}` on a snapshot 404. */
+  details: unknown
 }
 
 /** The server's error body, when it carries one. */
@@ -644,12 +891,184 @@ export function extractFailure(body: unknown): OvFailure | null {
     const recordError = error as Record<string, unknown>
     const message = recordError.message
     if (typeof message === 'string') {
-      return { message, code: typeof recordError.code === 'string' ? recordError.code : null }
+      return {
+        message,
+        code: typeof recordError.code === 'string' ? recordError.code : null,
+        details: recordError.details ?? null,
+      }
     }
   }
-  if (typeof error === 'string') return { message: error, code: null }
+  if (typeof error === 'string') return { message: error, code: null, details: null }
   // FastAPI's own 404 for a route that does not exist on this version.
-  if (typeof record.detail === 'string') return { message: record.detail, code: null }
+  if (typeof record.detail === 'string') return { message: record.detail, code: null, details: null }
   return null
+}
+
+/* ========================================================================
+ * v0.5 server payloads
+ *
+ * Field names are the server's own (snake_case). Every optional field is
+ * genuinely optional on the wire: the tested range is 0.5.1.1–0.5.3 and the
+ * plugin degrades per field rather than failing a whole payload.
+ * ===================================================================== */
+
+/** `POST /api/v1/content/write` result. */
+export interface OvWriteResult {
+  uri?: string
+  root_uri?: string
+  context_type?: string
+  mode?: string
+  written_bytes?: number
+  content_updated?: boolean
+  semantic_status?: string
+  vector_status?: string
+}
+
+/** `DELETE /api/v1/fs` result. */
+export interface OvDeleteResult {
+  uri?: string
+  estimated_deleted_count?: number
+  memory_cleanup?: unknown
+}
+
+/** `POST /api/v1/content/set_tags` result. */
+export interface OvSetTagsResult {
+  uri?: string
+  updated_uris?: string[]
+  root_uri?: string
+  context_type?: string
+  tags?: string[]
+  mode?: string
+  success_count?: number
+  skipped_count?: number
+  failed_count?: number
+  tags_updated?: boolean
+}
+
+/** `POST /api/v1/snapshot/commit` result. */
+export interface OvSnapshotCommit {
+  result?: 'created' | 'noop'
+  commit_oid?: string
+  changed?: number
+  ignored?: number
+}
+
+/** The dry-run plan of `POST /api/v1/snapshot/restore`. */
+export interface OvSnapshotPlanDiff {
+  to_write?: Array<{ path?: string; oid?: string }>
+  to_delete?: Array<{ path?: string; oid?: string }>
+  unchanged?: unknown[]
+}
+
+/** `POST /api/v1/snapshot/restore` result, applied or dry-run. */
+export interface OvSnapshotRestore {
+  result?: 'applied' | 'dry_run' | 'noop'
+  new_commit_oid?: string
+  source_commit?: string
+  parent_commit?: string
+  written?: number
+  deleted?: number
+  unchanged?: number
+  written_paths?: string[]
+  deleted_paths?: string[]
+  task_id?: string
+  head?: string
+  source?: string
+  diff?: OvSnapshotPlanDiff
+}
+
+/** One `GET /api/v1/snapshot/log` entry (git commit metadata). */
+export interface OvSnapshotLogEntry {
+  oid?: string
+  tree?: string
+  parents?: string[]
+  author?: { name?: string; email?: string; time_seconds?: number; tz_offset_seconds?: number }
+  committer?: { name?: string; email?: string; time_seconds?: number; tz_offset_seconds?: number }
+  message?: string
+}
+
+/** `POST /api/v1/sessions/{id}/commit` result. Phase 2 runs in the background. */
+export interface OvCommitSessionResult {
+  session_id?: string
+  status?: 'accepted' | 'skipped'
+  task_id?: string | null
+  archive_uri?: string | null
+  archived?: boolean
+  reason?: string
+}
+
+/** One task record; `result` is type-specific and never contains a memory body. */
+export interface OvTask {
+  task_id?: string
+  task_type?: string
+  status?: string
+  created_at?: number
+  updated_at?: number
+  processing_seconds?: number
+  resource_id?: string | null
+  meta?: Record<string, unknown> | null
+  stage?: string | null
+  result?: Record<string, unknown> | null
+  error?: string | null
+}
+
+/** `GET /api/v1/tasks?pagination=cursor` shape. */
+export interface OvTaskList {
+  items?: OvTask[]
+  has_more?: boolean
+  next_cursor?: string | null
+}
+
+/** `GET /api/v1/console/dashboard/summary` result. */
+export interface OvDashboardSummary {
+  context_counts?: { files?: number; skills?: number; memories?: number; total?: number }
+  today_tokens?: { vlm_input?: number; vlm_output?: number; embedding_input?: number; total?: number }
+  today_retrievals?: { find?: number; search?: number; total?: number }
+}
+
+/** `GET /api/v1/observer/queue?format=json` result. */
+export interface OvObserverQueue {
+  name?: string
+  is_healthy?: boolean
+  has_errors?: boolean
+  status?: {
+    queues?: Array<{
+      queue?: string
+      pending?: number
+      in_progress?: number
+      processed?: number
+      requeued?: number
+      errors?: number
+      total?: number
+    }>
+  }
+}
+
+/** `GET /api/v1/stats/memories` result. */
+export interface OvMemoryStats {
+  total_memories?: number
+  by_category?: Record<string, number>
+  hotness_distribution?: Record<string, number>
+  staleness?: {
+    not_accessed_7d?: number
+    not_accessed_30d?: number
+    oldest_memory_age_days?: number
+  }
+}
+
+/** `GET /api/v1/stats/sessions/{id}` result. */
+export interface OvSessionStats {
+  session_id?: string
+  total_turns?: number
+  memories_extracted?: number
+}
+
+/** `GET /api/v1/acl?uri=` result (resources only). */
+export interface OvAclReport {
+  uri?: string
+  acl_mode?: 'inherit' | 'restricted' | string
+  direct_entries?: Array<{ principal?: string; level?: string }>
+  inherited_entries?: Array<{ principal?: string; level?: string }>
+  effective_entries?: Array<{ principal?: string; level?: string }>
 }
 

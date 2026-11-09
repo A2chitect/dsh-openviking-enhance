@@ -20,6 +20,7 @@
  * between L0/L1/L2 is instant and there is no per-tier request to race.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { classifyCuratableUri } from '../shared/curation.ts'
 import {
   PREVIEW_TIERS,
   type PreviewPayload,
@@ -28,9 +29,12 @@ import {
   type PreviewTierId,
 } from '../shared/protocol.ts'
 import { copyText } from './clipboard.ts'
-import { fetchPreview } from './host-api.ts'
-import { errorText, noticeText, t } from './locale.ts'
+import { fetchPreview, prepareWrite } from './host-api.ts'
+import { errorText, noticeText, t, writeErrorText } from './locale.ts'
 import { openPreview, usePreviewTarget } from './preview-store.ts'
+import { ScopeChip } from './scope-chip.tsx'
+import { ensureScope, useScope } from './scope-store.ts'
+import { notifyWriteSettled, openWriteConfirm, useWriteStore } from './write-store.ts'
 
 /**
  * The slice of the framework's per-tab information this panel reads.
@@ -158,8 +162,12 @@ export function PreviewPanel(props: PreviewPanelProps) {
   const [loading, setLoading] = useState(false)
   const [tierId, setTierId] = useState<PreviewTierId>('l0')
   const [copied, setCopied] = useState(false)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const scope = useScope()
+  const writeState = useWriteStore()
   /** Guards a slow reply from a previous URI overwriting the current one. */
   const generation = useRef(0)
+  const loadedUri = useRef<string | null>(null)
 
   const load = useCallback(async (uri: string) => {
     const ticket = (generation.current += 1)
@@ -170,6 +178,7 @@ export function PreviewPanel(props: PreviewPanelProps) {
       if (ticket !== generation.current) return
       if (answer.ok) {
         setPayload(answer.preview)
+        loadedUri.current = answer.preview.uri
         setError(null)
         setTierId(firstAvailableTier(answer.preview))
       } else {
@@ -199,6 +208,22 @@ export function PreviewPanel(props: PreviewPanelProps) {
     setDraft(targetUri)
     void load(targetUri)
   }, [targetUri, load])
+
+  // The scope chip and the write gates are shared state; a panel that never
+  // asks would render a stale "no profile" chip.
+  useEffect(() => {
+    void ensureScope()
+  }, [])
+
+  // After a write settles, re-read the entry from the server. Never optimistic:
+  // a verified write is the only state the panel is allowed to show.
+  useEffect(() => {
+    if (writeState.lastWriteSeq === 0) return
+    const target = loadedUri.current
+    if (target === null) return
+    if (writeState.lastWriteTarget !== null && writeState.lastWriteTarget !== target) return
+    void load(target)
+  }, [writeState.lastWriteSeq, writeState.lastWriteTarget, load])
 
   /**
    * The address-bar action: navigate to a different URI, or refetch the one
@@ -231,6 +256,24 @@ export function PreviewPanel(props: PreviewPanelProps) {
   }, [payload])
 
   const tier: PreviewTier | undefined = payload?.tiers.find((candidate) => candidate.id === tierId)
+
+  /* ---- v0.5: the curation action bar (F9) ----------------------------- */
+
+  const classification = payload === null ? null : classifyCuratableUri(payload.uri)
+  const curatable = classification !== null && classification.ok && payload?.stat?.isDir === false
+  const writesReady =
+    scope.scope !== null && scope.scope.writes.enabled && scope.scope.writes.transport
+  const prepareAction = async (action: 'edit-memory' | 'delete-memory' | 'set-tags'): Promise<void> => {
+    if (payload === null) return
+    setActionError(null)
+    const answer = await prepareWrite({
+      action,
+      target: payload.uri,
+      ...(props.sessionId.length === 0 ? {} : { sessionId: props.sessionId }),
+    })
+    if (answer.ok) openWriteConfirm(answer)
+    else setActionError(writeErrorText(answer.error))
+  }
 
   return (
     <div className="ove-preview">
@@ -268,6 +311,8 @@ export function PreviewPanel(props: PreviewPanelProps) {
             </button>
           </>
         )}
+        <span className="ove-preview-spacer" />
+        <ScopeChip compact />
       </div>
 
       <div className="ove-preview-body">
@@ -280,7 +325,16 @@ export function PreviewPanel(props: PreviewPanelProps) {
 
         {loading && payload === null && <p className="ove-preview-status">{t('preview.loading')}</p>}
 
-        {error !== null && payload === null && (
+        {/* F9: after a confirmed delete the panel re-reads the server, which now
+            answers "not found". That is the honest tombstone: the action is done,
+            and the undo handle lives in the outcome toast. */}
+        {error !== null && payload === null && writeState.lastWriteAction === 'delete-memory' && writeState.lastWriteTarget === targetUri && (
+          <div className="ove-preview-tombstone">
+            <p className="ove-preview-status">{t('preview.deleted', { uri: targetUri ?? '' })}</p>
+            <p className="ove-preview-hint">{t('preview.deletedHint')}</p>
+          </div>
+        )}
+        {error !== null && payload === null && !(writeState.lastWriteAction === 'delete-memory' && writeState.lastWriteTarget === targetUri) && (
           <p className="ove-preview-error">{errorText(error)}</p>
         )}
 
@@ -291,6 +345,39 @@ export function PreviewPanel(props: PreviewPanelProps) {
                 {payload.uri}
               </span>
             </div>
+            {/*
+              F9 action bar: only for a curatable memory file and only when the
+              writes switch and the authenticated transport are both live. Every
+              button raises the same prepare/confirm dialog as `/viking forget`.
+            */}
+            {payload.stat?.isDir === false &&
+              (curatable ? (
+                writesReady ? (
+                  <div className="ove-preview-actions">
+                    <span className="ove-preview-actions-title">{t('write.actionsTitle')}</span>
+                    <button type="button" className="ove-preview-button" onClick={() => void prepareAction('edit-memory')}>
+                      {t('write.edit')}
+                    </button>
+                    <button type="button" className="ove-preview-button" onClick={() => void prepareAction('set-tags')}>
+                      {t('write.tags')}
+                    </button>
+                    <button
+                      type="button"
+                      className="ove-preview-button ove-preview-danger"
+                      onClick={() => void prepareAction('delete-memory')}
+                    >
+                      {t('write.delete')}
+                    </button>
+                  </div>
+                ) : (
+                  <p className="ove-preview-hint">
+                    {t('write.actionsDisabled', { reason: scope.scope?.writes.reason ?? 'writes-disabled' })}
+                  </p>
+                )
+              ) : (
+                <p className="ove-preview-hint">{t('write.readOnlyInVersion', { reason: classification?.ok === false ? classification.reason : 'not-memory-body' })}</p>
+              ))}
+            {actionError !== null && <p className="ove-preview-error">{actionError}</p>}
             {payload.stat !== null && <MetaBlock stat={payload.stat} />}
             {payload.stat !== null && payload.stat.isDir === false && (
               <p className="ove-preview-hint">{t('preview.sidecarNote')}</p>

@@ -1,44 +1,47 @@
 /**
- * F6: the `/viking` read-only command.
- *
- * One command, five verbs:
+ * F6: the `/viking` command — read verbs as shipped in v0.4, write verbs as of
+ * v0.5.
  *
  *   /viking              → status (same as `/viking status`)
  *   /viking status       → endpoint, server, identity, memory plugin, DSH, session
  *   /viking doctor       → the Doctor report as text
  *   /viking recall <q>   → run this session's recall and list the hits
  *   /viking open <uri>   → stat + L0/L1 for one entry (full view lives in the tab)
+ *   /viking edit <uri>   → open the preview editor for one memory file
+ *   /viking forget <uri> → prepare a delete; confirm in the card or `--confirm <token>`
+ *   /viking tag <uri> <k=v…|--clear> → prepare a tag update
+ *   /viking commit       → prepare a force commit for this session
+ *   /viking undo <handle>→ apply a prepared undo handle
+ *   /viking audit [n]    → the newest local audit records, one line each
  *   /viking help         → usage
  *
- * ## Why this is a separate module
+ * ## The command never writes by itself
  *
- * The command registry is an optional host service: a composition without
- * `@deepseek-ai/dsh-commands` must still mount every route and every tab. So the
- * registration is the guard's job (see `index.ts`), and the *verbs* live here,
- * against the same services the GUI routes use. That also makes the parsing and
- * the output unit-testable without a command registry, a host or a server.
+ * Every write verb *prepares* (the host takes the pre-write snapshot then) and
+ * returns a confirmation envelope. The rich `conversation.chat.commandview` card
+ * keyed `viking` parses the final line and renders Confirm/Cancel; a client
+ * without the card gets the plain-text fallback the human line names
+ * (`--confirm <token>`). The token is single-use, TTL-bound and appears in the
+ * durable session log either way — never a memory body, never a secret.
  *
  * ## Output rules
  *
  * The host has no locale service, so these strings are English and deliberately
- * short (the result is rendered in a narrow transcript bubble). They carry no
- * API key, no request headers and no full memory body: `open` truncates the
- * tiers it prints, and `recall` prints the abstract's first line. The pull
- * towards more detail is satisfied by pointing at the preview tab, which makes
- * its own, deliberate requests.
- *
- * ## v0.4 is read-only
- *
- * There is deliberately no `commit`, `remember`, `forget`, `pause` or `resume`.
- * Those are v0.5 writes and need confirmation and an audit trail first.
+ * short (the result is rendered in a narrow transcript bubble). `open` truncates
+ * the tiers it prints, `recall` prints the abstract's first line, and the write
+ * envelopes carry no bodies (the edit verb only opens the editor, which loads the
+ * body through its own request).
  */
-import { RECALL_DEFAULT_LIMIT } from '../shared/protocol.ts'
+import { RECALL_DEFAULT_LIMIT, type IdentityScope, type WritePreparePayload } from '../shared/protocol.ts'
+import { classifyCuratableUri } from '../shared/curation.ts'
 import type { CommitService } from './commit-service.ts'
 import type { DoctorService } from './doctor-service.ts'
 import type { OvConnection } from './config.ts'
 import type { OpenVikingApi } from './openviking-api.ts'
 import type { PreviewService } from './preview-service.ts'
 import type { RecallService } from './recall-service.ts'
+import type { AuditLog } from './audit.ts'
+import { shortHash, type WriteService } from './write-service.ts'
 
 /** One line-oriented command outcome, the registry's own result shape. */
 export type VikingCommandResult = { readonly kind: 'success'; readonly text?: string } | { readonly kind: 'error'; readonly text: string }
@@ -61,7 +64,22 @@ export interface VikingCommandDefinition {
 }
 
 /** The verbs, plus the two not-a-verb outcomes. */
-export type VikingSubcommand = 'status' | 'doctor' | 'recall' | 'open' | 'help' | 'unknown'
+export type VikingSubcommand =
+  | 'status'
+  | 'doctor'
+  | 'recall'
+  | 'open'
+  | 'edit'
+  | 'forget'
+  | 'tag'
+  | 'commit'
+  | 'undo'
+  | 'audit'
+  | 'help'
+  | 'unknown'
+
+/** The write verbs (registered behaviour is live-gated on `enableWrites`). */
+export const VIKING_WRITE_VERBS: readonly VikingSubcommand[] = ['edit', 'forget', 'tag', 'commit', 'undo']
 
 export interface ParsedVikingCommand {
   subcommand: VikingSubcommand
@@ -96,6 +114,22 @@ export function parseVikingCommand(rawInput: string): ParsedVikingCommand {
     case 'open':
     case 'preview':
       return { subcommand: 'open', argument: rest }
+    case 'edit':
+      return { subcommand: 'edit', argument: rest }
+    case 'forget':
+    case 'delete':
+    case 'rm':
+      return { subcommand: 'forget', argument: rest }
+    case 'tag':
+    case 'tags':
+      return { subcommand: 'tag', argument: rest }
+    case 'commit':
+      return { subcommand: 'commit', argument: rest }
+    case 'undo':
+      return { subcommand: 'undo', argument: rest }
+    case 'audit':
+    case 'log':
+      return { subcommand: 'audit', argument: rest }
     case 'help':
     case '?':
     case '--help':
@@ -106,15 +140,29 @@ export function parseVikingCommand(rawInput: string): ParsedVikingCommand {
   }
 }
 
-/** The usage text, shared by `help` and the unknown-verb path. */
+/** The read-only usage lines. */
 export const VIKING_USAGE = [
   '/viking status — connection, identity, memory plugin, commit state',
   '/viking doctor — the Doctor checks as text',
   '/viking recall <query> — run this session’s recall and list the hits',
   '/viking open <viking://…> — size, L0 and L1 for one entry',
   '/viking help — this list',
-  'Read-only: write commands arrive in v0.5 (with confirmation and audit).',
 ].join('\n')
+
+/** The write verb usage lines; only listed when writes are enabled. */
+export const VIKING_WRITE_USAGE = [
+  '/viking edit <viking://…> — open the preview editor for one memory file',
+  '/viking forget <viking://…> — prepare a delete (typed confirmation in the card)',
+  '/viking tag <viking://…> <key=value|--clear> — prepare a tag update',
+  '/viking commit — prepare a force commit for this session (not undoable)',
+  '/viking undo <handle> — apply an undo handle from a recent result',
+  '/viking audit [n] — the newest local audit records',
+].join('\n')
+
+/** The usage text for the current writes switch. */
+export function vikingUsage(writesEnabled: boolean): string {
+  return writesEnabled ? `${VIKING_USAGE}\n${VIKING_WRITE_USAGE}` : `${VIKING_USAGE}\nWrites are off: enable “Writes” in the plugin settings to curate memories.`
+}
 
 /** The inputs the command needs; the same services the routes use. */
 export interface VikingCommandOptions {
@@ -124,6 +172,14 @@ export interface VikingCommandOptions {
   recall: RecallService
   doctor: DoctorService
   preview: PreviewService
+  /** The write protocol; present whenever the host half is running. */
+  writes: WriteService
+  /** The live `enableWrites` value. */
+  writesEnabled: () => boolean
+  /** The active identity, for the editor envelope's scope block. */
+  identity: () => IdentityScope
+  /** The local audit trail (`/viking audit`, and the undo confirmation record). */
+  audit: AuditLog
   /** `@openviking/dsh-memory-plugin` version, when it is installed locally. */
   memoryPluginVersion?: () => string | null
   /** The running DSH release, when the host publishes one. */
@@ -199,6 +255,34 @@ function vikingUriArgument(argument: string): string | null {
   return /^viking:\/\/\S+$/.test(uri) ? uri : null
 }
 
+/** One outgoing confirmation envelope, as the `viking` command card parses it. */
+export interface VikingConfirmEnvelope {
+  ov: '1'
+  kind: 'confirm'
+  prepare: WritePreparePayload
+  /** One short English instruction for clients that cannot render the card. */
+  hint: string
+}
+
+/** The editor-opening envelope (`/viking edit` never writes). */
+export interface VikingEditorEnvelope {
+  ov: '1'
+  kind: 'open-editor'
+  uri: string
+  scope: IdentityScope
+}
+
+/** `--confirm <token>` in a write verb's argument. */
+export function confirmTokenArgument(argument: string): string | null {
+  const match = /(?:^|\s)--confirm(?:\s+|=)?([0-9a-f]{16,128})(?:\s|$)/i.exec(argument)
+  return match?.[1] ?? null
+}
+
+/** The action's plain-text confirmation command, for the human fallback line. */
+function fallbackCommand(subcommand: VikingSubcommand): string {
+  return subcommand === 'tag' ? '/viking tag <uri> <key=value…> --confirm' : `/viking ${subcommand} --confirm`
+}
+
 export class VikingCommand {
   private readonly options: VikingCommandOptions
 
@@ -227,10 +311,22 @@ export class VikingCommand {
           return await this.recall(sessionId, parsed.argument, signal)
         case 'open':
           return await this.open(parsed.argument, signal)
+        case 'edit':
+          return await this.edit(parsed.argument)
+        case 'forget':
+          return await this.forget(sessionId, parsed.argument)
+        case 'tag':
+          return await this.tag(sessionId, parsed.argument)
+        case 'commit':
+          return await this.commit(sessionId, parsed.argument)
+        case 'undo':
+          return await this.undo(parsed.argument)
+        case 'audit':
+          return this.audit(parsed.argument)
         case 'help':
-          return { kind: 'success', text: VIKING_USAGE }
+          return { kind: 'success', text: vikingUsage(this.options.writesEnabled()) }
         default:
-          return { kind: 'error', text: `Unknown /viking command.\n${VIKING_USAGE}` }
+          return { kind: 'error', text: `Unknown /viking command.\n${vikingUsage(this.options.writesEnabled())}` }
       }
     } catch (error) {
       if (error instanceof CommandCancelled || signal?.aborted === true) return CANCELLED
@@ -248,7 +344,13 @@ export class VikingCommand {
     lines.push(
       `OpenViking ${health.version ?? '?'} · ${health.ok ? 'healthy' : 'unreachable'} · ${connection.endpoint}`,
     )
-    lines.push(`Identity: ${connection.account}/${connection.user} · auth ${connection.apiKey ? 'bearer' : 'none'}`)
+    const scope = this.options.identity()
+    const peer = scope.peer === null ? '' : ` · peer ${scope.peer}`
+    lines.push(
+      `Identity: ${scope.account}/${scope.user}${peer} · auth ${health.authMode ?? (connection.apiKey ? 'bearer' : 'none')}` +
+        `${scope.profileId === null ? ' · no profile' : ` · profile ${scope.profileLabel ?? scope.profileId}`}`,
+    )
+    lines.push(`Writes: ${this.options.writesEnabled() ? 'enabled' : 'disabled (enableWrites is off)'}`)
     const pluginVersion = memoryPluginVersion?.() ?? null
     lines.push(
       pluginVersion === null
@@ -364,14 +466,182 @@ export class VikingCommand {
     lines.push('Full view: open the OpenViking preview tab (right sidebar) and click the URI.')
     return { kind: 'success', text: lines.join('\n') }
   }
+
+  /* ---- write verbs (prepare only; the card / --confirm executes) -------- */
+
+  /** `/viking edit <uri>`: no write, only the editor envelope. */
+  private async edit(argument: string): Promise<VikingCommandResult> {
+    if (!this.requireWrites()) return this.writesDisabled()
+    const uri = vikingUriArgument(argument)
+    if (uri === null) return { kind: 'error', text: 'Usage: /viking edit <viking://…>' }
+    const classified = classifyCuratableUri(uri)
+    if (!classified.ok) {
+      return { kind: 'error', text: `Not curatable in this version (${classified.reason}); resources, skills, rules and sidecars stay read-only.` }
+    }
+    const envelope: VikingEditorEnvelope = {
+      ov: '1',
+      kind: 'open-editor',
+      uri: classified.target.uri,
+      scope: this.options.identity(),
+    }
+    return {
+      kind: 'success',
+      text: `Open the editor for ${classified.target.uri} (button below, or click the URI in the preview tab).\n${JSON.stringify(envelope)}`,
+    }
+  }
+
+  /** `/viking forget <uri> [--confirm <token>]`. */
+  private async forget(sessionId: string, argument: string): Promise<VikingCommandResult> {
+    if (!this.requireWrites()) return this.writesDisabled()
+    const token = confirmTokenArgument(argument)
+    if (token !== null) return this.executeToken(token, 'delete-memory')
+    const uri = vikingUriArgument(argument)
+    if (uri === null) return { kind: 'error', text: 'Usage: /viking forget <viking://…>' }
+    const prepared = await this.options.writes.prepare({
+      action: 'delete-memory',
+      target: uri,
+      sessionId,
+      origin: 'command',
+    })
+    if (!prepared.ok) return { kind: 'error', text: `${prepared.error.code}: ${prepared.error.message}` }
+    return this.confirmResult(prepared, 'forget', 'Type the file name in the card (or use the plain --confirm form).')
+  }
+
+  /** `/viking tag <uri> <k=v …>` or `/viking tag <uri> --clear`. */
+  private async tag(sessionId: string, argument: string): Promise<VikingCommandResult> {
+    if (!this.requireWrites()) return this.writesDisabled()
+    const token = confirmTokenArgument(argument)
+    if (token !== null) return this.executeToken(token, 'set-tags')
+    const withoutConfirm = argument.replace(/--confirm(?:\s+|=)?[0-9a-f]{16,128}/i, '').trim()
+    const appendMode = /(?:^|\s)--append(?:\s|$)/.test(withoutConfirm)
+    const cleaned = withoutConfirm.replace(/(?:^|\s)--append(?=\s|$)/, ' ').trim()
+    const space = cleaned.search(/\s/)
+    const uri = vikingUriArgument(space === -1 ? cleaned : cleaned.slice(0, space))
+    const rest = space === -1 ? '' : cleaned.slice(space + 1).trim()
+    if (uri === null) return { kind: 'error', text: 'Usage: /viking tag <viking://…> <key=value…> | --clear | --append <key=value…>' }
+    const clear = rest === '--clear' || rest === 'clear'
+    const tags = clear ? [] : rest.split(/\s+/).filter((part) => part.length > 0)
+    if (rest.length === 0) return { kind: 'error', text: 'Usage: /viking tag <uri> <key=value…> | --clear | --append <key=value…>' }
+    const prepared = await this.options.writes.prepare({
+      action: 'set-tags',
+      target: uri,
+      sessionId,
+      origin: 'command',
+      tags,
+      tagMode: clear ? 'clear' : appendMode ? 'append' : 'replace',
+    })
+    if (!prepared.ok) return { kind: 'error', text: `${prepared.error.code}: ${prepared.error.message}` }
+    return this.confirmResult(prepared, 'tag', 'Confirm the tag list in the card (empty list clears).')
+  }
+
+  /** `/viking commit [--confirm <token>]`. */
+  private async commit(sessionId: string, argument: string): Promise<VikingCommandResult> {
+    if (!this.requireWrites()) return this.writesDisabled()
+    const token = confirmTokenArgument(argument)
+    if (token !== null) return this.executeToken(token, 'force-commit')
+    const prepared = await this.options.writes.prepare({
+      action: 'force-commit',
+      target: sessionId,
+      sessionId,
+      origin: 'command',
+    })
+    if (!prepared.ok) return { kind: 'error', text: `${prepared.error.code}: ${prepared.error.message}` }
+    return this.confirmResult(prepared, 'commit', 'Confirmation is always required; extraction cannot be rolled back.')
+  }
+
+  /** `/viking undo <handle>`: plan first, apply when the plan is clean. */
+  private async undo(argument: string): Promise<VikingCommandResult> {
+    if (!this.requireWrites()) return this.writesDisabled()
+    const undoId = argument.trim()
+    if (!/^[0-9a-f]{16,64}$/i.test(undoId)) {
+      return { kind: 'error', text: 'Usage: /viking undo <handle id from a write result>' }
+    }
+    const plan = await this.options.writes.plan({ undoId })
+    if (!plan.ok) return { kind: 'error', text: `${plan.error.code}: ${plan.error.message}` }
+    if (plan.plan.extraChanges) {
+      return {
+        kind: 'error',
+        text: 'This undo would also revert files the action did not change. Review the plan in the undo dialog instead.',
+      }
+    }
+    const applied = await this.options.writes.undo({ undoId })
+    if (!applied.ok) return { kind: 'error', text: `${applied.error.code}: ${applied.error.message}` }
+    return {
+      kind: 'success',
+      text:
+        applied.outcome === 'tags-restored'
+          ? `Undone: previous tags restored on ${applied.target}.`
+          : `Undone: ${applied.target} restored from snapshot ${shortHash(applied.newCommit ?? '')}.` +
+            (applied.taskId === null ? '' : ` Reindex task ${applied.taskId}.`),
+    }
+  }
+
+  /** `/viking audit [n]`: the local trail, one line each. No bodies, no tokens. */
+  private audit(argument: string): VikingCommandResult {
+    const requested = Number(argument.trim() || '10')
+    const limit = Number.isFinite(requested) ? Math.min(Math.max(Math.trunc(requested), 1), 50) : 10
+    const lines = this.options.audit.recentLines(limit)
+    if (lines.length === 0) return { kind: 'success', text: 'No audit records yet.' }
+    return { kind: 'success', text: lines.join('\n') }
+  }
+
+  /* ---- shared write-command helpers ------------------------------------ */
+
+  private requireWrites(): boolean {
+    return this.options.writesEnabled()
+  }
+
+  private writesDisabled(): VikingCommandResult {
+    return {
+      kind: 'error',
+      text: 'Write commands are disabled. Turn on “Writes” in the plugin settings (Plugins → OpenViking → Configure).',
+    }
+  }
+
+  /** Execute a prepared token from a plain `--confirm` command. */
+  private async executeToken(token: string, action: string): Promise<VikingCommandResult> {
+    const executed = await this.options.writes.execute({ token })
+    if (!executed.ok) return { kind: 'error', text: `${executed.error.code}: ${executed.error.message}` }
+    if (executed.action !== action) {
+      return { kind: 'error', text: `That token was prepared for ${executed.action}, not ${action}.` }
+    }
+    if (executed.undoId !== null) {
+      return {
+        kind: 'success',
+        text: `Done: ${executed.action} on ${executed.target}. Undo handle: ${executed.undoId} (or use the undo toast in the interface).`,
+      }
+    }
+    if (executed.action === 'force-commit') {
+      const task = executed.taskId === null ? 'nothing to commit' : `task ${executed.taskId}`
+      return { kind: 'success', text: `Commit accepted: ${task}. Extraction runs in the background; follow it in the Activity tab.` }
+    }
+    return { kind: 'success', text: `Done: ${executed.action} on ${executed.target}.` }
+  }
+
+  /** A prepared action as the human line + the card envelope. */
+  private confirmResult(
+    prepared: { ok: true } & WritePreparePayload,
+    subcommand: VikingSubcommand,
+    hint: string,
+  ): VikingCommandResult {
+    const safe: WritePreparePayload = { ...prepared, content: null, contentTruncated: false }
+    const envelope: VikingConfirmEnvelope = { ov: '1', kind: 'confirm', prepare: safe, hint }
+    const expiresIn = Math.max(0, Math.round((prepared.expiresAt - (this.options.now?.() ?? Date.now())) / 1000))
+    const instruction =
+      `Confirm in the card below, or run ${fallbackCommand(subcommand)} ${prepared.token} within ${expiresIn}s.`
+    const summary = prepared.summary.length > 0 ? prepared.summary[0] : `Prepared ${prepared.action} on ${prepared.target}`
+    return { kind: 'success', text: `${summary}\n${instruction}\n${JSON.stringify(envelope)}` }
+  }
 }
 
 /** Wrap the runner as the registry definition; the guard owns registration. */
 export function vikingCommandDefinition(runner: VikingCommand): VikingCommandDefinition {
   return {
     name: 'viking',
-    description: 'Inspect OpenViking: status, doctor, recall and URI preview (read-only)',
-    input: { hint: 'status | doctor | recall <query> | open <viking://…> | help' },
+    description: 'Inspect and curate OpenViking: status, doctor, recall, preview, and confirmed memory writes',
+    input: {
+      hint: 'status | doctor | recall <query> | open <viking://…> | edit | forget | tag | commit | undo | audit | help',
+    },
     handler: async (invocation) => {
       if (invocation.signal?.aborted === true) return CANCELLED
       const sessionId = typeof invocation.agent?.id === 'string' ? invocation.agent.id : ''

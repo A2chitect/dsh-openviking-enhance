@@ -18,15 +18,42 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import {
+  ACTIVITY_TASKS_DEFAULT_LIMIT,
+  ACTIVITY_TASKS_MAX_LIMIT,
   API_PREFIX,
+  AUDIT_DEFAULT_LIMIT,
+  AUDIT_MAX_LIMIT,
   RECALL_DEFAULT_LIMIT,
   TIMELINE_DEFAULT,
   TIMELINE_MAX,
+  WRITE_ACTIONS,
+  WRITE_BODY_MAX_BYTES,
   type ApiResult,
+  type AuditPayload,
+  type IdentityScope,
   type EnhanceConfig,
+  type OveResult,
   type PluginNotice,
+  type ProfileSummary,
+  type ProfilesPayload,
+  type ScopePayload,
+  type SessionControlPayload,
+  type TaskListPayload,
+  type WriteAction,
 } from '../shared/protocol.ts'
-import { describeConnection, resolveConnectionWithOrigins } from './config.ts'
+import {
+  describeConnection,
+  identityFingerprint,
+  resolveConnectionForProfile,
+  type ConnectionOverrides,
+  type ResolvedIdentity,
+} from './config.ts'
+import { ActivityService, isCancellableTask } from './activity-service.ts'
+import { AuditLog } from './audit.ts'
+import { CapabilityService, scopeCapabilities } from './capability.ts'
+import { ProfileStore, isHttpEndpoint } from './profiles.ts'
+import { SessionControlService } from './session-control.ts'
+import { WriteService } from './write-service.ts'
 import {
   isJsonObject,
   isLoopbackHostname,
@@ -115,6 +142,24 @@ export const Config = z.object({
    * the settings form persists it.
    */
   enableCommands: z.boolean().default(true).volatile(),
+  /**
+   * v0.5 master opt-in for writes (F9/F10).
+   *
+   * Defaults to **false**: with it off every write surface is hidden/disabled,
+   * `/viking` refuses the write verbs, and every mutation route fails closed.
+   * The host reads the live value at each call; the client reads it for buttons.
+   */
+  enableWrites: z.boolean().default(false).volatile(),
+  /** v0.5 interface switch: the Activity tab (task centre + metrics). */
+  enableActivity: z.boolean().default(true).volatile(),
+  /** v0.5 interface switch: the scope chip on the composer/panel headers. */
+  showScopeBanner: z.boolean().default(true).volatile(),
+  /**
+   * The active identity profile id, or '' for legacy v0.4 connection
+   * resolution. A named profile wins over the endpoint/apiKey/account/user
+   * overrides (Lead sign-off decision A); the host re-resolves on change.
+   */
+  activeProfile: z.string().default('').volatile(),
 })
 
 /**
@@ -149,6 +194,10 @@ export interface EnhanceConfigInput {
   showPreview?: ConfigField<boolean>
   showExplore?: ConfigField<boolean>
   enableCommands?: ConfigField<boolean>
+  enableWrites?: ConfigField<boolean>
+  enableActivity?: ConfigField<boolean>
+  showScopeBanner?: ConfigField<boolean>
+  activeProfile?: ConfigField<string>
 }
 
 /** The value behind a field, whether it is a reference or the value itself. */
@@ -216,6 +265,30 @@ interface CommandRegistryLike {
   register(definition: VikingCommandDefinition): () => void
 }
 
+/**
+ * The authenticated mutation transport (`ctx.connection.fetch`), declared
+ * structurally.
+ *
+ * This is Lead sign-off decision B: every v0.5 mutation rides the framework's
+ * 0.2.2-rc.1 Fetch routes ("only owner Peers reach an exact route; the shared
+ * handler answers 403 for every other principal"), and when the service is
+ * absent writes fail closed with `transport-unavailable`. There is deliberately
+ * **no** loopback `webServer` POST write path: the v0.4 read fence is weaker
+ * than an authenticated transport, so raising write authority over it would be a
+ * security regression.
+ */
+interface HostConnectionFetchRoute {
+  /** Absolute path below `/api`. */
+  path: string
+  methods: readonly ('GET' | 'HEAD' | 'POST')[]
+  requestBody: 'buffered' | 'streaming'
+  fetch: (request: Request) => Promise<Response>
+}
+
+interface HostConnectionLike {
+  fetch?: { register(route: HostConnectionFetchRoute): () => Promise<void> | void }
+}
+
 function writeJson(res: ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body)
   res.writeHead(status, {
@@ -271,16 +344,96 @@ export function apply(ctx: Context, config: EnhanceConfigInput = {}): void {
 
 function start(ctx: Context, config: EnhanceConfigInput): void {
   const host = ctx as unknown as HostContext
-  const { connection, origins } = resolveConnectionWithOrigins({
+  const logger = host.logger
+
+  /* ---- v0.5 identity (F12 / decision A) -------------------------------- */
+
+  /**
+   * The plugin-owned profile file is the secret store of record. A missing or
+   * corrupt file is not an error: `resolveConnectionForProfile` then falls back
+   * to the v0.4 precedence, so the plugin keeps working on a fresh machine.
+   */
+  const profileStore = new ProfileStore()
+  const connectionOverrides = (): ConnectionOverrides => ({
     endpoint: configText(config.endpoint),
     apiKey: configText(config.apiKey),
     account: configText(config.account),
     user: configText(config.user),
   })
-  const logger = host.logger
-  logger?.info?.(`[openviking-enhance] ${JSON.stringify(describeConnection(connection))}`)
+  const activeProfileId = (): string => configText(config.activeProfile).trim()
+  const resolveActive = (): ResolvedIdentity =>
+    resolveConnectionForProfile(profileStore.read().file.profiles, activeProfileId(), connectionOverrides())
 
-  const api = new OpenVikingApi(connection)
+  /** The active identity. `connection`/`origins` are mutable objects so a
+   * profile switch updates every v0.4 service in place (they hold references). */
+  let resolvedIdentity: ResolvedIdentity = resolveActive()
+  const connection = resolvedIdentity.connection
+  const origins = resolvedIdentity.origins
+  let currentApi = new OpenVikingApi(connection)
+
+  /**
+   * One API instance per active profile, behind a proxy.
+   *
+   * v0.4's services were constructed with a fixed client; making the proxy the
+   * identity seam means a `loader/volatile-update` can swap the underlying
+   * client without rebuilding every service (and without stale caches keyed to a
+   * previous profile).
+   */
+  const api = new Proxy({} as OpenVikingApi, {
+    get: (_target, property) => {
+      const target = currentApi
+      const value = (target as unknown as Record<string | symbol, unknown>)[property]
+      return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value
+    },
+  })
+
+  /** True once `ctx.connection.fetch.register` is available and our routes are on it. */
+  let transportAvailable = false
+  /** Assigned once the audit log exists; audits a profile switch. */
+  let recordIdentitySwitch: (() => void) | null = null
+
+  /**
+   * The active identity, secret-free, with a stable fingerprint.
+   *
+   * The fingerprint hashes the probed auth mode when one exists (so a profile
+   * whose key changed is a different identity) and falls back to the configured
+   * expectation; it never contains the key. Every token/undo/audit entry stores
+   * it, which is what makes "undo after an identity switch" impossible.
+   */
+  const identityScope = (): IdentityScope => {
+    const probedAuthMode = capability.lastSnapshot()?.health.authMode ?? null
+    // The API client reads `connection.authMode` for its header policy; refreshing
+    // it here means every gate that confirms an identity (prepare/execute/scope)
+    // also corrects the headers the next request carries.
+    connection.authMode = probedAuthMode ?? resolvedIdentity.authModeHint
+    return {
+      profileId: resolvedIdentity.profileId,
+      profileLabel: resolvedIdentity.profileLabel,
+      endpoint: connection.endpoint,
+      authMode: probedAuthMode ?? resolvedIdentity.authModeHint,
+      account: connection.account,
+      user: connection.user,
+      peer: resolvedIdentity.peerId,
+      fingerprint: identityFingerprint(resolvedIdentity, probedAuthMode, resolvedIdentity.authModeHint),
+    }
+  }
+
+  /** Re-resolve the connection after `activeProfile` (or a legacy field) changed. */
+  const resolveActiveIdentity = (): void => {
+    const next = resolveActive()
+    Object.assign(connection, next.connection)
+    origins.splice(0, origins.length, ...next.origins)
+    resolvedIdentity = { ...next, connection, origins }
+    currentApi = new OpenVikingApi(connection)
+    capability.invalidate()
+    // v0.4 caches are keyed by session, not by identity: an answer read under
+    // the previous profile must not survive the switch.
+    service.resetCaches()
+    recall.resetCaches()
+    recordIdentitySwitch?.()
+  }
+
+  logger?.info?.(`[openviking-enhance] ${JSON.stringify(describeConnection(connection))}`)
   const studioPath = normalizeStudioPath(configText(config.studioPath))
 
   const memoryRuntime = (): OpenVikingMemoryRuntime | null => {
@@ -352,6 +505,63 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
   const preview = new PreviewService({ api, studioUrl: () => `${connection.endpoint}${studioPath}` })
   const search = new SearchService({ api })
   const catalog = new CatalogService({ api })
+
+  /* ---- v0.5 write/identity/activity services ---------------------------- */
+
+  const audit = new AuditLog()
+  const capability = new CapabilityService({ api, transport: () => transportAvailable })
+  const sessionControl = new SessionControlService({ api, commit: service })
+  const activity = new ActivityService({ api })
+  const writeService = new WriteService({
+    api,
+    capabilities: capability,
+    sessions: sessionControl,
+    audit,
+    identity: identityScope,
+    writesEnabled: () => configField(config.enableWrites) === true,
+    transport: () => transportAvailable,
+    actorPeer: (sessionId) =>
+      sessionId === undefined || sessionId.length === 0 ? undefined : service.actorPeer(sessionId),
+  })
+
+  /**
+   * Audit identity activation and every later switch (F12: "switching account
+   * never silently mixes data" — the trail is how a reviewer can prove what
+   * identity a write ran under). Deduplicated by fingerprint, because the
+   * resolver may be asked to re-resolve for an unrelated volatile field.
+   */
+  let lastAuditedFingerprint = ''
+  const auditIdentitySwitch = (): void => {
+    const scope = identityScope()
+    if (scope.fingerprint === lastAuditedFingerprint) return
+    const first = lastAuditedFingerprint === ''
+    lastAuditedFingerprint = scope.fingerprint
+    audit.append({
+      kind: 'switch',
+      action: first ? 'identity-selected' : 'identity-switched',
+      target: scope.endpoint,
+      identity: {
+        profileId: scope.profileId,
+        endpoint: scope.endpoint,
+        authMode: scope.authMode,
+        account: scope.account,
+        user: scope.user,
+        peer: scope.peer,
+        dshSessionId: null,
+      },
+      fingerprint: scope.fingerprint,
+      confirmation: null,
+      preCommit: null,
+      postCommit: null,
+      requestId: null,
+      result: 'ok',
+      error: null,
+      undo: null,
+    })
+  }
+  recordIdentitySwitch = auditIdentitySwitch
+  auditIdentitySwitch()
+
   const vikingCommand = new VikingCommand({
     api,
     connection,
@@ -359,6 +569,10 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
     recall,
     doctor,
     preview,
+    writes: writeService,
+    writesEnabled: () => configField(config.enableWrites) === true,
+    identity: identityScope,
+    audit,
     dshVersion,
     memoryPluginVersion: readMemoryPluginVersion,
   })
@@ -370,6 +584,7 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
     if (!memoryRuntime()) {
       warnings.push({ code: 'noMemoryPlugin' })
     }
+    const scope = identityScope()
     return {
       ok: true,
       endpoint: connection.endpoint,
@@ -378,6 +593,9 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
       healthy: health.ok,
       account: connection.account,
       user: connection.user,
+      writesEnabled: configField(config.enableWrites) === true,
+      activeProfileId: scope.profileId,
+      authMode: scope.authMode,
       warnings,
     }
   }
@@ -778,6 +996,433 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
     },
   ]
 
+  /* ======================================================================
+   * v0.5 read routes + the authenticated mutation transport
+   * ==================================================================== */
+
+  /** An `OveResult` failure, with the design's envelope (a code plus a message). */
+  const fail = (res: ServerResponse, status: number, code: string, message: string): void => {
+    writeJson(res, status, { ok: false, error: { code, message } } satisfies OveResult<never>)
+  }
+
+  /** A caught failure from a v0.5 route: never a throw, never a 500 page. */
+  const failFrom = (res: ServerResponse, error: unknown, code = 'rejected-by-server'): void => {
+    fail(res, 200, code, error instanceof Error ? error.message : String(error))
+  }
+
+  /** The resolved scope: profile, identity, server health and the write gates. */
+  const scopePayload = async (fresh: boolean): Promise<ScopePayload> => {
+    const snapshot = await capability.probe(fresh)
+    const writesEnabled = configField(config.enableWrites) === true
+    const transport = transportAvailable
+    const scope = identityScope()
+    // A named profile that no longer exists must be visible, not silently
+    // replaced by the legacy resolution.
+    const warnings: PluginNotice[] = []
+    const configuredProfile = activeProfileId()
+    if (configuredProfile.length > 0 && profileStore.find(configuredProfile) === null) {
+      warnings.push({ code: 'profileNotFound', params: { id: configuredProfile } })
+    }
+    const reason = !writesEnabled
+      ? 'writes-disabled'
+      : !transport
+        ? 'transport-unavailable'
+        : !snapshot.health.ok
+          ? 'profile-unhealthy'
+          : scope.authMode === null
+            ? 'identity-unknown'
+            : null
+    return {
+      identity: scope,
+      activeProfileId: resolvedIdentity.profileId,
+      role: snapshot.health.role,
+      version: snapshot.health.version,
+      healthy: snapshot.health.ok,
+      writes: { enabled: writesEnabled, transport, reason },
+      capabilities: scopeCapabilities(snapshot, transport, writesEnabled),
+      warnings,
+      observedAt: new Date(snapshot.observedAt).toISOString(),
+    }
+  }
+
+  /** The redacted profile list; the runtime config value wins over the file header. */
+  const profilesPayload = (): ProfilesPayload => {
+    const payload = profileStore.describe()
+    const configured = activeProfileId()
+    if (configured.length === 0) return payload
+    const exists = payload.profiles.some((profile) => profile.id === configured)
+    return { ...payload, activeProfileId: exists ? configured : null }
+  }
+
+  /** A profile save/delete response body from a store outcome. */
+  const profileWriteResult = (
+    outcome: { ok: true; profiles: ProfileSummary[] } | { ok: false; code: string; message: string },
+  ): OveResult<{ profiles: ProfileSummary[] }> => {
+    if (!outcome.ok) return { ok: false, error: { code: outcome.code, message: outcome.message } }
+    if (outcome.profiles.some((profile) => profile.id === activeProfileId())) resolveActiveIdentity()
+    return { ok: true, profiles: outcome.profiles }
+  }
+
+  const auditProfile = (action: string, target: string | null, result: 'ok' | 'failed', error: string | null): void => {
+    audit.append({
+      kind: 'profile',
+      action,
+      target,
+      identity: null,
+      fingerprint: null,
+      confirmation: null,
+      preCommit: null,
+      postCommit: null,
+      requestId: null,
+      result,
+      error,
+      undo: null,
+    })
+  }
+
+  /** One read route with the standard guard + error envelope. */
+  const readRoute = (
+    path: string,
+    handler: (params: URLSearchParams) => Promise<OveResult<Record<string, unknown>>>,
+  ): WebRoute => ({
+    kind: 'exact',
+    path,
+    handler: async (req, res) => {
+      if (!guard(req, res)) return
+      try {
+        writeJson(res, 200, await handler(query(req)))
+      } catch (error) {
+        failFrom(res, error)
+      }
+    },
+  })
+
+  const v05Routes: WebRoute[] = [
+    readRoute(`${API_PREFIX}/scope`, async (params) => ({ ok: true, scope: await scopePayload(params.get('fresh') === '1') })),
+    {
+      kind: 'exact',
+      path: `${API_PREFIX}/profiles`,
+      handler: async (req, res) => {
+        if (!guard(req, res)) return
+        try {
+          writeJson(res, 200, { ok: true, profiles: profilesPayload() })
+        } catch (error) {
+          failFrom(res, error)
+        }
+      },
+    },
+    readRoute(`${API_PREFIX}/tasks`, async (params) => {
+      const list = await activity.tasks({
+        ...(params.get('taskType') === null ? {} : { taskType: params.get('taskType') as string }),
+        ...(params.get('status') === null ? {} : { status: params.get('status') as string }),
+        ...(params.get('cursor') === null ? {} : { cursor: params.get('cursor') as string }),
+        limit: limitParam(params, 'limit', ACTIVITY_TASKS_DEFAULT_LIMIT, ACTIVITY_TASKS_MAX_LIMIT),
+      })
+      const payload: TaskListPayload = list
+      return { ok: true, ...payload }
+    }),
+    readRoute(`${API_PREFIX}/task`, async (params) => {
+      const taskId = (params.get('taskId') ?? '').trim()
+      if (taskId.length === 0) return { ok: false, error: { code: 'invalid-request', message: 'taskId is required' } }
+      const detail = await activity.task(taskId, { events: params.get('events') === '1' })
+      if (!detail.ok) return detail
+      return { ok: true, task: detail.task }
+    }),
+    {
+      kind: 'exact',
+      path: `${API_PREFIX}/task/export`,
+      handler: async (req, res) => {
+        if (!guard(req, res)) return
+        const taskId = (query(req).get('taskId') ?? '').trim()
+        if (taskId.length === 0) {
+          fail(res, 400, 'invalid-request', 'taskId is required')
+          return
+        }
+        try {
+          const exported = await activity.exportTask(taskId)
+          if (!exported.ok) {
+            writeJson(res, exported.error.code === 'not-found' ? 404 : 200, exported)
+            return
+          }
+          const body = JSON.stringify(exported.task, null, 2)
+          res.writeHead(200, {
+            'content-type': 'application/json; charset=utf-8',
+            'content-disposition': `attachment; filename="${exported.fileName}"`,
+            'cache-control': 'no-store',
+            'content-length': Buffer.byteLength(body),
+          })
+          res.end(body)
+        } catch (error) {
+          failFrom(res, error)
+        }
+      },
+    },
+    readRoute(`${API_PREFIX}/metrics`, async (params) => {
+      const sessionId = (params.get('sessionId') ?? '').trim()
+      const metrics = await activity.metrics({
+        ...(sessionId.length === 0 ? {} : { sessionId, ovSessionId: service.ovSessionId(sessionId) }),
+        fresh: params.get('fresh') === '1',
+      })
+      return { ok: true, metrics }
+    }),
+    {
+      kind: 'exact',
+      path: `${API_PREFIX}/audit`,
+      handler: async (req, res) => {
+        if (!guard(req, res)) return
+        try {
+          const limit = limitParam(query(req), 'limit', AUDIT_DEFAULT_LIMIT, AUDIT_MAX_LIMIT)
+          const payload: AuditPayload = audit.recent(limit)
+          writeJson(res, 200, { ok: true, ...payload })
+        } catch (error) {
+          failFrom(res, error)
+        }
+      },
+    },
+    readRoute(`${API_PREFIX}/session-control`, async (params) => {
+      const sessionId = (params.get('sessionId') ?? '').trim()
+      if (sessionId.length === 0) return { ok: false, error: { code: 'invalid-request', message: 'sessionId is required' } }
+      const payload: SessionControlPayload = await sessionControl.read(sessionId)
+      return { ok: true, ...payload }
+    }),
+  ]
+  routes.push(...v05Routes)
+
+  /* ---- authenticated mutation routes (decision B) ----------------------- */
+
+  const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }
+  const jsonResponse = (status: number, body: unknown): Response =>
+    new Response(JSON.stringify(body), { status, headers: JSON_HEADERS })
+
+  /** Read one bounded JSON object body off a Fetch route; null on any refusal. */
+  const readMutationBody = async (request: Request): Promise<Record<string, unknown> | null> => {
+    const contentType = request.headers.get('content-type') ?? ''
+    if (contentType.split(';')[0]?.trim().toLowerCase() !== 'application/json') return null
+    const declared = Number(request.headers.get('content-length') ?? '0')
+    if (Number.isFinite(declared) && declared > WRITE_BODY_MAX_BYTES) return null
+    const text = await request.text()
+    if (Buffer.byteLength(text, 'utf8') > WRITE_BODY_MAX_BYTES) return null
+    try {
+      const parsed: unknown = JSON.parse(text)
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+      return parsed as Record<string, unknown>
+    } catch {
+      return null
+    }
+  }
+
+  /** Wrap one mutation handler: POST + JSON + size cap, and no throw ever. */
+  const mutation = (
+    handler: (body: Record<string, unknown>) => Promise<unknown>,
+  ): ((request: Request) => Promise<Response>) => {
+    return async (request: Request): Promise<Response> => {
+      try {
+        if (request.method !== 'POST') {
+          return jsonResponse(405, { ok: false, error: { code: 'method-not-allowed', message: 'POST only' } })
+        }
+        const body = await readMutationBody(request)
+        if (body === null) {
+          return jsonResponse(400, { ok: false, error: { code: 'invalid-body', message: 'A JSON object body below 64 KiB is required.' } })
+        }
+        return jsonResponse(200, await handler(body))
+      } catch (error) {
+        return jsonResponse(200, {
+          ok: false,
+          error: { code: 'rejected-by-server', message: error instanceof Error ? error.message : String(error) },
+        })
+      }
+    }
+  }
+
+  const stringField = (body: Record<string, unknown>, name: string): string | undefined =>
+    typeof body[name] === 'string' ? (body[name] as string) : undefined
+
+  const stringArrayField = (body: Record<string, unknown>, name: string): string[] | undefined =>
+    Array.isArray(body[name]) ? (body[name] as unknown[]).filter((entry): entry is string => typeof entry === 'string') : undefined
+
+  /** The mutation callbacks, registered below when the transport exists. */
+  const registerMutationRoutes = (connectionService: HostConnectionLike): Array<() => Promise<void> | void> => {
+    const register = connectionService.fetch?.register
+    if (typeof register !== 'function') return []
+    const disposers: Array<() => Promise<void> | void> = []
+    const add = (path: string, handler: (body: Record<string, unknown>) => Promise<unknown>): void => {
+      try {
+        disposers.push(
+          register.call(connectionService.fetch, {
+            path,
+            methods: ['POST'],
+            requestBody: 'buffered',
+            fetch: mutation(handler),
+          }),
+        )
+      } catch (error) {
+        logger?.warn?.(`[openviking-enhance] could not register mutation route ${path}`, error)
+      }
+    }
+
+    add(`${API_PREFIX}/write/prepare`, async (body) => {
+      const action = stringField(body, 'action')
+      const target = stringField(body, 'target')
+      if (action === undefined || !(WRITE_ACTIONS as readonly string[]).includes(action)) {
+        return { ok: false, error: { code: 'invalid-request', message: 'Unknown or missing action.' } }
+      }
+      if (target === undefined || target.trim().length === 0) {
+        return { ok: false, error: { code: 'invalid-request', message: 'target is required.' } }
+      }
+      const sessionId = stringField(body, 'sessionId')
+      const origin = body.origin === 'command' ? 'command' : 'overlay'
+      const tags = stringArrayField(body, 'tags')
+      const tagMode = stringField(body, 'tagMode')
+      return writeService.prepare({
+        action: action as WriteAction,
+        target,
+        ...(sessionId === undefined ? {} : { sessionId }),
+        origin,
+        ...(tags === undefined || action !== 'set-tags' ? {} : { tags }),
+        ...(tagMode === 'append' || tagMode === 'replace' || tagMode === 'clear' ? { tagMode } : {}),
+      })
+    })
+    add(`${API_PREFIX}/write/execute`, async (body) => {
+      const token = stringField(body, 'token')
+      if (token === undefined || token.length === 0) {
+        return { ok: false, error: { code: 'invalid-request', message: 'token is required.' } }
+      }
+      const content = typeof body.content === 'string' ? body.content : undefined
+      const tags = stringArrayField(body, 'tags')
+      const tagMode = stringField(body, 'tagMode')
+      const typed = stringField(body, 'typed')
+      return writeService.execute({
+        token,
+        ...(content === undefined ? {} : { content }),
+        ...(tags === undefined ? {} : { tags }),
+        ...(tagMode === 'append' || tagMode === 'replace' || tagMode === 'clear' ? { tagMode } : {}),
+        ...(typed === undefined ? {} : { typed }),
+      })
+    })
+    add(`${API_PREFIX}/write/plan`, async (body) => {
+      const undoId = stringField(body, 'undoId')
+      if (undoId === undefined || undoId.length === 0) {
+        return { ok: false, error: { code: 'invalid-request', message: 'undoId is required.' } }
+      }
+      return writeService.plan({ undoId })
+    })
+    add(`${API_PREFIX}/write/undo`, async (body) => {
+      const undoId = stringField(body, 'undoId')
+      if (undoId === undefined || undoId.length === 0) {
+        return { ok: false, error: { code: 'invalid-request', message: 'undoId is required.' } }
+      }
+      return writeService.undo({ undoId, confirmExtra: body.confirmExtra === true })
+    })
+    add(`${API_PREFIX}/task/cancel`, async (body) => {
+      const taskId = stringField(body, 'taskId')
+      if (taskId === undefined || taskId.length === 0) {
+        return { ok: false, error: { code: 'invalid-request', message: 'taskId is required.' } }
+      }
+      const result = await activity.cancel(taskId)
+      const scope = identityScope()
+      audit.append({
+        kind: 'write',
+        action: 'cancel-task',
+        target: taskId,
+        identity: {
+          profileId: scope.profileId,
+          endpoint: scope.endpoint,
+          authMode: scope.authMode,
+          account: scope.account,
+          user: scope.user,
+          peer: scope.peer,
+          dshSessionId: null,
+        },
+        fingerprint: scope.fingerprint,
+        confirmation: 'overlay',
+        preCommit: null,
+        postCommit: null,
+        requestId: null,
+        result: result.ok ? 'ok' : 'failed',
+        error: result.ok ? null : `${result.error.code}: ${result.error.message}`,
+        undo: null,
+      })
+      return result
+    })
+    add(`${API_PREFIX}/profiles/save`, async (body) => {
+      const input = {
+        id: stringField(body, 'id') ?? '',
+        label: stringField(body, 'label') ?? '',
+        endpoint: stringField(body, 'endpoint') ?? '',
+        authMode: stringField(body, 'authMode') ?? 'unknown',
+        account: stringField(body, 'account') ?? '',
+        user: stringField(body, 'user') ?? '',
+        peerId: stringField(body, 'peerId') ?? '',
+        // Absent key = keep the stored one; an explicit empty string clears.
+        ...(typeof body.apiKey === 'string' ? { apiKey: body.apiKey } : {}),
+      }
+      const outcome = profileStore.save(input)
+      if (!outcome.ok) {
+        auditProfile('save-profile', input.id, 'failed', `${outcome.code}: ${outcome.message}`)
+        return { ok: false, error: { code: outcome.code, message: outcome.message } }
+      }
+      auditProfile('save-profile', input.id, 'ok', null)
+      return profileWriteResult(outcome)
+    })
+    add(`${API_PREFIX}/profiles/delete`, async (body) => {
+      const id = stringField(body, 'id') ?? ''
+      if (id.length === 0) return { ok: false, error: { code: 'invalid-request', message: 'id is required.' } }
+      if (id === activeProfileId()) {
+        return {
+          ok: false,
+          error: { code: 'invalid-request', message: 'Switch to another profile before deleting this one.' },
+        }
+      }
+      const outcome = profileStore.delete(id)
+      if (!outcome.ok) {
+        auditProfile('delete-profile', id, 'failed', `${outcome.code}: ${outcome.message}`)
+        return { ok: false, error: { code: outcome.code, message: outcome.message } }
+      }
+      auditProfile('delete-profile', id, 'ok', null)
+      return { ok: true, profiles: outcome.profiles }
+    })
+    add(`${API_PREFIX}/profiles/test`, async (body) => {
+      const endpoint = (stringField(body, 'endpoint') ?? '').trim().replace(/\/+$/, '')
+      if (!isHttpEndpoint(endpoint)) {
+        return { ok: false, error: { code: 'invalid-request', message: 'An http(s) endpoint is required.' } }
+      }
+      // Reachability only: no stored key is sent, so a test never authenticates
+      // a candidate endpoint with the active profile's credentials.
+      const health = await new OpenVikingApi({ endpoint, apiKey: '', account: 'default', user: 'default' }).health()
+      return { ok: true, reachable: health.ok, version: health.version, authMode: health.authMode, error: health.error }
+    })
+    return disposers
+  }
+
+  try {
+    host.inject?.(['connection'], (scope) => {
+      const connectionService = scope.get('connection') as HostConnectionLike | undefined
+      if (connectionService === undefined || typeof connectionService.fetch?.register !== 'function') {
+        // Older DSH generations: reads keep working, writes stay disabled with
+        // the documented reason. Never fall back to an unauthenticated POST.
+        logger?.warn?.('[openviking-enhance] connection.fetch is unavailable; write surfaces stay disabled')
+        return
+      }
+      transportAvailable = true
+      const disposers = registerMutationRoutes(connectionService)
+      return () => {
+        transportAvailable = false
+        for (const dispose of disposers.reverse()) {
+          try {
+            const pending = dispose()
+            if (pending !== undefined && typeof (pending as Promise<void>).catch === 'function') {
+              ;(pending as Promise<void>).catch(() => {})
+            }
+          } catch (error) {
+            logger?.warn?.('[openviking-enhance] could not release a mutation route', error)
+          }
+        }
+      }
+    })
+  } catch (error) {
+    logger?.warn?.('[openviking-enhance] authenticated connection service unavailable', error)
+  }
+
   host.effect(() => {
     const disposers = routes.map((route) => host.webServer.register(route))
     return () => {
@@ -800,6 +1445,10 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
    *     plugin apply (the normal save/reload path), and additionally takes
    *     effect live when the Loader emits `loader/volatile-update`; an older
    *     Loader that emits no such event simply uses the apply/restart path.
+   *
+   * The command itself stays registered while `enableWrites` is off: DSH
+   * registers commands whole, not per sub-verb, so the write verbs are gated at
+   * invocation time (they refuse with `writes-disabled`) and the help hides them.
    *
    * Any failure here is logged and contained: commands are a convenience, and
    * losing them must not lose the read-only UI.
@@ -856,8 +1505,21 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
   }
 
   let stopVolatileWatch: (() => void) | null = null
+  /**
+   * A settings save reaches the host here. `activeProfile` re-resolves the
+   * connection and invalidates caches; `enableCommands`/`enableWrites` change
+   * what the command and the write gates do. Both are live, no restart.
+   */
+  const onVolatileUpdate = (): void => {
+    try {
+      resolveActiveIdentity()
+    } catch (error) {
+      logger?.warn?.('[openviking-enhance] could not re-resolve the active identity', error)
+    }
+    syncCommand()
+  }
   try {
-    const stop = host.on?.('loader/volatile-update', syncCommand)
+    const stop = host.on?.('loader/volatile-update', onVolatileUpdate)
     if (typeof stop === 'function') stopVolatileWatch = stop
   } catch (error) {
     logger?.warn?.('[openviking-enhance] cannot watch volatile config updates', error)
