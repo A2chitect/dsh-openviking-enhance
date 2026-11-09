@@ -42,7 +42,9 @@ the memory in this state", and every new surface is read-only.
   version and effective recall/capture/commit settings, per-field connection
   sources (profile override, environment, `ovcli.conf`/`.local`, default), and
   live probes for the context face, rule search, skills, `fs/stat` and retrieval
-  metrics. Every check names the likely fix, the DSH version is checked against
+  metrics. It also lists the model-visible `mcp__openviking__*` tools, so "why is
+  there no tool?" has an answer: plugin not mounted, tools not exposed, or the
+  registry unreachable. Every check names the likely fix, the DSH version is checked against
   the manifest range, and the diagnostic JSON and `curl /health` command are one
   click away. API keys are never included in any report or copied diagnostic.
 - **A compact health summary on the plugin's own Plugins page**, so "is it
@@ -90,7 +92,9 @@ the memory in this state", and every new surface is read-only.
   队列的数量、类型与时间（绝不读取 payload），并标注这是跨插件本地状态。
 - **Doctor。** 显示地址、健康、版本、身份、已挂载记忆插件的版本与生效的召回/捕获/提交
   设置，以及每个连接字段的来源（profile 覆盖、环境变量、`ovcli.conf`/`.local`、默认）；
-  并对上下文接口、规则检索、技能、`fs/stat` 与召回观测做真实探测。每项检查给出可能的
+  并对上下文接口、规则检索、技能、`fs/stat` 与召回观测做真实探测。它还会列出模型可见的
+  `mcp__openviking__*` 工具，让「为什么没有工具」有答案：插件未挂载、工具未暴露，还是
+  工具注册表不可读。每项检查给出可能的
   修复方向，DSH 版本会与清单声明区间比对，诊断 JSON 与 `curl /health` 一键复制；API key
   不会出现在任何报告或导出里。
 - **插件详情页的健康摘要**，不必先打开会话就能看到"是否正常"。

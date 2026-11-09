@@ -90,8 +90,9 @@ activity timeline. It also reads the official plugin's local pending queue
 health, server version, identity, the mounted memory plugin's version and
 effective recall/capture/commit settings, where each connection value came from
 (profile override, environment, `ovcli.conf`/`.local`, or default), and live
-probes for the context face, rule search, skills, `fs/stat` and retrieval
-metrics. Every check points at a likely fix, and the diagnostic JSON or
+probes for the context face, rule search, skills, the model-visible
+`mcp__openviking__*` tools, `fs/stat` and retrieval metrics. Every check points at
+a likely fix, and the diagnostic JSON or
 `curl /health` command is one click away. API keys are never included.
 
 ![The Doctor's checks and capability probes](assets/v03-after-doctor.png)
