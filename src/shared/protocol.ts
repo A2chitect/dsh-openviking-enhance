@@ -1023,6 +1023,15 @@ export interface ScopePayload {
     /** Stable code naming the first failing gate; null when writes may proceed. */
     reason: string | null
   }
+  /**
+   * v0.8: the Operate group's master switch state. Read views are always on;
+   * this only gates the server-mutating actions.
+   */
+  ops?: {
+    enabled: boolean
+    transport: boolean
+    reason: string | null
+  }
   /** Per-capability answers keyed by the design's gate names. */
   capabilities: Record<string, ScopeCapability>
   warnings: PluginNotice[]
@@ -1315,6 +1324,11 @@ export type AuditKind =
   | 'cancel'
   /** v0.7: local onboarding-state actions (dismiss/reset/forget/…); never OpenViking. */
   | 'onboarding'
+  /* v0.8 "Operate": every new controlled action kind (one per audit source). */
+  | 'snapshot'
+  | 'compile'
+  | 'pack'
+  | 'download'
 
 export interface AuditIdentity {
   profileId: string | null
@@ -1343,6 +1357,17 @@ export interface AuditEntry {
   result: 'ok' | 'failed' | 'undone' | 'denied'
   error: string | null
   undo: { kind: string; projectDir: string; sourceCommit: string } | null
+  /* ---- v0.8 additive correlation fields (all optional on older records) --- */
+  /** The task a v0.8 action produced or acted on (reindex, compile, evidence). */
+  taskId?: string | null
+  /** The 0.5.3 compile operation id, when one correlates. */
+  operationId?: string | null
+  /** The host-generated non-secret compile Idempotency-Key (never a secret). */
+  idempotencyKey?: string | null
+  /** Snapshot restore/create commit facts; no file bodies ever. */
+  snapshot?: { projectDir: string | null; sourceCommit: string | null; newCommit: string | null } | null
+  /** Pack export/download size in bytes. */
+  bytes?: number | null
 }
 
 export interface AuditPayload {
@@ -1689,8 +1714,12 @@ export interface OverviewPayload {
   observedAt: string
 }
 
-/** The native cockpit's internal views. */
-export type NativeViewId = 'overview' | 'browse' | 'sessions' | 'commits' | 'stats' | 'studio'
+/** The native cockpit's internal views (v0.8 adds the Operate group). */
+export type NativeViewId = 'overview' | 'browse' | 'sessions' | 'commits' | 'stats' | 'operate' | 'studio'
+
+/** v0.8: the four internal sub-tabs of the Operate group. */
+export const OPERATE_TABS = ['snapshots', 'compile', 'packs', 'tasks'] as const
+export type OperateTabId = (typeof OPERATE_TABS)[number]
 
 /** A deep-link target for the native cockpit (in-memory navigation history). */
 export interface NativeTarget {
@@ -1698,7 +1727,17 @@ export interface NativeTarget {
   browse?: { uri?: string }
   sessions?: { sessionId?: string; archiveUri?: string }
   commits?: { sessionId?: string }
-  stats?: { sessionId?: string }
+  stats?: { sessionId?: string; segment?: 'metrics' | 'observability' }
+  operate?: {
+    tab?: OperateTabId
+    /** Prefill: a browse selection, an export URI or a restore project dir. */
+    uri?: string
+    /** Compile target (`to`). */
+    to?: string
+    operationId?: string
+    taskId?: string
+    projectDir?: string
+  }
 }
 
 /** The actions the local onboarding-state route accepts. */
@@ -1715,3 +1754,589 @@ export const ONBOARDING_STEP_IDS = [
   'firstStep',
 ] as const
 export type OnboardingStepId = (typeof ONBOARDING_STEP_IDS)[number]
+
+/* ========================================================================
+ * v0.8 "Operate" — controlled actions, operational read surfaces and evidence
+ *
+ * Everything here is additive. Actions ride the same authenticated
+ * `ctx.connection.fetch` transport as v0.5 writes and reuse the same
+ * prepare → confirm → execute → verify → audit → undo protocol through one
+ * shared `OpsService`; read surfaces are loopback+same-origin GET routes.
+ * ===================================================================== */
+
+/** The five operational actions v0.8 ships. No others exist. */
+export const OPS_ACTIONS = [
+  'snapshot-create',
+  'snapshot-restore',
+  'compile-run',
+  'pack-export',
+  'file-version-restore',
+] as const
+export type OpsAction = (typeof OPS_ACTIONS)[number]
+
+/** The two actions that expose an undo handle. */
+export function isUndoableOpsAction(action: string): action is 'snapshot-restore' | 'file-version-restore' {
+  return action === 'snapshot-restore' || action === 'file-version-restore'
+}
+
+/** One path in a restore/undo plan; `expected` is the action's own inverse set. */
+export type OpsPlanPath = UndoPlanPath
+
+/** Step 1 plan: created by prepare, rendered by the confirmation dialog. */
+export interface SnapshotCreatePlan {
+  kind: 'snapshot-create'
+  message: string
+  paths: string[]
+  /** Always true: commits cannot be deleted through the API, so there is no undo. */
+  notUndoable: true
+}
+
+export interface SnapshotRestorePlan {
+  kind: 'snapshot-restore'
+  projectDir: string
+  sourceCommit: string
+  /** HEAD at dry-run time; re-read on execute (a moved HEAD = revision-mismatch). */
+  head: string | null
+  toWrite: OpsPlanPath[]
+  toDelete: OpsPlanPath[]
+  unchanged: number
+  /** True when the plan touches paths outside the action's own inverse set. */
+  extraChanges: boolean
+  /** True when the path rows were capped at SNAPSHOT_RESTORE_PLAN_PATHS. */
+  truncated: boolean
+  /** The directory leaf name the user must type to confirm. */
+  typedWord: string
+  notUndoable: false
+}
+
+export interface CompileRunPlan {
+  kind: 'compile-run'
+  to: string
+  from: string[]
+  skill: string
+  instruction: string | null
+  /** The configured target this run was prefilled from, when it was. */
+  configuredTarget: string | null
+  /** Host-generated, non-secret; also sent as the Idempotency-Key header. */
+  idempotencyKey: string
+  notUndoable: true
+}
+
+export interface PackExportPlan {
+  kind: 'pack-export'
+  uri: string
+  includeVectors: boolean
+  maxBytes: number
+  notUndoable: true
+}
+
+export interface FileVersionRestorePlan {
+  kind: 'file-version-restore'
+  uri: string
+  /** The 0.5.3 version UUID currently serving (CAS precondition). */
+  currentVersion: string
+  /** The version UUID that will supply the content. */
+  restoreVersion: string
+  restoreVersionNumber: number | null
+  currentVersionNumber: number | null
+  /** The file leaf name the user must type to confirm. */
+  typedWord: string
+  notUndoable: false
+}
+
+export type OpsPlan =
+  | SnapshotCreatePlan
+  | SnapshotRestorePlan
+  | CompileRunPlan
+  | PackExportPlan
+  | FileVersionRestorePlan
+
+/** What `/ops/prepare` returns: a single-use token plus everything the dialog shows. */
+export interface OpsPreparePayload {
+  token: string
+  action: OpsAction
+  target: string
+  scope: IdentityScope
+  expiresAt: number
+  plan: OpsPlan
+  /** Short English lines for logs and the plain-text command fallback. */
+  summary: string[]
+}
+
+/** One action result after it settled and was audited. */
+export interface OpsExecutePayload {
+  action: OpsAction
+  target: string
+  scope: IdentityScope
+  /** Id of the local audit entry written for this action. */
+  auditId: string
+  /** OpenViking `x-request-id`, when the response carried one. */
+  requestId: string | null
+  /** False means "executed, verification pending" (read-back did not confirm). */
+  verified: boolean
+  warnings: PluginNotice[]
+  /** Undo handle; null for the three explicitly not-undoable actions. */
+  undoId: string | null
+  /* snapshot-create / snapshot-restore */
+  postCommit?: string | null
+  newCommit?: string | null
+  parentCommit?: string | null
+  written?: number | null
+  deleted?: number | null
+  unchanged?: number | null
+  /** Partial writeback: HEAD advanced, some VFS writes failed, reindex queued. */
+  partial?: {
+    writtenPaths: string[]
+    deletedPaths: string[]
+    failedWrites: string[]
+    failedDeletes: string[]
+    taskId: string | null
+  } | null
+  /* compile-run */
+  taskId?: string | null
+  task?: ActivityTask | null
+  idempotencyKey?: string | null
+  submissionKey?: string | null
+  operationId?: string | null
+  /** True when the response was lost: check the submission, never auto-retry. */
+  verificationPending?: boolean
+  /* pack-export */
+  downloadId?: string | null
+  fileName?: string | null
+  bytes?: number | null
+  expiresAt?: number | null
+  /* file-version-restore */
+  versionNumber?: number | null
+}
+
+/** The undo preview (`POST /ops/plan`); applying needs `POST /ops/undo`. */
+export interface OpsUndoPlan {
+  undoId: string
+  action: 'snapshot-restore' | 'file-version-restore'
+  kind: 'snapshot-restore' | 'file-version-restore'
+  target: string
+  projectDir: string
+  sourceCommit: string
+  toWrite: OpsPlanPath[]
+  toDelete: OpsPlanPath[]
+  unchanged: number
+  extraChanges: boolean
+  truncated: boolean
+  /** File-version undo facts (empty for a snapshot restore). */
+  uri: string | null
+  restoreVersion: string | null
+  currentVersion: string | null
+  summary: string[]
+}
+
+/** Result of applying an ops undo. */
+export interface OpsUndoPayload {
+  undoId: string
+  action: 'snapshot-restore' | 'file-version-restore'
+  target: string
+  outcome: 'restored' | 'version-restored'
+  newCommit: string | null
+  taskId: string | null
+  auditId: string | null
+  newVersionId: string | null
+  newVersionNumber: number | null
+  warnings: PluginNotice[]
+}
+
+/** The outcome of `ops/cancel`: only a still-pending token can be cancelled. */
+export interface OpsCancelPayload {
+  status: 'cancelled' | 'settled' | 'expired'
+  action: OpsAction | null
+}
+
+/* ---- snapshot read surfaces -------------------------------------------- */
+
+/** One commit as the Snapshots history renders it (bounded, display-safe). */
+export interface SnapshotCommit {
+  oid: string
+  parents: string[]
+  authorName: string | null
+  /** Unix seconds, as the server sends them. */
+  authoredAt: number | null
+  committedAt: string | null
+  /** Display-capped at 200 characters; the server's message is never stored locally. */
+  message: string
+}
+
+export interface SnapshotLogPayload {
+  branch: string
+  commits: SnapshotCommit[]
+  /** The path filter the answer was scoped to. */
+  paths: string[]
+  unavailable: boolean
+  /** A stable code: `no-snapshot-history` | `forbidden` | `snapshot-unavailable` | … */
+  note: string | null
+  warnings: PluginNotice[]
+  observedAt: string
+}
+
+export interface SnapshotShowPayload {
+  ref: string
+  path: string | null
+  commit: SnapshotCommit | null
+  /** UTF-8 preview text; null for binary/directory/missing content. */
+  text: string | null
+  truncated: boolean
+  bytes: number | null
+  contentType: 'text' | 'binary' | 'directory' | 'empty'
+  available: boolean
+  note: string | null
+  warnings: PluginNotice[]
+  observedAt: string
+}
+
+export interface SnapshotDiffPayload {
+  path: string
+  fromCommit: string
+  toCommit: string
+  changeType: string | null
+  diffText: string | null
+  truncated: boolean
+  available: boolean
+  note: string | null
+  warnings: PluginNotice[]
+  observedAt: string
+}
+
+export interface DiffPathChange {
+  uri: string
+  changeType: string
+}
+
+export interface DiffPathsPayload {
+  paths: string[]
+  fromCommit: string | null
+  toCommit: string
+  changes: DiffPathChange[]
+  total: number
+  hasMore: boolean
+  nextOffset: number | null
+  available: boolean
+  note: string | null
+  warnings: PluginNotice[]
+  observedAt: string
+}
+
+/** One versioned compile-output file version (0.5.3 only). */
+export interface FileVersionRow {
+  versionId: string
+  versionNumber: number
+  createdAt: string | null
+  snapshotId: string | null
+  operationId: string | null
+  source: string | null
+}
+
+export interface FileVersionsPayload {
+  uri: string
+  to: string | null
+  currentVersion: string | null
+  total: number
+  versions: FileVersionRow[]
+  nextBeforeVersion: string | null
+  available: boolean
+  /** `NOT_COMPILE_MANAGED` = explicit "only compile outputs have versions". */
+  note: string | null
+  warnings: PluginNotice[]
+  observedAt: string
+}
+
+export interface SnapshotIgnorePayload {
+  content: string
+  available: boolean
+  note: string | null
+  observedAt: string
+}
+
+/* ---- compile read surfaces --------------------------------------------- */
+
+export interface CompileCapabilities {
+  available: boolean
+  configured: boolean
+  canCreate: boolean
+  /** The server's own reason code (`NOT_CONFIGURED` | `API_KEY_REQUIRED` | …). */
+  reason: string | null
+  note: string | null
+}
+
+export interface CompileTargetRow {
+  to: string
+  status: string | null
+  initialized: boolean | null
+  running: boolean | null
+  autoUpdate: boolean | null
+  updateSchedule: string | null
+  nextRunAt: string | null
+  contentUpdatedAt: string | null
+  compileType: string | null
+  conflicts: number | null
+}
+
+export interface CompileTargetsPayload {
+  available: boolean
+  targets: CompileTargetRow[]
+  nextCursor: string | null
+  note: string | null
+  warnings: PluginNotice[]
+  observedAt: string
+}
+
+/** The saved target config (`GET /compile/config?to=`), bounded and read-only. */
+export interface CompileTargetConfig {
+  to: string
+  from: string[]
+  skill: string | null
+  instruction: string | null
+  autoUpdate: boolean | null
+  updateSchedule: string | null
+  status: string | null
+  compileType: string | null
+  conflicts: number | null
+}
+
+export interface CompileTargetPayload {
+  available: boolean
+  target: CompileTargetConfig | null
+  note: string | null
+  warnings: PluginNotice[]
+  observedAt: string
+}
+
+export interface CompileOperationRow {
+  operationId: string
+  operationType: string | null
+  actor: string | null
+  status: string | null
+  createdAt: number | null
+  startedAt: number | null
+  finishedAt: number | null
+  params: Record<string, unknown> | null
+  result: Record<string, unknown> | null
+  error: string | null
+  taskId: string | null
+}
+
+export interface CompileOperationsPayload {
+  to: string
+  operations: CompileOperationRow[]
+  hasMore: boolean
+  nextCursor: string | null
+  available: boolean
+  note: string | null
+  warnings: PluginNotice[]
+  observedAt: string
+}
+
+export interface CompileOperationPayload {
+  to: string
+  operation: CompileOperationRow | null
+  available: boolean
+  note: string | null
+  warnings: PluginNotice[]
+  observedAt: string
+}
+
+export interface CompileOutputRow {
+  uri: string
+  versionId: string | null
+  snapshotId: string | null
+}
+
+export interface CompileOutputsPayload {
+  to: string
+  operationId: string
+  outputs: CompileOutputRow[]
+  hasMore: boolean
+  nextCursor: string | null
+  available: boolean
+  note: string | null
+  warnings: PluginNotice[]
+  observedAt: string
+}
+
+/** The read-only idempotency recovery surface (never a retry). */
+export interface CompileSubmissionPayload {
+  key: string
+  found: boolean
+  taskId: string | null
+  status: string | null
+  taskType: string | null
+  available: boolean
+  note: string | null
+  warnings: PluginNotice[]
+  observedAt: string
+}
+
+/* ---- OVPack export ------------------------------------------------------ */
+
+/** One export row as the Packs tab shows it (from the local audit trail). */
+export interface PackExportRow {
+  id: string
+  ts: string
+  target: string | null
+  result: string
+  bytes: number | null
+  error: string | null
+}
+
+export interface PackHistoryPayload {
+  exports: PackExportRow[]
+  /** The host state dir holding the temporary pack files (0700). */
+  downloadDir: string | null
+  maxBytes: number
+  available: boolean
+  warnings: PluginNotice[]
+  observedAt: string
+}
+
+/* ---- observability (read-only, on demand, never /metrics) --------------- */
+
+export type ObservabilityCardId =
+  | 'system'
+  | 'queue'
+  | 'retrieval'
+  | 'vikingdb'
+  | 'lock'
+  | 'filesystem'
+  | 'models'
+
+/** One observer card: health plus display-safe facts/rows, never a body. */
+export interface ObservabilityCard {
+  id: ObservabilityCardId
+  /** The endpoint's `format=json` answer as a name/status pair when it has one. */
+  name: string | null
+  available: boolean
+  healthy: boolean | null
+  hasErrors: boolean | null
+  error: string | null
+  /** Flat key → display value facts (numbers formatted host-side). */
+  facts: Array<{ key: string; value: string }>
+  /** Optional table rows: `queues` (name, pending, inProgress, processed, errors). */
+  rows: Array<Array<string>>
+}
+
+/** One console aggregate series (tokens day buckets / context-commit 4 h buckets). */
+export interface ObservabilitySeries {
+  available: boolean
+  error: string | null
+  /** One row per bucket: a label plus its numeric columns. */
+  columns: string[]
+  rows: Array<Array<string>>
+  /** Stable code when the server analytics runtime is disabled. */
+  note: string | null
+}
+
+export interface ObservabilityPayload {
+  days: number
+  cacheTtlMs: number
+  /** True when this answer came from the on-demand cache (no polling). */
+  cached: boolean
+  cards: ObservabilityCard[]
+  tokens: ObservabilitySeries
+  contextCommits: ObservabilitySeries
+  warnings: PluginNotice[]
+  observedAt: string
+}
+
+/* ---- task evidence ------------------------------------------------------ */
+
+/** One `/console/audit` row, metadata only (the server never includes bodies). */
+export interface TaskEvidenceServerRequest {
+  requestId: string
+  method: string | null
+  route: string | null
+  apiType: string | null
+  statusCode: number | null
+  durationMs: number | null
+  errorCode: string | null
+}
+
+export interface TaskEvidenceBuild {
+  pluginVersion: string
+  dshVersion: string | null
+  node: string
+  platform: string
+}
+
+export interface TaskEvidencePayload {
+  schema: 'dsh-openviking-enhance/task-evidence/v1'
+  generatedAt: string
+  build: TaskEvidenceBuild
+  /** The same redacted identity the audit file records; never a secret. */
+  identity: AuditIdentity | null
+  fingerprint: string | null
+  task: Record<string, unknown>
+  correlation: {
+    requestIds: string[]
+    idempotencyKey: string | null
+    operationId: string | null
+    auditEntries: AuditEntry[]
+    serverRequests: TaskEvidenceServerRequest[]
+    warnings: string[]
+  }
+  limits: { auditEntries: number; serverRequests: number; maxBytes: number }
+}
+
+/* ---- limits (documented in src/shared/limits.ts) ------------------------ */
+
+/** Token TTL for the ops confirmation (same lifetime as a write confirmation). */
+export const OPS_TOKEN_TTL_MS = 120_000
+/** At most this many un-settled ops confirmations may exist at once. */
+export const OPS_MAX_PENDING = 8
+/** At most this many successful operations per window, per profile. */
+export const OPS_RATE_LIMIT = 2
+export const OPS_RATE_WINDOW_MS = 60_000
+/** A separate quota for confirmation preparations (dry-runs are not free). */
+export const OPS_PREPARE_RATE_LIMIT = 6
+export const OPS_PREPARE_RATE_WINDOW_MS = 60_000
+
+/** The stable error codes the ops routes answer with. */
+export const OPS_ERROR_CODES = [
+  /* shared protocol gates */
+  'ops-disabled',
+  'transport-unavailable',
+  'profile-unhealthy',
+  'identity-ambiguous',
+  'snapshot-unavailable',
+  'invalid-request',
+  'token-expired',
+  'token-used',
+  'token-mismatch',
+  'identity-changed',
+  'rate-limited',
+  'too-many-pending',
+  'write-in-flight',
+  'typed-confirmation-required',
+  'typed-confirmation-mismatch',
+  'extra-changes',
+  'revision-mismatch',
+  'undo-unavailable',
+  'not-found',
+  'not-supported',
+  'forbidden',
+  /* scope/validation */
+  'invalid-scope',
+  'restore-scope-refused',
+  'path-not-allowed',
+  'content-too-large',
+  /* compile */
+  'compile-unavailable',
+  'compile-not-configured',
+  'compile-role-required',
+  /* pack */
+  'pack-export-unavailable',
+  'pack-too-large',
+  'pack-failed',
+  'download-unavailable',
+  /* envelope */
+  'rejected-by-server',
+  'verification-pending',
+  'invalid-body',
+  'method-not-allowed',
+] as const
+export type OpsErrorCode = (typeof OPS_ERROR_CODES)[number]

@@ -24,6 +24,8 @@ export interface NativeSwitches {
   nativeViews: boolean
   /** The onboarding checklist card (Overview + Plugins Setup card). */
   onboarding: boolean
+  /** v0.8: `enableOps` — render the Operate group's action buttons. Reads always render. */
+  ops: boolean
 }
 
 export interface NativeState {
@@ -39,7 +41,7 @@ export interface NativeState {
 }
 
 /** The pre-settings-answer state, and the fallback when no answer arrives. */
-export const DEFAULT_NATIVE_SWITCHES: NativeSwitches = { nativeViews: true, onboarding: true }
+export const DEFAULT_NATIVE_SWITCHES: NativeSwitches = { nativeViews: true, onboarding: true, ops: false }
 
 const OVERVIEW_TARGET: NativeTarget = { view: 'overview' }
 
@@ -94,8 +96,15 @@ export function setNativeSwitches(switches: Partial<NativeSwitches>): void {
   const next: NativeSwitches = {
     nativeViews: switches.nativeViews ?? state.switches.nativeViews,
     onboarding: switches.onboarding ?? state.switches.onboarding,
+    ops: switches.ops ?? state.switches.ops,
   }
-  if (next.nativeViews === state.switches.nativeViews && next.onboarding === state.switches.onboarding) return
+  if (
+    next.nativeViews === state.switches.nativeViews &&
+    next.onboarding === state.switches.onboarding &&
+    next.ops === state.switches.ops
+  ) {
+    return
+  }
   state = { ...state, switches: next }
   emit()
 }

@@ -683,6 +683,15 @@ check(exports.getNativeState().view === 'overview', 'the cockpit opens on Overvi
 for (const route of ['/overview', '/browse/roots', '/browse/subtree', '/browse?', '/sessions', '/recent-commits', '/studio-status', '/onboarding/state']) {
   check(code.includes(route), `the browser half knows the native route ${route}`)
 }
+// v0.8 Operate reads + the ops mutation family are document-relative too.
+for (const route of [
+  '/snapshot-log', '/snapshot-show', '/snapshot-diff', '/snapshot-diff-paths', '/snapshot-versions', '/snapshot-ignore',
+  '/compile-target', '/compile-operations', '/compile-operation', '/compile-outputs', '/compile-submission',
+  '/observability', '/pack/history', '/task/evidence', '/ops/download',
+  '/ops/prepare', '/ops/execute', '/ops/plan', '/ops/undo', '/ops/cancel',
+]) {
+  check(code.includes(route), `the browser half knows the v0.8 route ${route}`)
+}
 // The second Plugins-page section is registered under its own id, just above the
 // v0.3 health summary; it is the setup surface older-DSH users fall back to.
 const detailSections = liveOf(onState, 'plugins.detail.section').map((held) => held.options)

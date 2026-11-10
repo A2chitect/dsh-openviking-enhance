@@ -361,6 +361,11 @@ test('the mutation routes are registered only through ctx.connection.fetch', asy
   try {
     const paths = app.fetchRoutes.map((route) => route.path).sort()
     assert.deepEqual(paths, [
+      '/api/openviking-enhance/ops/cancel',
+      '/api/openviking-enhance/ops/execute',
+      '/api/openviking-enhance/ops/plan',
+      '/api/openviking-enhance/ops/prepare',
+      '/api/openviking-enhance/ops/undo',
       '/api/openviking-enhance/profiles/delete',
       '/api/openviking-enhance/profiles/save',
       '/api/openviking-enhance/profiles/test',

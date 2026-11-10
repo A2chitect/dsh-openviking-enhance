@@ -442,6 +442,19 @@ class FakeOpenViking {
     }
   }
 
+  /** v0.8 runtime probes: an old build answers 404 (feature absent). */
+  async compileCapabilities() {
+    return { ok: false, status: 404, result: null, error: 'Not Found', errorCode: null, errorDetails: null }
+  }
+
+  async snapshotVersionsProbe() {
+    return { ok: false, status: 404, result: null, error: 'Not Found', errorCode: null, errorDetails: null }
+  }
+
+  async snapshotDiffPathsProbe() {
+    return { ok: false, status: 404, result: null, error: 'Not Found', errorCode: null, errorDetails: null }
+  }
+
   async snapshotLog() {
     if (this.snapshotStatus === 404) {
       return { ok: false, status: 404, result: null, error: 'Git_ref not found: main', errorCode: 'NOT_FOUND', errorDetails: { type: 'git_ref' } }
@@ -1473,6 +1486,9 @@ test('the capability probe distinguishes snapshot history, no history and an abs
       listTasks: () => fake.listTasks(),
       probeRuleSearchRoute: () => fake.probeRuleSearchRoute(),
       snapshotLog: async () => ({ ok: false, status: 404, result: null, error: 'Not Found', errorCode: null, errorDetails: null }),
+      compileCapabilities: () => fake.compileCapabilities(),
+      snapshotVersionsProbe: () => fake.snapshotVersionsProbe(),
+      snapshotDiffPathsProbe: () => fake.snapshotDiffPathsProbe(),
     },
     transport: () => true,
   })

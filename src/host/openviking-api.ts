@@ -148,7 +148,7 @@ export class OpenVikingApi {
   private async request<T>(
     path: string,
     options: RequestOptions = {},
-    init: { method?: string; body?: unknown } = {},
+    init: { method?: string; body?: unknown; headers?: Record<string, string> } = {},
   ): Promise<OvResult<T>> {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS)
@@ -163,7 +163,7 @@ export class OpenVikingApi {
     try {
       const response = await fetch(`${this.connection.endpoint}${path}`, {
         method: init.method ?? 'GET',
-        headers: this.headers(options),
+        headers: { ...this.headers(options), ...(init.headers ?? {}) },
         signal: controller.signal,
         ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
       })
@@ -769,6 +769,420 @@ export class OpenVikingApi {
       ...options,
     })
   }
+
+  /* ======================================================================
+   * v0.8 "Operate": F13 snapshot / compile / pack / console / observer reads
+   *
+   * These methods are the only place the plugin talks to the F13 routes. They
+   * follow the same rules as the v0.5 client above: resolve, never throw, always
+   * bounded; a missing route is an answer (404), not an exception.
+   * ==================================================================== */
+
+  /**
+   * One raw (non-JSON) response, for the two binary F13 surfaces:
+   * `/snapshot/show?path=` (stored file blob) and `/pack/export` (zip stream).
+   */
+  private async rawFetch(
+    path: string,
+    options: RequestOptions,
+    init: { method: string; body?: unknown; headers?: Record<string, string>; timeoutMs: number },
+  ): Promise<{
+    ok: boolean
+    status: number
+    response: Response | null
+    error: string | null
+    errorCode: string | null
+    errorDetails: unknown
+    requestId: string | null
+  }> {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), init.timeoutMs)
+    const external = options.signal
+    const cancel = (): void => controller.abort()
+    if (external !== undefined) {
+      if (external.aborted) controller.abort()
+      else external.addEventListener('abort', cancel, { once: true })
+    }
+    try {
+      const response = await fetch(`${this.connection.endpoint}${path}`, {
+        method: init.method,
+        headers: { ...this.headers(options), ...(init.headers ?? {}) },
+        signal: controller.signal,
+        ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
+      })
+      const requestId = response.headers.get('x-request-id')
+      if (!response.ok) {
+        // Read the bounded JSON error envelope (never the stream body).
+        const body: unknown = await response.json().catch(() => null)
+        const failure = extractFailure(body)
+        return {
+          ok: false,
+          status: response.status,
+          response: null,
+          error: failure?.message ?? `HTTP ${response.status}`,
+          errorCode: failure?.code ?? null,
+          errorDetails: failure?.details ?? null,
+          requestId,
+        }
+      }
+      return { ok: true, status: response.status, response, error: null, errorCode: null, errorDetails: null, requestId }
+    } catch (error) {
+      return {
+        ok: false,
+        status: 0,
+        response: null,
+        error: error instanceof Error ? error.message : String(error),
+        errorCode: null,
+        errorDetails: null,
+        requestId: null,
+      }
+    } finally {
+      clearTimeout(timer)
+      external?.removeEventListener('abort', cancel)
+    }
+  }
+
+  /** `GET /snapshot/show?target_ref=` without `path`: commit metadata only. */
+  async snapshotShowMeta(targetRef: string, options: RequestOptions = {}): Promise<OvResult<OvSnapshotShowMeta>> {
+    const params = new URLSearchParams({ target_ref: targetRef })
+    return this.request<OvSnapshotShowMeta>(`/api/v1/snapshot/show?${params.toString()}`, {
+      timeoutMs: FS_TIMEOUT_MS,
+      ...options,
+    })
+  }
+
+  /**
+   * `GET /snapshot/show?target_ref=&path=`: one stored file blob.
+   *
+   * The server answers with raw bytes and `X-Snapshot-Oid`/`X-Snapshot-Size`
+   * headers; the caller (snapshot-service) caps how much it reads before
+   * decoding, so a huge blob is never loaded whole.
+   */
+  async snapshotShowBlob(
+    targetRef: string,
+    path: string,
+    options: RequestOptions & { maxBytes?: number } = {},
+  ): Promise<{
+    ok: boolean
+    status: number
+    bytes: Uint8Array | null
+    size: number | null
+    truncated: boolean
+    error: string | null
+    errorCode: string | null
+    requestId: string | null
+  }> {
+    const params = new URLSearchParams({ target_ref: targetRef, path })
+    const maxBytes = options.maxBytes ?? 65_536
+    const raw = await this.rawFetch(`/api/v1/snapshot/show?${params.toString()}`, options, {
+      method: 'GET',
+      timeoutMs: FS_TIMEOUT_MS,
+    })
+    if (!raw.ok || raw.response === null) {
+      return {
+        ok: false,
+        status: raw.status,
+        bytes: null,
+        size: null,
+        truncated: false,
+        error: raw.error,
+        errorCode: raw.errorCode,
+        requestId: raw.requestId,
+      }
+    }
+    const declared = Number(raw.response.headers.get('x-snapshot-size') ?? raw.response.headers.get('content-length') ?? '0')
+    const buffer = new Uint8Array(await raw.response.arrayBuffer())
+    const size = Number.isFinite(declared) && declared > 0 ? declared : buffer.byteLength
+    if (buffer.byteLength > maxBytes) {
+      return {
+        ok: true,
+        status: raw.status,
+        bytes: buffer.subarray(0, maxBytes),
+        size,
+        truncated: true,
+        error: null,
+        errorCode: null,
+        requestId: raw.requestId,
+      }
+    }
+    return {
+      ok: true,
+      status: raw.status,
+      bytes: buffer,
+      size,
+      truncated: false,
+      error: null,
+      errorCode: null,
+      requestId: raw.requestId,
+    }
+  }
+
+  /** `GET /snapshot/diff?path=&from=&to=` one unified text diff. */
+  async snapshotDiff(
+    path: string,
+    from: string | null,
+    to: string,
+    options: RequestOptions = {},
+  ): Promise<OvResult<OvSnapshotDiff>> {
+    const params = new URLSearchParams({ path, to })
+    if (from !== null && from.length > 0) params.set('from', from)
+    return this.request<OvSnapshotDiff>(`/api/v1/snapshot/diff?${params.toString()}`, {
+      timeoutMs: FS_TIMEOUT_MS,
+      ...options,
+    })
+  }
+
+  /** `GET /snapshot/diff-paths` (0.5.3): changed source files between two refs. */
+  async snapshotDiffPaths(
+    paths: string[],
+    from: string | null,
+    to: string,
+    options: RequestOptions & { offset?: number; limit?: number } = {},
+  ): Promise<OvResult<OvDiffPaths>> {
+    const params = new URLSearchParams({ to })
+    for (const path of paths) params.append('paths', path)
+    if (from !== null && from.length > 0) params.set('from', from)
+    params.set('offset', String(Math.max(0, Math.trunc(options.offset ?? 0))))
+    params.set('limit', String(Math.min(Math.max(Math.trunc(options.limit ?? 20), 1), 1000)))
+    return this.request<OvDiffPaths>(`/api/v1/snapshot/diff-paths?${params.toString()}`, {
+      timeoutMs: FS_TIMEOUT_MS,
+      ...options,
+    })
+  }
+
+  /** `GET /snapshot/versions` (0.5.3): compile-output file version history. */
+  async snapshotVersions(
+    uri: string,
+    options: RequestOptions & { limit?: number; beforeVersion?: string } = {},
+  ): Promise<OvResult<OvFileVersions>> {
+    const params = new URLSearchParams({ uri })
+    params.set('limit', String(Math.min(Math.max(Math.trunc(options.limit ?? 20), 1), 100)))
+    if (options.beforeVersion !== undefined && options.beforeVersion.length > 0) {
+      params.set('before_version', options.beforeVersion)
+    }
+    return this.request<OvFileVersions>(`/api/v1/snapshot/versions?${params.toString()}`, {
+      timeoutMs: FS_TIMEOUT_MS,
+      ...options,
+    })
+  }
+
+  /**
+   * v0.8 capability probe for `GET /snapshot/versions` (0.5.3).
+   *
+   * The route requires `uri`; omitting it makes a present server answer 400/422
+   * validation, while an older build answers 404 (route absent). No file data is
+   * read by the probe.
+   */
+  async snapshotVersionsProbe(options: RequestOptions = {}): Promise<OvResult<unknown>> {
+    return this.request<unknown>('/api/v1/snapshot/versions', { timeoutMs: STATUS_TIMEOUT_MS, ...options })
+  }
+
+  /** v0.8 capability probe for `GET /snapshot/diff-paths` (0.5.3), same rule. */
+  async snapshotDiffPathsProbe(options: RequestOptions = {}): Promise<OvResult<unknown>> {
+    return this.request<unknown>('/api/v1/snapshot/diff-paths', { timeoutMs: STATUS_TIMEOUT_MS, ...options })
+  }
+
+  /** `GET /snapshot/ignore`: the account `.ovgitignore` content (read-only here). */
+  async snapshotIgnore(options: RequestOptions = {}): Promise<OvResult<string>> {
+    return this.request<string>('/api/v1/snapshot/ignore', { timeoutMs: FS_TIMEOUT_MS, ...options })
+  }
+
+  /** `POST /snapshot/restore` file mode (0.5.3): CAS-restore one compile output. */
+  async snapshotRestoreFileVersion(
+    uri: string,
+    restoreVersion: string,
+    currentVersion: string,
+    options: RequestOptions = {},
+  ): Promise<OvResult<OvFileVersionRestore>> {
+    return this.request<OvFileVersionRestore>(
+      '/api/v1/snapshot/restore',
+      { timeoutMs: SNAPSHOT_TIMEOUT_MS, ...options },
+      {
+        method: 'POST',
+        body: { path: uri, restore_version: restoreVersion, current_version: currentVersion },
+      },
+    )
+  }
+
+  /* ---- compile reads + trigger (0.5.1.1+) -------------------------------- */
+
+  async compileCapabilities(options: RequestOptions = {}): Promise<OvResult<OvCompileCapabilities>> {
+    return this.request<OvCompileCapabilities>('/api/v1/compile/capabilities', {
+      timeoutMs: STATUS_TIMEOUT_MS,
+      ...options,
+    })
+  }
+
+  async compileConfigs(
+    options: RequestOptions & { limit?: number; cursor?: string } = {},
+  ): Promise<OvResult<OvCompileConfigs>> {
+    const params = new URLSearchParams({
+      limit: String(Math.min(Math.max(Math.trunc(options.limit ?? 20), 1), 100)),
+    })
+    if (options.cursor !== undefined && options.cursor.length > 0) params.set('cursor', options.cursor)
+    return this.request<OvCompileConfigs>(`/api/v1/compile/configs?${params.toString()}`, {
+      timeoutMs: STATUS_TIMEOUT_MS,
+      ...options,
+    })
+  }
+
+  async compileConfig(to: string, options: RequestOptions = {}): Promise<OvResult<OvCompileConfig>> {
+    return this.request<OvCompileConfig>(`/api/v1/compile/config?to=${encodeURIComponent(to)}`, {
+      timeoutMs: STATUS_TIMEOUT_MS,
+      ...options,
+    })
+  }
+
+  async compileOperations(
+    to: string,
+    options: RequestOptions & { limit?: number; cursor?: string } = {},
+  ): Promise<OvResult<OvCompileOperations>> {
+    const params = new URLSearchParams({
+      to,
+      limit: String(Math.min(Math.max(Math.trunc(options.limit ?? 20), 1), 100)),
+    })
+    if (options.cursor !== undefined && options.cursor.length > 0) params.set('cursor', options.cursor)
+    return this.request<OvCompileOperations>(`/api/v1/compile/operations?${params.toString()}`, {
+      timeoutMs: STATUS_TIMEOUT_MS,
+      ...options,
+    })
+  }
+
+  async compileOperation(
+    to: string,
+    operationId: string,
+    options: RequestOptions = {},
+  ): Promise<OvResult<OvCompileOperation>> {
+    const params = new URLSearchParams({ to })
+    return this.request<OvCompileOperation>(
+      `/api/v1/compile/operations/${encodeURIComponent(operationId)}?${params.toString()}`,
+      { timeoutMs: STATUS_TIMEOUT_MS, ...options },
+    )
+  }
+
+  async compileOutputs(
+    to: string,
+    operationId: string,
+    options: RequestOptions & { limit?: number; cursor?: string } = {},
+  ): Promise<OvResult<OvCompileOutputs>> {
+    const params = new URLSearchParams({
+      to,
+      limit: String(Math.min(Math.max(Math.trunc(options.limit ?? 50), 1), 100)),
+    })
+    if (options.cursor !== undefined && options.cursor.length > 0) params.set('cursor', options.cursor)
+    return this.request<OvCompileOutputs>(
+      `/api/v1/compile/operations/${encodeURIComponent(operationId)}/outputs?${params.toString()}`,
+      { timeoutMs: STATUS_TIMEOUT_MS, ...options },
+    )
+  }
+
+  async compileSubmission(key: string, options: RequestOptions = {}): Promise<OvResult<OvCompileSubmission>> {
+    return this.request<OvCompileSubmission>(`/api/v1/compile/submissions/${encodeURIComponent(key)}`, {
+      timeoutMs: STATUS_TIMEOUT_MS,
+      ...options,
+    })
+  }
+
+  /**
+   * `POST /compile`: queue one immediate compile run.
+   *
+   * The Idempotency-Key is host-generated (non-secret) and lets a lost response
+   * be recovered through `GET /compile/submissions/{key}`; this method never
+   * retries on its own (the caller owns the explicit "Check submission" flow).
+   */
+  async compileCreate(
+    body: { to: string; from: string[]; skill: string; instruction?: string },
+    idempotencyKey: string,
+    options: RequestOptions = {},
+  ): Promise<OvResult<OvCompileCreateResult>> {
+    return this.request<OvCompileCreateResult>(
+      '/api/v1/compile',
+      { timeoutMs: SNAPSHOT_TIMEOUT_MS, ...options },
+      { method: 'POST', body, headers: { 'Idempotency-Key': idempotencyKey } },
+    )
+  }
+
+  /* ---- pack export (streaming, never JSON) ------------------------------- */
+
+  /**
+   * `POST /pack/export`: the server streams a zip `FileResponse`.
+   *
+   * Returns the live `Response` so the caller can stream it into a private temp
+   * file with a byte cap instead of buffering an unbounded body in memory.
+   */
+  async streamPackExport(
+    uri: string,
+    includeVectors: boolean,
+    options: RequestOptions = {},
+  ): Promise<{
+    ok: boolean
+    status: number
+    response: Response | null
+    error: string | null
+    errorCode: string | null
+    requestId: string | null
+  }> {
+    return this.rawFetch('/api/v1/pack/export', options, {
+      method: 'POST',
+      body: { uri, include_vectors: includeVectors },
+      timeoutMs: options.timeoutMs ?? 120_000,
+    })
+  }
+
+  /* ---- v0.8 console analytics + observer read --------------------------- */
+
+  async consoleTokens(
+    startDate: string,
+    endDate: string,
+    options: RequestOptions & { bucket?: 'day' } = {},
+  ): Promise<OvResult<Record<string, unknown>>> {
+    const params = new URLSearchParams({ start_date: startDate, end_date: endDate, bucket: options.bucket ?? 'day' })
+    return this.request<Record<string, unknown>>(`/api/v1/console/tokens?${params.toString()}`, {
+      timeoutMs: STATUS_TIMEOUT_MS,
+      ...options,
+    })
+  }
+
+  async consoleContextCommits(
+    startDate: string,
+    endDate: string,
+    options: RequestOptions & { bucket?: 'hour' | '4h' } = {},
+  ): Promise<OvResult<Record<string, unknown>>> {
+    const params = new URLSearchParams({
+      start_date: startDate,
+      end_date: endDate,
+      bucket: options.bucket ?? '4h',
+    })
+    return this.request<Record<string, unknown>>(`/api/v1/console/context-commits?${params.toString()}`, {
+      timeoutMs: STATUS_TIMEOUT_MS,
+      ...options,
+    })
+  }
+
+  async consoleAudit(
+    options: RequestOptions & { page?: number; pageSize?: number; requestId?: string } = {},
+  ): Promise<OvResult<Record<string, unknown>>> {
+    const params = new URLSearchParams({
+      page: String(Math.max(1, Math.trunc(options.page ?? 1))),
+      page_size: String(Math.min(Math.max(Math.trunc(options.pageSize ?? 20), 1), 100)),
+    })
+    if (options.requestId !== undefined && options.requestId.length > 0) params.set('request_id', options.requestId)
+    return this.request<Record<string, unknown>>(`/api/v1/console/audit?${params.toString()}`, {
+      timeoutMs: STATUS_TIMEOUT_MS,
+      ...options,
+    })
+  }
+
+  /** One `/observer/{name}?format=json` card; `name` is a fixed allowlist value. */
+  async observerJson(
+    name: 'system' | 'queue' | 'retrieval' | 'vikingdb' | 'lock' | 'filesystem' | 'models',
+    options: RequestOptions = {},
+  ): Promise<OvResult<Record<string, unknown>>> {
+    return this.request<Record<string, unknown>>(`/api/v1/observer/${name}?format=json`, {
+      timeoutMs: STATUS_TIMEOUT_MS,
+      ...options,
+    })
+  }
 }
 
 /** One retrieval request. Field names are the server's, snake_case included. */
@@ -1269,3 +1683,161 @@ export interface OvAclReport {
   effective_entries?: Array<{ principal?: string; level?: string }>
 }
 
+
+/* ========================================================================
+ * v0.8 "Operate" server payloads
+ *
+ * Field names are the server's snake_case names (verified against the installed
+ * 0.5.3 package). Every field is optional: the tested range starts at 0.5.1.1
+ * and the plugin degrades per field rather than failing a whole card.
+ * ===================================================================== */
+
+/** `GET /snapshot/show` without `path` (commit metadata). */
+export interface OvSnapshotShowMeta {
+  oid?: string
+  tree?: string
+  parents?: string[]
+  author?: { name?: string; email?: string; time_seconds?: number }
+  committer?: { name?: string; email?: string; time_seconds?: number }
+  message?: string
+}
+
+/** `GET /snapshot/diff` result. */
+export interface OvSnapshotDiff {
+  path?: string
+  from_commit?: string
+  to_commit?: string
+  change_type?: string
+  diff_text?: string
+}
+
+/** `GET /snapshot/diff-paths` result (0.5.3). */
+export interface OvDiffPaths {
+  changes?: Array<{ uri?: string; change_type?: string }>
+  offset?: number
+  limit?: number
+  total?: number
+  has_more?: boolean
+  next_offset?: number | null
+}
+
+/** One file-version record from `GET /snapshot/versions` (0.5.3). */
+export interface OvFileVersion {
+  version_id?: string
+  version_number?: number
+  snapshot_id?: string
+  snapshot_path?: string
+  created_at?: number
+  source?: string
+  actor?: string
+  meta?: Record<string, unknown> | null
+}
+
+/** `GET /snapshot/versions` result (0.5.3). */
+export interface OvFileVersions {
+  uri?: string
+  to?: string
+  current_version?: string | null
+  total?: number
+  versions?: OvFileVersion[]
+  next_before_version?: string | null
+}
+
+/** `POST /snapshot/restore` file-mode result (0.5.3). */
+export interface OvFileVersionRestore {
+  uri?: string
+  version_id?: string
+  version_number?: number
+  meta?: Record<string, unknown> | null
+  result?: 'noop'
+}
+
+/** `GET /compile/capabilities` result. */
+export interface OvCompileCapabilities {
+  configured?: boolean
+  can_create?: boolean
+  reason_code?: string | null
+}
+
+/** One `GET /compile/configs` target row (0.5.3). */
+export interface OvCompileTarget {
+  status?: string
+  to?: string
+  initialized?: boolean
+  running?: boolean
+  auto_update?: boolean
+  update_schedule?: unknown
+  next_run_at?: string | number | null
+  content_updated_at?: number | null
+  first_compile_created_at?: number | null
+  compile_type?: string
+  conflicts_num?: number
+}
+
+export interface OvCompileConfigs {
+  targets?: OvCompileTarget[]
+  next_cursor?: string | null
+}
+
+/** `GET /compile/config?to=` result (0.5.3). */
+export interface OvCompileConfig {
+  to?: string
+  from?: string[]
+  skill?: string
+  instruction?: string | null
+  auto_update?: boolean
+  update_schedule?: unknown
+  status?: string
+  compile_type?: string
+  conflicts_num?: number
+}
+
+/** Public compile operation view (`/compile/operations…`, 0.5.3). */
+export interface OvCompileOperation {
+  operation_id?: string
+  operation_type?: string
+  actor?: string | null
+  status?: string
+  created_at?: number
+  started_at?: number | null
+  finished_at?: number | null
+  params?: Record<string, unknown> | null
+  result?: Record<string, unknown> | null
+  error?: string | null
+  meta?: {
+    task_id?: string
+    trigger?: string
+    execution?: unknown
+    skill_snapshot?: unknown
+    base?: string
+    head?: string
+    changes?: unknown
+  } | null
+}
+
+export interface OvCompileOperations {
+  operations?: OvCompileOperation[]
+  next_cursor?: string | null
+}
+
+export interface OvCompileOutputs {
+  outputs?: Array<{ uri?: string; version_id?: string; snapshot_id?: string }>
+  next_cursor?: string | null
+}
+
+/** `POST /compile` (202) result: a TaskRecord-shaped body (`task_id` etc.). */
+export interface OvCompileCreateResult {
+  task_id?: string
+  task_type?: string
+  status?: string
+  created_at?: number
+  updated_at?: number
+  resource_id?: string | null
+  stage?: string | null
+  result?: Record<string, unknown> | null
+  error?: string | null
+  meta?: Record<string, unknown> | null
+}
+
+/** `GET /compile/submissions/{key}` result (a TaskRecord body). */
+export type OvCompileSubmission = OvCompileCreateResult
