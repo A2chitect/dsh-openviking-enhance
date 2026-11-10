@@ -60,6 +60,14 @@ export interface FeatureFlags {
    * never authorize a write the host refuses.
    */
   readonly writes: boolean
+  /**
+   * v0.7: native read cockpit vs the exact v0.6 Studio page. Not a mount of its
+   * own — it switches the body of the already-mounted main panel — so it is
+   * excluded from `MountedFeature` and honoured through the native store.
+   */
+  readonly nativeViews: boolean
+  /** v0.7: the Plugins-page Setup card (the Overview card reads the same store). */
+  readonly onboarding: boolean
 }
 
 /**
@@ -69,7 +77,7 @@ export interface FeatureFlags {
  * mounts rather than mounting anything themselves (a hidden `scopeBanner` still
  * leaves the dialogs' scope block, by design).
  */
-export type MountedFeature = Exclude<keyof FeatureFlags, 'commands' | 'writes'>
+export type MountedFeature = Exclude<keyof FeatureFlags, 'commands' | 'writes' | 'nativeViews'>
 
 /** The state before any settings answer, and the fallback when there is none. */
 export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
@@ -86,6 +94,10 @@ export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   // v0.5 writes are opt-in: before a settings answer arrives, every write
   // surface stays hidden (the host's default is the same `false`).
   writes: false,
+  // v0.7 native views are the shipped default (the ROADMAP exit criterion: read
+  // without the iframe); onboarding is shown until dismissed.
+  nativeViews: true,
+  onboarding: true,
 }
 
 /**
@@ -107,6 +119,8 @@ export const FEATURE_CONFIG_FIELDS = {
   activityPanel: 'enableActivity',
   scopeBanner: 'showScopeBanner',
   writes: 'enableWrites',
+  nativeViews: 'showNativeViews',
+  onboarding: 'showOnboarding',
 } as const satisfies Record<keyof FeatureFlags, string>
 
 /** The surfaces in the order they are mounted (and reverse order for disposal). */
@@ -120,6 +134,7 @@ export const FEATURE_ORDER: readonly MountedFeature[] = [
   'explorePanel',
   'activityPanel',
   'scopeBanner',
+  'onboarding',
 ]
 
 /**
@@ -156,6 +171,8 @@ export function featureFlagsFrom(value: unknown): FeatureFlags {
     activityPanel: flagOf(config, FEATURE_CONFIG_FIELDS.activityPanel),
     scopeBanner: flagOf(config, FEATURE_CONFIG_FIELDS.scopeBanner),
     writes: flagOf(config, FEATURE_CONFIG_FIELDS.writes, false),
+    nativeViews: flagOf(config, FEATURE_CONFIG_FIELDS.nativeViews),
+    onboarding: flagOf(config, FEATURE_CONFIG_FIELDS.onboarding),
   }
 }
 
@@ -172,7 +189,9 @@ export function sameFeatureFlags(left: FeatureFlags, right: FeatureFlags): boole
     left.commands === right.commands &&
     left.activityPanel === right.activityPanel &&
     left.scopeBanner === right.scopeBanner &&
-    left.writes === right.writes
+    left.writes === right.writes &&
+    left.nativeViews === right.nativeViews &&
+    left.onboarding === right.onboarding
   )
 }
 

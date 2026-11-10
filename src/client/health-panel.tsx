@@ -26,6 +26,7 @@ import type {
 import { fetchDoctor, fetchSessionLog } from './host-api.ts'
 import { copyText } from './clipboard.ts'
 import { noticeText, t } from './locale.ts'
+import { canSelectPanel, openNative } from './native-store.ts'
 
 export interface HealthPanelProps {
   sessionId: string
@@ -129,6 +130,16 @@ export function HealthPanel({ sessionId }: HealthPanelProps) {
       <div className="ove-health-bar">
         <span className="ove-health-title">{t('health.title')}</span>
         <span className="ove-health-spacer" />
+        {canSelectPanel() && (
+          <button
+            type="button"
+            className="ove-health-button"
+            title={t('native.openSessionInCockpit')}
+            onClick={() => openNative({ view: 'sessions', sessions: { sessionId } })}
+          >
+            {t('native.openSessionInCockpit')}
+          </button>
+        )}
         <button type="button" className="ove-health-button" onClick={() => void load(true, true)} disabled={logLoading || doctorLoading}>
           {logLoading || doctorLoading ? t('health.loading') : t('health.refresh')}
         </button>

@@ -116,6 +116,8 @@ const FORM = {
       enableWrites: true,
       enableActivity: true,
       showScopeBanner: true,
+      showNativeViews: true,
+      showOnboarding: true,
       activeProfile: '',
     },
     base: { endpoint: '', studioPath: '/studio/', cacheTtlMs: 2500, recallCacheTtlMs: 15000 },
@@ -161,6 +163,7 @@ test('the bundle registers every seat, and all of them render', () => {
     'conversation.composer.dock',
     'main',
     'plugins.detail.section',
+    'plugins.detail.section',
     'plugins.row.config',
     'shell.overlay',
     'shell.overlay',
@@ -199,6 +202,9 @@ test('the bundle registers every seat, and all of them render', () => {
     'Enable writes (curation / force commit)',
     'Activity tab',
     'Show the scope banner',
+    // v0.7: the native cockpit and the onboarding checklist.
+    'Native reading panel',
+    'Setup checklist',
     // ...and the identity profile editor.
     'Identity profiles',
     'Active profile',
@@ -383,27 +389,27 @@ test('the same components render in Chinese when the app is set to it', () => {
   assert.ok(!markup.includes('Save'), 'nothing falls back to English')
 })
 
-test('the form renders the eleven interface switches as checkboxes that follow the saved values', () => {
+test('the form renders the thirteen interface switches as checkboxes that follow the saved values', () => {
   const { find } = loadBundle('en')
   const markup = renderPage(find, FORM)
 
   const boxes = checkboxes(markup)
-  assert.equal(boxes.length, 11, 'exactly eleven checkbox inputs, one per switch')
+  assert.equal(boxes.length, 13, 'exactly thirteen checkbox inputs, one per switch')
   assert.deepEqual(
     boxes.map((tag) => hasAttribute(tag, 'checked')),
-    [true, true, true, true, true, true, true, true, true, true, true],
-    'all eleven are checked when the saved values are on',
+    Array(13).fill(true),
+    'all thirteen are checked when the saved values are on',
   )
   assert.deepEqual(
     boxes.map((tag) => hasAttribute(tag, 'disabled')),
-    [false, false, false, false, false, false, false, false, false, false, false],
+    Array(13).fill(false),
     'a writable form leaves them enabled',
   )
 
   // The eight switches have their own rows, in the order the sidebar, the
   // composer and the conversation, then the right sidebar, appear.
   const blocks = toggleBlocks(markup)
-  assert.equal(blocks.length, 11, 'each switch is its own labelled row')
+  assert.equal(blocks.length, 13, 'each switch is its own labelled row')
   for (const [index, label] of [
     'Sidebar entry',
     'Commit status pill',
@@ -416,6 +422,8 @@ test('the form renders the eleven interface switches as checkboxes that follow t
     'Enable writes (curation / force commit)',
     'Activity tab',
     'Show the scope banner',
+    'Native reading panel',
+    'Setup checklist',
   ].entries()) {
     assert.ok(blocks[index].includes(label), `switch ${index + 1} is the ${label} row`)
     assert.equal(checkboxes(blocks[index]).length, 1, `the ${label} row has exactly one checkbox`)
@@ -433,7 +441,7 @@ test('the form renders the eleven interface switches as checkboxes that follow t
     },
   })
   const offBlocks = toggleBlocks(off)
-  assert.equal(checkboxes(off).length, 11)
+  assert.equal(checkboxes(off).length, 13)
   assert.equal(
     hasAttribute(checkboxes(offBlocks[0])[0], 'checked'),
     true,
@@ -470,22 +478,22 @@ test('the form renders the eleven interface switches as checkboxes that follow t
   const previewBlocks = toggleBlocks(previewOff)
   assert.deepEqual(
     previewBlocks.map((block) => hasAttribute(checkboxes(block)[0], 'checked')),
-    [true, true, true, true, true, false, false, false, true, true, true],
+    [true, true, true, true, true, false, false, false, true, true, true, true, true],
     'the three v0.4 switches turn off independently',
   )
   // An override is marked where it is edited, the same as every other field.
   assert.ok(offBlocks[1].includes('overridden'), 'the overridden switch carries the override badge')
 })
 
-test('a read-only form disables the eleven switches instead of pretending they can be edited', () => {
+test('a read-only form disables the thirteen switches instead of pretending they can be edited', () => {
   const { find } = loadBundle('en')
   const readOnly = { ...FORM, state: { ...FORM.state, writable: false } }
   const markup = renderPage(find, readOnly)
   const boxes = checkboxes(markup)
-  assert.equal(boxes.length, 11)
+  assert.equal(boxes.length, 13)
   assert.deepEqual(
     boxes.map((tag) => hasAttribute(tag, 'disabled')),
-    [true, true, true, true, true, true, true, true, true, true, true],
+    Array(13).fill(true),
     'every switch is disabled when the profile cannot be written',
   )
   assert.ok(markup.includes('read-only'), 'the form also explains why it cannot be edited')
@@ -787,4 +795,144 @@ test('the /viking command card parses the envelope and renders Confirm/Cancel', 
   } finally {
     resetV05Stores(exports)
   }
+})
+
+/* ========================================================================
+ * v0.7 "Native I" surfaces
+ *
+ * Same server-render contract: the built bundle's real components, the real copy
+ * layer, the first paint before any host fetch resolves. The native store's
+ * documented test seam installs each view state deterministically; the store is
+ * reset afterwards so later tests see the shipped default (Overview).
+ * ===================================================================== */
+
+const ONBOARDING_FIXTURE = {
+  state: {
+    version: 1,
+    dismissedAt: null,
+    completedStepIds: [],
+    lastOpenedAt: '2026-11-10T00:00:00.000Z',
+    lastFullCheck: null,
+  },
+  checks: [
+    { id: 'endpoint', status: 'ok', labelKey: 'onboarding.step.endpoint', hintKey: null, detail: null },
+    { id: 'health', status: 'error', labelKey: 'onboarding.step.health', hintKey: 'onboarding.hint.startServer', detail: null },
+    { id: 'identity', status: 'warn', labelKey: 'onboarding.step.identity', hintKey: 'onboarding.hint.identityUnverified', detail: 'default/default' },
+    { id: 'memoryPlugin', status: 'warn', labelKey: 'onboarding.step.memoryPlugin', hintKey: 'onboarding.hint.memoryPlugin', detail: null },
+    { id: 'capabilities', status: 'ok', labelKey: 'onboarding.step.capabilities', hintKey: null, detail: '4/4' },
+    { id: 'firstStep', status: 'ok', labelKey: 'onboarding.step.firstStep', hintKey: 'onboarding.firstStep.browse', detail: null },
+  ],
+}
+
+function resetNativeForTest(exports) {
+  exports.resetNative()
+  exports.setNativeSwitches({ nativeViews: true, onboarding: true })
+  exports.__setNativeLayoutForTests(null)
+}
+
+test('the native cockpit renders its internal views and switches to the v0.6 Studio page', () => {
+  const { find, exports } = loadBundle('en')
+  resetNativeForTest(exports)
+
+  const overview = renderToStaticMarkup(createElement(find('main').Component))
+  assert.ok(overview.includes('ove-native'), 'the main panel renders the native shell')
+  for (const label of ['Overview', 'Browse', 'Sessions', 'Commits', 'Stats', 'Studio']) {
+    assert.ok(overview.includes(label), `the view switcher offers ${label}`)
+  }
+  assert.ok(overview.includes('ove-native-tab-active'), 'one tab is active')
+  assert.ok(overview.includes('Loading…'), 'the Overview shows its loading state before the host answers')
+
+  exports.__setNativeStateForTests({ view: 'browse', target: { view: 'browse', browse: { uri: 'viking://user/default/memories' } } })
+  const browse = renderToStaticMarkup(createElement(find('main').Component))
+  assert.ok(browse.includes('Select an entry on the left to preview it'), 'the Browse view renders its preview hint')
+  assert.ok(browse.includes('ove-browse'), 'and the two-pane shell')
+
+  exports.__setNativeStateForTests({ view: 'sessions', target: { view: 'sessions' } })
+  const sessions = renderToStaticMarkup(createElement(find('main').Component))
+  assert.ok(sessions.includes('Filter the loaded pages by session id'), 'the Sessions view renders its filter row')
+  assert.ok(sessions.includes('Type'), 'and its kind filter')
+  assert.ok(sessions.includes('Select a session on the left'), 'and its empty detail hint')
+
+  exports.__setNativeStateForTests({ view: 'studio', target: { view: 'studio' } })
+  const studio = renderToStaticMarkup(createElement(find('main').Component))
+  assert.ok(studio.includes('Connecting to OpenViking'), 'the Studio view mounts the existing iframe component')
+  assert.ok(studio.includes('ove-nat-studio'), 'inside the Studio wrapper')
+
+  // The switch's off state is the exact v0.6 page, not a broken native shell.
+  exports.setNativeSwitches({ nativeViews: false })
+  const legacy = renderToStaticMarkup(createElement(find('main').Component))
+  assert.ok(legacy.includes('Connecting to OpenViking'), 'showNativeViews=false renders the v0.6 Studio page')
+  assert.ok(!legacy.includes('ove-native-tabs'), 'and none of the native view chrome')
+  resetNativeForTest(exports)
+})
+
+test('the onboarding card renders open, collapsed and disabled states from one component', () => {
+  const { exports } = loadBundle('en')
+  const open = renderToStaticMarkup(
+    createElement(exports.OnboardingCard, { onboarding: ONBOARDING_FIXTURE, enabled: true, onStateChange: () => {} }),
+  )
+  assert.ok(open.includes('First-run checks'), 'the card title')
+  assert.ok(open.includes('3/6 ok'), 'the counts line (the fake checks are 3 ok)')
+  assert.ok(open.includes('Server health'), 'a check label')
+  assert.ok(open.includes('Start the OpenViking server'), 'a failing check hint')
+  assert.ok(open.includes('Mark done'), 'a non-ok check can be marked done')
+  assert.ok(open.includes('Run full check'), 'the explicit full-check action')
+  assert.ok(open.includes('0600'), 'the privacy line states the local file mode')
+  assert.ok(open.includes('data-dsh-plugin="openviking-enhance-onboarding"'), 'the card is tagged')
+
+  const collapsed = renderToStaticMarkup(
+    createElement(exports.OnboardingCard, {
+      onboarding: { ...ONBOARDING_FIXTURE, state: { ...ONBOARDING_FIXTURE.state, dismissedAt: '2026-11-10T00:10:00.000Z' } },
+      enabled: true,
+      onStateChange: () => {},
+    }),
+  )
+  assert.ok(collapsed.includes('Setup checks: 3/6 ok'), 'a dismissed card collapses to one line')
+  assert.ok(collapsed.includes('Show checks'), 'and can be re-opened locally')
+  assert.ok(!collapsed.includes('Run full check'), 'without the full checklist body')
+
+  const disabled = renderToStaticMarkup(
+    createElement(exports.OnboardingCard, { onboarding: ONBOARDING_FIXTURE, enabled: false, onStateChange: () => {} }),
+  )
+  assert.equal(disabled, '', 'showOnboarding=false renders nothing')
+
+  const zh = loadBundle('zh')
+  const chinese = renderToStaticMarkup(
+    createElement(zh.exports.OnboardingCard, { onboarding: ONBOARDING_FIXTURE, enabled: true, onStateChange: () => {} }),
+  )
+  assert.ok(chinese.includes('首次运行检查'), 'the card speaks Chinese when the app does')
+  assert.ok(chinese.includes('检查清单') || chinese.includes('项通过'), 'with translated counts')
+})
+
+test('the Plugins-page Setup card renders for this plugin only, and the shared preview body paints', () => {
+  const { contributions, exports } = loadBundle('en')
+  const ours = {
+    kind: 'bundle',
+    pkg: {
+      name: 'dsh-openviking-enhance',
+      installed: true,
+      availability: 'installed',
+      official: false,
+      enabled: true,
+      rows: [],
+    },
+  }
+  const sections = contributions.filter((entry) => entry.options.name === 'plugins.detail.section')
+  assert.equal(sections.length, 2, 'the plugin contributes the health summary and the Setup card')
+  const setup = sections.find((entry) => entry.options.id === 'openviking-setup')
+  assert.ok(setup, 'the second section is the Setup card')
+  assert.equal(setup.options.order, 39, 'it sits just above the v0.3 health summary (order 40)')
+  const markup = renderToStaticMarkup(createElement(setup.Component, { subject: ours }))
+  assert.ok(markup.includes('Setup (OpenViking)'), 'the Setup card title')
+  assert.ok(markup.includes('Reading check state'), 'its loading line before the host answers')
+  const other = renderToStaticMarkup(
+    createElement(setup.Component, { subject: { ...ours, pkg: { ...ours.pkg, name: 'someone-else' } } }),
+  )
+  assert.equal(other, '', 'another plugin page renders nothing')
+
+  // The extracted preview body is the one implementation both pans mount.
+  const empty = renderToStaticMarkup(createElement(exports.PreviewBody, { uri: '' }))
+  assert.ok(empty.includes('No entry selected yet.'), 'the preview body renders its empty state')
+  const pending = renderToStaticMarkup(createElement(exports.PreviewBody, { uri: 'viking://user/default/memories/x.md', readOnly: true }))
+  assert.ok(pending.includes('ove-preview-body'), 'the preview body renders its shell for a URI')
 })

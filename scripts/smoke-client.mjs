@@ -127,6 +127,8 @@ const ALL_ON = {
   enableCommands: true,
   enableActivity: true,
   showScopeBanner: true,
+  showNativeViews: true,
+  showOnboarding: true,
   enableWrites: true,
 }
 const ALL_OFF = {
@@ -140,6 +142,8 @@ const ALL_OFF = {
   enableCommands: false,
   enableActivity: false,
   showScopeBanner: false,
+  showNativeViews: false,
+  showOnboarding: false,
   enableWrites: false,
 }
 /**
@@ -151,8 +155,14 @@ const ALL_OFF = {
 const ADDITIVE_SEAT_NAMES = ['shell.overlay', 'shell.overlay', 'conversation.chat.commandview'].sort()
 const ADDITIVE_SEATS = ADDITIVE_SEAT_NAMES.length
 const CONFIG_SEATS = 1
+/**
+ * The client-mounted switch surfaces: the v0.3/v0.4/v0.5 ones plus the v0.7
+ * Plugins-page Setup card. `showNativeViews` is not a mount — it switches the
+ * body of the already-mounted main panel through the native store.
+ */
+const MOUNTED_SWITCHES = 12
 /** Every live seat when all switches are on: mounts + additive seats + the form. */
-const ALL_SEATS_COUNT = 11 + ADDITIVE_SEATS + CONFIG_SEATS
+const ALL_SEATS_COUNT = MOUNTED_SWITCHES + ADDITIVE_SEATS + CONFIG_SEATS
 const ALL_TAB_TYPES = 5
 const BOOT_SEATS = [
   'conversation.chat.commandview',
@@ -160,6 +170,7 @@ const BOOT_SEATS = [
   'conversation.composer.dock',
   'conversation.composer.dock',
   'main',
+  'plugins.detail.section',
   'plugins.detail.section',
   'plugins.row.config',
   'shell.overlay',
@@ -658,6 +669,27 @@ check(typeof commandSeat?.inject === 'function', 'the command view declares a se
 check(typeof exports.VikingCommandCard === 'function', 'the rich /viking card ships for the server-render harness')
 check(exports.parseEnvelope('x\n' + JSON.stringify({ ov: '1', kind: 'open-editor', uri: 'viking://user/default/memories/preferences/tools.md' }))?.kind === 'open-editor', 'the command card parser reads the host envelope')
 check(typeof exports.ActivityPanel === 'function', 'the Activity panel ships')
+// v0.7: the native cockpit, its onboarding card, the shared preview body and the
+// extracted metric cards are all part of the bundle's public surface (the
+// server-render harness mounts them directly).
+for (const name of ['OpenVikingPanel', 'NativeCockpit', 'NativeOverview', 'NativeBrowse', 'NativeSessions', 'NativeCommits', 'NativeStats', 'PreviewBody', 'OnboardingCard', 'OnboardingSetupSection', 'MetricsCards', 'MetricCard']) {
+  check(typeof exports[name] === 'function', `the bundle ships ${name}`)
+}
+check(typeof exports.getNativeState === 'function' && typeof exports.navigateNative === 'function', 'the native navigation store ships')
+check(typeof exports.setNativeSwitches === 'function' && typeof exports.__setNativeLayoutForTests === 'function', 'the native store exposes its documented test seams')
+check(exports.getNativeState().switches.nativeViews === true, 'the native cockpit is the shipped default')
+check(exports.getNativeState().view === 'overview', 'the cockpit opens on Overview')
+// The native views only call document-relative host routes of their own.
+for (const route of ['/overview', '/browse/roots', '/browse/subtree', '/browse?', '/sessions', '/recent-commits', '/studio-status', '/onboarding/state']) {
+  check(code.includes(route), `the browser half knows the native route ${route}`)
+}
+// The second Plugins-page section is registered under its own id, just above the
+// v0.3 health summary; it is the setup surface older-DSH users fall back to.
+const detailSections = liveOf(onState, 'plugins.detail.section').map((held) => held.options)
+check(detailSections.length === 2, `the plugin contributes two Plugins-page sections (saw ${detailSections.length})`)
+check(detailSections.some((options) => options.id === 'openviking-setup' && options.order === 39), 'the Setup card is registered at order 39')
+check(detailSections.some((options) => options.id === 'openviking-health' && options.order === 40), 'and the health summary still sits below it')
+check(liveOf(onState, 'main').length === 1, 'exactly one main panel remains (no second sidebar row)')
 check(typeof exports.ScopeChip === 'function', 'the scope chip ships')
 check(typeof exports.WriteDialog === 'function' && typeof exports.WriteToast === 'function', 'the write dialog and undo toast ship')
 // The shared URI link and the preview store are the v0.4 deep-link seam. The

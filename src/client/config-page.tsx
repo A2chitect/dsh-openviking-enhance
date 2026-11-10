@@ -142,6 +142,16 @@ const FEATURE_TOGGLES: readonly ToggleSpec[] = [
     label: 'config.showScopeBanner',
     hint: 'config.showScopeBannerHint',
   },
+  {
+    key: 'showNativeViews',
+    label: 'config.showNativeViews',
+    hint: 'config.showNativeViewsHint',
+  },
+  {
+    key: 'showOnboarding',
+    label: 'config.showOnboarding',
+    hint: 'config.showOnboardingHint',
+  },
 ]
 
 /** Every field `configOps` has to understand, text and switches alike. */

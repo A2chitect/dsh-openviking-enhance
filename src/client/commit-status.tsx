@@ -59,6 +59,7 @@ import { copyText } from './clipboard.ts'
 import { OpenVikingIcon } from './openviking-icon.tsx'
 import { VikingUriLink } from './viking-uri-link.tsx'
 import { ensureScope, useScope } from './scope-store.ts'
+import { canSelectPanel, openNative } from './native-store.ts'
 import { openWriteConfirm } from './write-store.ts'
 import { writeErrorText } from './locale.ts'
 
@@ -305,6 +306,15 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
             official plugin exposes no pause/resume API.
           */}
           <div className="ove-pop-actions">
+            {canSelectPanel() ? (
+              <button
+                type="button"
+                className="ove-diff-action"
+                onClick={() => openNative({ view: 'sessions', sessions: { sessionId } })}
+              >
+                {t('native.openSessionInCockpit')}
+              </button>
+            ) : null}
             {scope.scope !== null && scope.scope.writes.enabled && scope.scope.writes.transport ? (
               <button
                 type="button"

@@ -465,6 +465,87 @@ export class OpenVikingApi {
     return { ...response, result: items }
   }
 
+  /**
+   * One page of a `viking://` directory listing, with the server's paging facts.
+   *
+   * `listDirectory` above deliberately drops the page envelope; the native tree
+   * needs `has_more`/`offset` to page a large directory (the live sessions
+   * directory alone held 168 entries). Every parameter mirrors one documented
+   * `fs/ls` query field: `node_limit`/`offset` page, `abs_limit` bounds the
+   * abstract length, `include_tags` adds the tag chips and `sort_by`/`sort_order`
+   * order the page server-side.
+   */
+  async listDirectoryPage(
+    uri: string,
+    options: RequestOptions & {
+      limit?: number
+      offset?: number
+      includeTags?: boolean
+      absLimit?: number
+      sortBy?: string
+      sortOrder?: 'asc' | 'desc'
+    } = {},
+  ): Promise<OvResult<OvDirectoryPage>> {
+    const params = new URLSearchParams({ uri })
+    const limit = Math.min(Math.max(Math.trunc(options.limit ?? 50), 1), 200)
+    const offset = Math.max(Math.trunc(options.offset ?? 0), 0)
+    params.set('node_limit', String(limit))
+    params.set('offset', String(offset))
+    params.set('output', 'agent')
+    params.set('include_abstract', 'true')
+    if (options.absLimit !== undefined && Number.isFinite(options.absLimit)) {
+      params.set('abs_limit', String(Math.max(1, Math.trunc(options.absLimit))))
+    }
+    if (options.includeTags === true) params.set('include_tags', 'true')
+    if (options.sortBy !== undefined && options.sortBy.length > 0) params.set('sort_by', options.sortBy)
+    if (options.sortOrder !== undefined) params.set('sort_order', options.sortOrder)
+    const response = await this.request<OvFsListPageBody>(`/api/v1/fs/ls?${params.toString()}`, {
+      timeoutMs: FS_TIMEOUT_MS,
+      ...options,
+    })
+    if (!response.ok) return response as unknown as OvResult<OvDirectoryPage>
+    const raw = response.result
+    const entries = Array.isArray(raw) ? raw : Array.isArray(raw?.items) ? raw.items : []
+    const hasMore = raw !== null && !Array.isArray(raw) && raw?.has_more === true
+    return {
+      ...response,
+      result: {
+        entries,
+        hasMore,
+        nextOffset: hasMore ? offset + entries.length : null,
+      },
+    }
+  }
+
+  /**
+   * The server's flattened recursive tree call.
+   *
+   * Deliberately only used by the explicit, bounded "expand subtree" action:
+   * `level_limit`/`node_limit` cap the WHOLE flattened result across levels and
+   * `offset` pages that flattened stream, so it is the wrong primitive for a
+   * lazy directory-by-directory tree (see the v0.7 design note).
+   */
+  async fsTree(
+    uri: string,
+    options: RequestOptions & { levels?: number; nodes?: number } = {},
+  ): Promise<OvResult<OvFsTreePage>> {
+    const params = new URLSearchParams({ uri })
+    const levels = Math.max(1, Math.trunc(options.levels ?? 2))
+    const nodes = Math.max(1, Math.trunc(options.nodes ?? 100))
+    params.set('level_limit', String(levels))
+    params.set('node_limit', String(nodes))
+    params.set('include_abstract', 'true')
+    const response = await this.request<OvFsTreePageBody>(`/api/v1/fs/tree?${params.toString()}`, {
+      timeoutMs: FS_TIMEOUT_MS,
+      ...options,
+    })
+    if (!response.ok) return response as unknown as OvResult<OvFsTreePage>
+    const raw = response.result
+    const entries = Array.isArray(raw) ? raw : Array.isArray(raw?.items) ? raw.items : []
+    const hasMore = raw !== null && !Array.isArray(raw) && raw?.has_more === true
+    return { ...response, result: { entries, hasMore } }
+  }
+
   /** Trajectories produced by commits that read one Experience file. */
   async experienceTrajectories(
     experienceUri: string,
@@ -902,6 +983,47 @@ export interface OvFsListEntry {
   isDir?: boolean
   modTime?: string
   abstract?: string
+}
+
+/** The tag list the server adds when `include_tags=true` was requested. */
+export interface OvFsListEntryWithMeta extends OvFsListEntry {
+  tags?: string[]
+}
+
+/** The `fs/ls` page envelope (0.5.1.1–0.5.3 answer an object with a cursor). */
+interface OvFsListPageBody {
+  items?: OvFsListEntryWithMeta[]
+  has_more?: boolean
+  offset?: number
+  [key: string]: unknown
+}
+
+/** A normalized `fs/ls` page: entries plus the cursor the tree pages with. */
+export interface OvDirectoryPage {
+  entries: OvFsListEntryWithMeta[]
+  hasMore: boolean
+  /** The next `offset` to request, or null at the end of the directory. */
+  nextOffset: number | null
+}
+
+/** One flattened `fs/tree` node (the server reports its path relative to the root). */
+export interface OvFsTreeEntry extends OvFsListEntry {
+  rel_path?: string
+  relPath?: string
+  level?: number
+  depth?: number
+}
+
+/** The `fs/tree` page envelope (raw `has_more` is the node-cap signal). */
+interface OvFsTreePageBody {
+  items?: OvFsTreeEntry[]
+  has_more?: boolean
+  [key: string]: unknown
+}
+
+export interface OvFsTreePage {
+  entries: OvFsTreeEntry[]
+  hasMore: boolean
 }
 
 /** One retrieved entry, exactly as the server ranks it. */

@@ -76,6 +76,41 @@ CI covers 1–6, 8–10 on Linux; the rest is maintainer evidence recorded here:
 | 11 | Desktop carrier from the Plugins page | manual, Desktop app (not CI) |
 | 12 | `pnpm test` full gate | CI `test` job |
 
+| 0.7.0 (Unreleased branch) | — | TBD (native cockpit is browser-only) | TBD | TBD | TBD read-only | `pnpm pack` tarball → clean DSH profile (visual evidence teammate) | pending its PR | scenario checklist below; screenshots to be attached to PR #5 |
+
+### v0.7 native-cockpit scenario checklist (evidence owner: verification teammate)
+
+The native cockpit is browser-only, so the install-verify script can only prove
+the bundle/route halves. The browser evidence must record, from a **clean DSH
+profile** against the **live read-only OpenViking server** and with the v0.6
+build as the "before" (Studio-iframe-only reading), each step's before/after
+capture (redacted; `SMOKE_VERBOSE=1` never on for published evidence):
+
+1. OpenViking row → native **Overview** paints (identity/version/totals/checks);
+   the v0.6 build shows the Studio iframe for the same row.
+2. **Browse**: expand `memories`, page a long directory with Load more, select a
+   file and page its L2 with Show more, then "Show subtree" on a directory (the
+   notice says 2 levels/100 nodes).
+3. **Sessions**: page the list, filter by kind/id, open a session detail, open
+   an archive diff; note that no transcript is shown.
+4. **Commits**: recent list paints; force a refresh; if the fake live store is
+   large enough, stop at the 8-session cap and capture the partial notice.
+5. **Stats**: four metric cards plus category/hotness, and the explicit
+   Refresh (no polling in the native views).
+6. **Onboarding**: first-run card in Overview (all checks + hints), mark one
+   done, run full check, dismiss, then reload and confirm the collapsed one-line
+   state; Plugins-page Setup card shows the same count and opens Overview.
+7. **Studio fallback**: switch to the Studio view (iframe works against 0.5.3)
+   and capture "open in a new tab"; if a header-blocking fixture/served build is
+   available, capture the blocked-studio explanation.
+8. **Older-DSH fallback**: if a pinned older generation without
+   `ctx.layout.selectPanel` is available, capture the Preview tab's absent
+   "Open in cockpit" action (label/fallback note); otherwise record explicitly
+   that this leg was not exercised.
+9. **Read-only check**: the scenario run must not change any memory; re-opening
+   Browse/Sessions shows the same server data, and the OpenViking request log
+   contains only GETs (plus the validation-only rule probe).
+
 ## Live evidence
 
 - v0.4/v0.5 browser evidence: mock-fixture captures from the verification

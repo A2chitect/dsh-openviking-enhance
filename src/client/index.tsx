@@ -47,7 +47,15 @@ import type {
 } from './slot-service.ts'
 import { installStyles } from './styles.ts'
 import { OpenVikingIcon } from './openviking-icon.tsx'
-import { StudioPanel } from './studio-panel.tsx'
+import { OpenVikingPanel } from './native-panel.tsx'
+import {
+  attachNativeLayout,
+  resetNative,
+  setNativeSwitches,
+  type LayoutLike,
+} from './native-store.ts'
+import { setRightTabOpener } from './tab-store.ts'
+import { OnboardingSetupSection } from './onboarding-card.tsx'
 import { CommitStatusPill } from './commit-status.tsx'
 // Exported for the server-rendered component tests; the shell only reads apply/inject.
 export { DiffEntry, DiffView } from './commit-status.tsx'
@@ -57,6 +65,23 @@ export { VikingUriLink } from './viking-uri-link.tsx'
 export { getPreviewTarget, openPreview, resetPreviewStore, setPreviewTarget } from './preview-store.ts'
 export { ScopeChip } from './scope-chip.tsx'
 export { ActivityPanel } from './activity-panel.tsx'
+export { OpenVikingPanel, NativeCockpit } from './native-panel.tsx'
+export { NativeOverview } from './native-overview.tsx'
+export { NativeBrowse } from './native-browse.tsx'
+export { NativeSessions } from './native-sessions.tsx'
+export { NativeCommits } from './native-commits.tsx'
+export { NativeStats } from './native-stats.tsx'
+export { PreviewBody } from './preview-body.tsx'
+export { OnboardingCard, OnboardingSetupSection } from './onboarding-card.tsx'
+export { MetricsCards, MetricCard } from './metrics-view.tsx'
+export {
+  getNativeState,
+  navigate as navigateNative,
+  resetNative,
+  setNativeSwitches,
+  __setNativeLayoutForTests,
+  __setNativeStateForTests,
+} from './native-store.ts'
 export { WriteDialog } from './write-dialog.tsx'
 export { WriteToast } from './write-toast.tsx'
 export { VikingCommandCard, parseEnvelope } from './viking-command-card.tsx'
@@ -276,12 +301,58 @@ export function apply(context: ClientContext): void {
               }
             },
       )
+      // v0.7: the native cockpit's quick actions open the plugin's existing
+      // right-Sidebar tabs (Explore for Rules/Experience, Memory health for the
+      // Doctor). The opener is a module store so components need no context.
+      setRightTabOpener(
+        sidebarRight?.openTab === undefined
+          ? null
+          : (kind, params) => {
+              try {
+                // The layout's params type is keyed by kind; this bridge only
+                // carries the plugin's own kinds, so the structural cast is safe.
+                sidebarRight?.openTab?.(kind, params === undefined ? undefined : ({ params } as never))
+              } catch (error) {
+                report(context, error)
+              }
+            },
+      )
       return () => {
         disposeOpener()
+        setRightTabOpener(null)
         sidebarRight = undefined
       }
     })
     disposers.push(() => watch.dispose())
+  } catch (error) {
+    report(context, error)
+  }
+
+  /**
+   * v0.7 deep links: the shell's layout action, capability-detected structurally.
+   *
+   * `selectPanel` is what lets an explicit "Open in cockpit" action switch the
+   * centre column. It is reached through `ctx.get('layout')` (the design's
+   * structural read) with the scoped `inject` as the late-registration path; an
+   * older DSH generation without it simply leaves the bridge empty, and deep
+   * links fall back to the right-Sidebar preview tab. Reading a service the
+   * composition does not declare throws, so every step is guarded.
+   */
+  try {
+    const direct = context.get('layout') as LayoutLike | undefined
+    if (direct !== undefined) attachNativeLayout(direct)
+    const watchLayout = context.inject(['layout'], (scope) => {
+      attachNativeLayout((scope.get('layout') as LayoutLike | undefined) ?? null)
+      return () => attachNativeLayout(null)
+    })
+    disposers.push(() => {
+      try {
+        watchLayout.dispose()
+      } catch {
+        // Disposal is best effort.
+      }
+      attachNativeLayout(null)
+    })
   } catch (error) {
     report(context, error)
   }
@@ -387,7 +458,7 @@ export function apply(context: ClientContext): void {
    */
   function mountSidebarEntry(): () => void {
     const disposeMain = slots.inject('main', () =>
-      slots.register({ name: 'main', key: PANEL_ID }, StudioPanel),
+      slots.register({ name: 'main', key: PANEL_ID }, OpenVikingPanel),
     )
     const disposeRow = slots.inject('sidebar.panellist', () =>
       slots.register(
@@ -723,6 +794,19 @@ export function apply(context: ClientContext): void {
     return () => seat.dispose()
   }
 
+  /**
+   * v0.7: the second `plugins.detail.section` — the compact Setup card.
+   *
+   * It is its own switch (`showOnboarding`) so turning the checklist off removes
+   * both surfaces without touching the persisted state. The card renders nothing
+   * on another plugin's page (same subject check as the v0.3 health summary).
+   */
+  function mountOnboarding(): () => void {
+    return slots.inject('plugins.detail.section', () =>
+      slots.register({ name: 'plugins.detail.section', id: 'openviking-setup', order: 39 }, OnboardingSetupSection),
+    )
+  }
+
   const mounts: Record<MountedFeature, () => () => void> = {
     sidebarEntry: mountSidebarEntry,
     commitStatus: mountCommitStatus,
@@ -733,6 +817,7 @@ export function apply(context: ClientContext): void {
     explorePanel: mountExplorePanel,
     activityPanel: mountActivityPanel,
     scopeBanner: mountScopeChip,
+    onboarding: mountOnboarding,
   }
 
   /** The right-Sidebar page a feature owns, when it owns one. */
@@ -811,6 +896,10 @@ export function apply(context: ClientContext): void {
   /** Apply one settings answer to every surface. */
   function applyFlags(flags: FeatureFlags, value: Record<string, unknown> = {}): void {
     for (const feature of FEATURE_ORDER) applyFeature(feature, flags[feature])
+    // v0.7: the main panel's body (native cockpit vs the v0.6 Studio page) and
+    // the onboarding card are presentation state, not mounts: the already-mounted
+    // page re-renders in place through the native store.
+    setNativeSwitches({ nativeViews: flags.nativeViews, onboarding: flags.onboarding })
     // The banner switch hides the chip everywhere; the dialogs repeat the scope.
     setScopeBannerEnabled(flags.scopeBanner)
     const profile = typeof value.activeProfile === 'string' ? value.activeProfile : ''
@@ -919,6 +1008,9 @@ export function apply(context: ClientContext): void {
       }
       // An unload must not fire a deferred close after the surfaces are gone.
       cancelPendingPageClose()
+      // In-memory navigation only: a fresh mount starts on Overview.
+      resetNative()
+      setRightTabOpener(null)
       for (const feature of [...FEATURE_ORDER].reverse()) {
         const live = mounted.get(feature)
         if (live === undefined) continue

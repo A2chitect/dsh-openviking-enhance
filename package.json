@@ -1,7 +1,7 @@
 {
   "name": "dsh-openviking-enhance",
   "version": "0.3.0",
-  "description": "OpenViking in the DSH web GUI: Studio panel, commit status pill and diff browser, per-turn recall explanation, recall/health/Doctor tabs, viking:// preview, /viking commands, Explore search/rules/skills/Experience, and opt-in curation with snapshot undo, forced commits, an Activity tab and named identity profiles.",
+  "description": "OpenViking in the DSH web GUI: a native read cockpit (Overview, lazy viking:// Browse with preview, paginated Sessions, bounded recent Commits, Stats, read-only onboarding) with the Studio iframe as fallback, plus commit status/diff browsing, per-turn recall explanation, recall/health/Doctor tabs, /viking commands, Explore search/rules/skills/Experience, and opt-in curation with snapshot undo, an Activity tab and named identity profiles.",
   "type": "module",
   "icon": "./icon.svg",
   "main": "lib/index.js",

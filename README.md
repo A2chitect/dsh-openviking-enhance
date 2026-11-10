@@ -23,9 +23,43 @@ ordinary DSH bundle.
 
 ## What you get
 
-**OpenViking Studio, inside DSH.** A new row at the bottom of the left sidebar
-opens the OpenViking server's own Studio UI in the main area, so you can browse
-memories, sessions and retrieval without leaving the app or switching to a browser.
+**Read your memory without leaving DSH.** A new row at the bottom of the left
+sidebar opens a **native read cockpit**: an Overview, a lazy `viking://` Browse
+tree with a preview pane, a paginated Sessions browser with per-archive diffs,
+a bounded recent-Commits browser and a Stats view. The core reading tasks work
+without the iframe; the OpenViking server's own Studio stays one explicit view
+(and one "open in a new tab") away, and `showNativeViews: false` restores the
+v0.6 Studio page exactly. Everything here is read-only.
+
+### The native read cockpit (v0.7)
+
+One sidebar row, one main panel, six internal views — no second shell seat:
+
+| View | What it reads | Notes |
+| --- | --- | --- |
+| **Overview** | one composed host request: config, identity scope, health/version, memory totals, capabilities and the Studio frameability fact | default view; each part degrades independently |
+| **Browse** | lazy `viking://` tree over the identity's roots (memories, peers, shared/personal resources, personal/agent skills, rules/session shortcuts) + a read-only preview pane | one `fs/ls` page (50 rows, 160-char abstracts, tags) per expanded directory, paged with the server cursor; an explicit "Show subtree" action is capped at 2 levels/100 nodes |
+| **Sessions** | the sessions directory, 50/page, newest first | the server's session list has no pagination; detail reuses the bounded session log (state, pending tokens, tasks, archive timeline, per-archive diff) — **no transcript**, message bodies are never read |
+| **Commits** | bounded recent fan-out: newest 8 sessions, pool 4, 10 s deadline, 30 s cache | there is no global commit history API; a partial answer says so ("stopped after N sessions at T ms") and Refresh retries. Never polled |
+| **Stats** | the same REST console/observer/stats sources as the Activity tab, through the shared metric cards | Prometheus `/metrics` is never probed |
+| **Studio** | the v0.6 iframe, unchanged | the explicit fallback; the host-side header probe explains an embedding refusal instead of the panel silently going blank |
+
+- **Navigation is in-memory.** Back/Forward walk a bounded (20-entry) history;
+  the panel reopens on Overview. There is no browser URL routing because DSH
+  exposes no route API for main-panel selection.
+- **Deep links never steal the main column.** Incidental `viking://` clicks keep
+  opening the right-sidebar Preview tab. Explicit actions ("Open in cockpit" in
+  the Preview tab such as the session pill's context) use
+  `ctx.layout.selectPanel('openviking')`, capability-detected structurally; on an
+  older DSH generation without that action the action falls back to the Preview
+  tab (and the panel toolbar says so).
+- **First-run checklist.** A read-only setup card appears in Overview and as a
+  second section on the plugin's Plugins page: endpoint/health/identity/memory
+  plugin/capabilities/suggested first step. "Run full check" reuses the Doctor;
+  dismissal/completion is stored per DSH home in a 0600 local file (see privacy).
+- **The right-sidebar tabs are unchanged.** Recall, Memory health, Preview,
+  Explore and Activity stay the session-contextual surfaces; the cockpit is the
+  global reading surface and links to them (Rules/Experience live in Explore).
 
 **Per-session commit status.** OpenViking writes memory in *commits*: a session's
 turns accumulate until a token threshold is reached (or the session ends), then
@@ -315,9 +349,11 @@ The client half is a prebuilt bundle: installing from a source checkout without
 - **No lifecycle hooks, no MCP proxy, no tools, no URI guard, no skill
   distribution** (those belong to the official memory plugin — see the N/A
   matrix below). One optional `/viking` command registers through `ctx.commands`.
-- **Routes on the DSH web server**: read-only GETs plus two read-only POSTs
-  (unified search, rule tester). They answer loopback + same-origin requests only,
-  carry a JSON body of at most 64 KiB, and never write.
+- **Routes on the DSH web server**: read-only GETs plus three POSTs — the unified
+  search and rule tester (read-only queries), and the plugin's own onboarding-state
+  write, which persists one 0600 local JSON file and makes **zero** OpenViking
+  calls. They answer loopback + same-origin requests only, carry a JSON body of at
+  most 64 KiB, and never write OpenViking.
 - **Mutations only through the authenticated `ctx.connection.fetch` transport**
   (DSH 0.2.2-rc.1+); there is deliberately no loopback POST write path. Session
   authentication is enforced by that DSH transport, not by this plugin, and the
@@ -327,12 +363,30 @@ The client half is a prebuilt bundle: installing from a source checkout without
 - **Reads from the official plugin**: per-session runtime config/state, the
   pending-queue directory (file names/ages only, never payloads), capability
   memos, and server-produced commit/archive artifacts. It never writes them.
-- **Writes**: only the plugin's own `profiles.json` and `audit.jsonl` under
-  `${DSH_HOME:-~/.dsh}/state/dsh-openviking-enhance/`, plus user-triggered
-  curation requests sent to OpenViking.
+- **Writes**: only the plugin's own `profiles.json`, `audit.jsonl` and
+  `onboarding.json` under `${DSH_HOME:-~/.dsh}/state/dsh-openviking-enhance/`,
+  plus user-triggered curation requests sent to OpenViking. The onboarding state
+  POST rides the same loopback/same-origin JSON guard as the read routes, not the
+  authenticated mutation transport, because it is not an OpenViking mutation.
 - **Startup is non-blocking and contained**: an activation failure is logged and
   the entry provides nothing; it cannot take the profile down. OpenViking being
   down degrades route answers, never the host.
+
+### Native read routes (v0.7)
+
+All of them are loopback + same-origin GETs that never write, except the local
+onboarding-state POST:
+
+| Route | Contract |
+| --- | --- |
+| `GET /api/openviking-enhance/overview?fresh=0` | composed config + scope + metrics + plugin fact + Studio status + onboarding, per-part `available/error`, cached 5 s |
+| `GET /api/openviking-enhance/browse/roots` | identity-resolved `viking://` roots (no listing) |
+| `GET /api/openviking-enhance/browse?uri=&offset=&limit=` | one `fs/ls` page, 50 rows, 160-char abstracts, tags, server cursor; 404 = empty page + notice; non-allowlisted/internal scopes refused |
+| `GET /api/openviking-enhance/browse/subtree?uri=&levels=&nodes=` | the explicit bounded `fs/tree` action (≤2 levels/≤100 nodes) |
+| `GET /api/openviking-enhance/sessions?offset=&limit=` | paginated session-directory page (50/page, mtime-desc) with DSH/non-DSH kinds |
+| `GET /api/openviking-enhance/recent-commits?limit=&fresh=0` | bounded fan-out (≤8 sessions, pool 4, 10 s deadline, 30 s cache) with `partial`/`limitedBy`/`progress` |
+| `GET /api/openviking-enhance/studio-status?fresh=0` | credential-free header probe: `frameable` yes/no/unknown + reason, cached 60 s |
+| `POST /api/openviking-enhance/onboarding/state` | `{action:'dismiss'|'reset'|'complete-step'|'full-check', …}` → writes only the 0600 local `onboarding.json`, zero OpenViking calls |
 
 ### Timeouts and limits
 
@@ -369,6 +423,22 @@ from the code. Times are milliseconds; sizes are bytes unless marked.
 | AUDIT_MAX_LIMIT | 100 |
 | AUDIT_KEEP_ROTATIONS | 2 |
 | ACTIVITY_TASKS_MAX_LIMIT | 50 |
+| BROWSE_PAGE_SIZE | 50 |
+| BROWSE_ABSTRACT_MAX_CHARS | 160 |
+| BROWSE_SUBTREE_MAX_LEVELS | 2 |
+| BROWSE_SUBTREE_MAX_NODES | 100 |
+| BROWSE_CACHE_TTL_MS | 15000 |
+| BROWSE_CACHE_MAX_DIRECTORIES | 100 |
+| SESSIONS_PAGE_SIZE | 50 |
+| SESSION_DETAIL_CACHE_TTL_MS | 15000 |
+| RECENT_COMMITS_SESSION_CAP | 8 |
+| RECENT_COMMITS_CONCURRENCY | 4 |
+| RECENT_COMMITS_DEADLINE_MS | 10000 |
+| RECENT_COMMITS_CACHE_TTL_MS | 30000 |
+| OVERVIEW_CACHE_TTL_MS | 5000 |
+| STUDIO_STATUS_TIMEOUT_MS | 4000 |
+| STUDIO_STATUS_TTL_MS | 60000 |
+| NATIVE_HISTORY_MAX | 20 |
 <!-- /contract:limits -->
 
 The Rules-listing deadline is a **scheduling** deadline: requests already in
@@ -392,7 +462,11 @@ rules and 20 scenarios, and an L2 preview page returns at most 1 000 lines.
 | Writes | `enableWrites` **and** authenticated transport **and** healthy probed identity | DSH 0.2.2-rc.1+ | read-only with a stated reason; every mutation fails closed |
 | Activity tasks/metrics | `GET /tasks` and per-card probes | route present | per-card "not available"; `/metrics` is never probed |
 | ACL | not probed | never | explicit "not enabled" row |
-| Studio | iframe load of `endpoint + studioPath` | endpoint serves `/studio/` | open-in-tab / browser fallback; X-Frame-Options/CSP refusals are shown, not hidden |
+| Native views | DSH `main`/`sidebar.panellist` slots (since v0.3) | always; `showNativeViews` (default true) | off = the exact v0.6 Studio page |
+| Browse / Sessions / Commits | per-request HTTP result of `fs/ls` | OpenViking 0.5.1.1+ | per-view "unavailable on this server" state; a 404 directory is an empty page, not an error |
+| Deep links (`ctx.layout.selectPanel`) | structural `get('layout')` + `typeof selectPanel === 'function'` | DSH 0.2.2-rc.1 (verified types) | Preview-tab fallback plus a toolbar note on older generations |
+| Studio frameability | one anonymous, credential-free `GET endpoint + studioPath` header probe | any 2xx/XFO/CSP answer | host-side classification (yes/no/unknown + reason) never a browser guess |
+| Onboarding card | composed overview + local state | always; `showOnboarding` (default true) | checks skip what is unavailable; the card hides without touching the state file |
 
 ### Not applicable (owned by the official memory plugin)
 
@@ -413,9 +487,13 @@ rules and 20 scenarios, and an L2 preview page returns at most 1 000 lines.
   request shape, but any local process can still `curl` these reads on a
   multi-user machine. Mutations never use them: they ride the framework-
   authenticated `connection.fetch` transport.
-- **Studio is the server's own UI in an iframe.** If the server refuses framing
-  (`X-Frame-Options`/CSP) the plugin offers open-in-tab/browser; it does not proxy
-  or re-render Studio. Native read views are v0.7+.
+- **Native reads are plain fenced GETs; Studio is still the server's own UI in an
+  iframe.** The cockpit never proxies or re-renders Studio: it reads documented
+  `viking://` routes through the same loopback/same-origin fence as every other
+  route. If the server refuses framing (`X-Frame-Options`/CSP frame-ancestors) a
+  host-side header probe reports that reason and offers open-in-new-tab; the panel
+  never guesses from the browser (a blocked cross-origin frame exposes no error to
+  the parent).
 - **Credentials, in order of preference:** `~/.openviking/ovcli.conf`, the
   `OPENVIKING_*` environment variables, or a named profile in the plugin's own
   `profiles.json`. The legacy `apiKey` config field is declared
@@ -426,9 +504,11 @@ rules and 20 scenarios, and an L2 preview page returns at most 1 000 lines.
 - **No conversation or memory bodies in logs.** The local audit file records
   action/identity/URI/result, never bodies. The smoke harness is redacted by
   default (`SMOKE_VERBOSE=1` is the explicit local-only escape hatch).
-- **What the plugin persists:** `profiles.json` (0600) and `audit.jsonl` (0600,
-  rotated at 1 MiB, two rotations kept), both under
-  `${DSH_HOME:-~/.dsh}/state/dsh-openviking-enhance/`.
+- **What the plugin persists:** `profiles.json` (0600), `audit.jsonl` (0600,
+  rotated at 1 MiB, two rotations kept) and `onboarding.json` (0600, atomic), all
+  under `${DSH_HOME:-~/.dsh}/state/dsh-openviking-enhance/`. `onboarding.json`
+  holds only check ids/status timestamps and last-check counts — never an
+  endpoint, account, user, key, peer, memory URI or memory body.
 
 ### What the plugin sends (and what it costs)
 
@@ -444,6 +524,13 @@ work. The full-window actions and their cost:
 | Rule tester **Run** | the same `rules/search` cost (the button says so) |
 | Activity tab while visible | `tasks`/metrics polling; **no polling when the tab is hidden** |
 | Writes, forced commit | user-triggered only, one confirmed action at a time |
+| Native Overview (first paint) | one composed request: config health + capability probe + four metric reads + a cached Studio header probe; cached 5 s |
+| Browse expand | one `fs/ls` page: 50 entries, 160-char abstracts, tags; cached 15 s (LRU 100), cancelled on collapse/view change |
+| Browse "Show subtree" | one `fs/tree` call capped at 2 levels/100 nodes — explicit button only |
+| Sessions list | one `fs/ls` page of 50 session directories; detail = the existing bounded session log on selection only (no polling) |
+| Commits view | up to 8 sessions × 3–4 cheap reads, pool 4, 10 s deadline, cached 30 s, never polled |
+| Stats view | the same REST metrics reads as the Activity tab; explicit Refresh |
+| Onboarding "Run full check" | the existing Doctor probe, user-triggered only |
 
 Opening the Rules list does **not** spend a rule search: the capability gate is a
 validation-only `POST rules/search {}` (rejected by the server's body validation
@@ -461,6 +548,16 @@ with a "showing N of up to M" line).
 - Writes need DSH 0.2.2-rc.1+; older generations are read-only by design.
 - Repository compatibility is CI (Linux) + manual macOS; the Desktop carrier is
   installed and exercised manually, not in CI.
+- **Older-DSH deep links degrade to the Preview tab.** Main-panel switching needs
+  `ctx.layout.selectPanel` (verified on 0.2.2-rc.1); generations without it keep
+  every read surface but cannot be driven to the cockpit programmatically.
+- **No global commit history.** Archives live per session and task records are
+  pruned, so Commits is the bounded newest-8-session list; older records are one
+  click away in the session detail.
+- **No transcript reader.** A session's `messages.jsonl` is never read: sessions
+  show counts/markers/diffs and Studio remains the transcript reader.
+- **No navigation persistence and no browser Back.** The in-panel history is
+  in-memory by design; DSH exposes no URL routing for main-panel selection.
 - This plugin is **community-maintained, not an official OpenViking project**.
 
 ## Configuration
@@ -500,6 +597,8 @@ The same settings can still be written by hand in your profile's patch file
 | `enableWrites` | `false` | Opt-in: curation (edit/delete/tags), forced commits and the write commands |
 | `enableActivity` | `true` | Interface switch: the Activity tab (tasks, metrics, recent actions) |
 | `showScopeBanner` | `true` | Interface switch: the persistent scope chip; write dialogs repeat the scope regardless |
+| `showNativeViews` | `true` | Interface switch: the native read cockpit (Overview/Browse/Sessions/Commits/Stats). Off = the v0.6 Studio iframe page |
+| `showOnboarding` | `true` | Interface switch: the first-run checklist (Overview card + Plugins-page Setup card); off hides the cards without clearing local state |
 | `activeProfile` | `''` | Named credential/scope profile to use; empty = the legacy connection fields |
 
 ![The interface switches in the plugin's Configure form](assets/v04-after-settings.png)
