@@ -561,7 +561,9 @@ export class VikingCommand {
     if (plan.plan.extraChanges) {
       return {
         kind: 'error',
-        text: 'This undo would also revert files the action did not change. Review the plan in the undo dialog instead.',
+        text:
+          'This undo would also revert files the action did not change, or the target was rewritten after the action. ' +
+          'Review the plan and confirm it in the undo dialog instead.',
       }
     }
     const applied = await this.options.writes.undo({ undoId })

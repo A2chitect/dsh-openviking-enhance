@@ -223,7 +223,8 @@ scope chip shows endpoint, auth mode, account, user, peer and an identity
 fingerprint, and warns for remote endpoints; the write dialogs repeat the scope
 regardless of the chip. Writes are refused when the identity is ambiguous, undo
 is bound to the identity that performed the write, and switching identity while a
-confirmation is pending is guarded. In `dev`/`trusted` mode the plugin sends the
+confirmation is pending is guarded — the UI blocks the switch, and if a settings
+save races a pending token the host fails closed with `identity-changed`. In `dev`/`trusted` mode the plugin sends the
 identity headers; in `api_key` mode the key itself determines the identity and no
 headers are sent. ACL is shown only as an explicit "not enabled" state, with no
 admin enumeration.
@@ -241,10 +242,12 @@ write. `edit` only opens the preview editor (its dialog prepares and confirms),
 extra-changes plan still needs the confirmation dialog), and `audit` is a pure
 read. Dialog deletions require typing the file name; the command path uses the
 single-use token as its confirmation. Confirm tokens are single-use, valid for
-120 seconds, bound to the identity/action/target, capped at 8 pending and 3
-**writes** per minute (only successful executions count), with one write in
-flight; dismissing a dialog releases its pending token, and denied attempts are
-audited.
+120 seconds and bound to the identity/action/target; at most 8 may be pending,
+at most 3 **writes** per minute are allowed (enforced when the token executes,
+so preparing several does not burst past it), and preparations take a real
+snapshot, so they have their own quota of 10 per minute (cancelling does not
+refund it). One write runs at a time; dismissing a dialog releases its pending
+token, and denied attempts are audited.
 
 ## Requirements
 
@@ -455,7 +458,8 @@ half only after an app restart.
 - **The profile "test connection" control is not a general URL prober.** It
   sends no credentials and only reads `/health`; it refuses non-`http(s)`,
   link-local/metadata (`169.254.0.0/16`, cloud metadata names,
-  `fd00:ec2::254`), unspecified, broadcast and multicast targets. Loopback and
+  `fd00:ec2::254`, IPv6 link-local `fe80::/10` and IPv4-mapped IPv6 forms),
+  unspecified, broadcast and multicast targets. Loopback and
   LAN addresses stay allowed on purpose (a private OpenViking server is a
   supported deployment); if a remote profile's test is refused, save it and read
   the scope/health instead.

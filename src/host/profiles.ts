@@ -90,7 +90,13 @@ export function isProbeableEndpoint(endpoint: string): boolean {
   const bare = hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname
   // DNS names that are metadata services on common clouds.
   if (['metadata.google.internal', 'metadata.goog', 'instance-data', 'metadata'].includes(hostname)) return false
-  const mapped = bare.startsWith('::ffff:') ? bare.slice('::ffff:'.length) : bare
+  // IPv4-mapped IPv6 is rejected wholesale (review round 2, N3): WHATWG
+  // normalizes `[::ffff:169.254.169.254]` to `[::ffff:a9fe:a9fe]`, so a string
+  // compare on the dotted form misses it, and no OpenViking deployment needs a
+  // mapped address for a profile. The deprecated IPv4-compatible metadata form
+  // serializes to `::a9fe:a9fe`; reject that too.
+  if (bare.startsWith('::ffff:') || bare === '::a9fe:a9fe') return false
+  const mapped = bare
   if (mapped === '169.254.169.254' || mapped.startsWith('169.254.')) return false
   if (mapped === 'fd00:ec2::254') return false
   // Unspecified / broadcast / multicast IPv4.
@@ -102,6 +108,9 @@ export function isProbeableEndpoint(endpoint: string): boolean {
   }
   // IPv6 unspecified.
   if (bare === '::') return false
+  // IPv6 link-local fe80::/10: the first hextet is 0xfe80–0xfebf (review N3).
+  const firstHextet = Number.parseInt(bare.split(':')[0] ?? '', 16)
+  if (Number.isFinite(firstHextet) && (firstHextet & 0xffc0) === 0xfe80) return false
   return true
 }
 

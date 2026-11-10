@@ -1272,9 +1272,19 @@ export interface AuditPayload {
 export const WRITE_TOKEN_TTL_MS = 120_000
 /** At most this many un-settled confirmations may exist at once. */
 export const WRITE_MAX_PENDING = 8
-/** At most this many prepares per window, per profile. */
+/** At most this many successful executions per window, per profile. */
 export const WRITE_RATE_LIMIT = 3
 export const WRITE_RATE_WINDOW_MS = 60_000
+/**
+ * A separate, larger quota for *confirmation preparations*.
+ *
+ * Every prepare takes a real snapshot commit before the user can approve it, so
+ * an unmetered prepare→cancel loop can create server-side snapshot history
+ * indefinitely (review round 2). Preparations are counted even when the token is
+ * later cancelled; only the window, not a cancel, returns the quota.
+ */
+export const WRITE_PREPARE_RATE_LIMIT = 10
+export const WRITE_PREPARE_RATE_WINDOW_MS = 60_000
 /** Largest body the edit dialog may load/apply; the server accepts more but a
  * human review of a larger blob is not meaningful and the route stays cheap. */
 export const WRITE_CONTENT_MAX_CHARS = 64 * 1024

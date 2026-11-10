@@ -648,6 +648,8 @@ function writeRig(overrides = {}) {
     tokenTtlMs: overrides.tokenTtlMs ?? 120_000,
     maxPending: overrides.maxPending ?? 8,
     rateLimit: overrides.rateLimit ?? 3,
+    ...(overrides.prepareRateLimit === undefined ? {} : { prepareRateLimit: overrides.prepareRateLimit }),
+    ...(overrides.prepareRateWindowMs === undefined ? {} : { prepareRateWindowMs: overrides.prepareRateWindowMs }),
     ...(overrides.options ?? {}),
   })
   return { fake, audit, dir, clock, identity, flags, capabilities, sessions, service, commit }
@@ -861,35 +863,75 @@ test('the server refusing the write is surfaced, audited and leaves the undo han
   assert.match(audit.error, /rejected-by-server/)
 })
 
-test('the rate limit counts successful executions, and a failed write does not spend it', async () => {
+test('the write rate limit is enforced at execution time (review N1)', async () => {
   const rig = writeRig({ rateLimit: 1 })
-  // A conflict must not consume the budget (review S2: only executed writes count).
+  // A conflict must not consume the budget (only successful executions count).
   const conflictPrep = await rig.service.prepare({ action: 'edit-memory', target: MEMORY })
-  assert.equal(conflictPrep.ok, true)
   rig.fake.files.set(MEMORY, { content: 'concurrently changed', modTime: null })
   const conflict = await rig.service.execute({ token: conflictPrep.token, content: 'attempt' })
   assert.equal(conflict.ok, false)
   assert.equal(conflict.error.code, 'revision-mismatch')
 
-  const second = await rig.service.prepare({ action: 'edit-memory', target: MEMORY })
-  assert.equal(second.ok, true, 'the failed execution did not spend the rate budget')
-  const executed = await rig.service.execute({ token: second.token, content: 'written once' })
+  // Two prepared tokens: the first executes, the second is refused by the limit
+  // even though it was prepared before the limit was reached.
+  const first = await rig.service.prepare({ action: 'edit-memory', target: MEMORY })
+  const second = await rig.service.prepare({
+    action: 'edit-memory',
+    target: 'viking://user/default/memories/entities/project/sidebar.md',
+  })
+  assert.equal(first.ok, true)
+  assert.equal(second.ok, true)
+  const executed = await rig.service.execute({ token: first.token, content: 'written once' })
   assert.equal(executed.ok, true)
-
-  const limited = await rig.service.prepare({ action: 'edit-memory', target: MEMORY })
+  const limited = await rig.service.execute({ token: second.token, content: 'written twice' })
   assert.equal(limited.ok, false)
   assert.equal(limited.error.code, 'rate-limited')
+  assert.equal(limited.error.details.kind, 'execute')
   assert.equal(typeof limited.error.details.retryAfterMs, 'number')
-  assert.equal(rig.audit.recent(5).entries[0].kind, 'denied')
+  assert.equal(rig.service.pendingAction(second.token), 'edit-memory', 'a rate rejection keeps the token usable')
+  assert.equal(
+    rig.fake.files.get('viking://user/default/memories/entities/project/sidebar.md').content,
+    'Rows sort by order.',
+    'the refused execution wrote nothing',
+  )
 
-  // Preparations and cancellations are not executions: they never spend the budget.
-  const quiet = writeRig({ rateLimit: 1 })
-  for (let index = 0; index < 3; index += 1) {
-    const prepared = await quiet.service.prepare({ action: 'delete-memory', target: MEMORY })
-    assert.equal(prepared.ok, true, `prepare ${index + 1} is allowed`)
-    assert.equal(quiet.service.cancel(prepared.token).status, 'cancelled')
-  }
-  assert.equal(quiet.service.guardState === undefined, true, 'the unused guard-state probe was removed')
+  // Retrying after the window works without re-preparing.
+  rig.clock.now += 60_001
+  const retried = await rig.service.execute({ token: second.token, content: 'written twice' })
+  assert.equal(retried.ok, true)
+  assert.equal(
+    rig.fake.files.get('viking://user/default/memories/entities/project/sidebar.md').content,
+    'written twice',
+  )
+  // The limit is a policy denial, so it is audited.
+  assert.equal(
+    rig.audit.recent(20).entries.some((entry) => entry.kind === 'denied' && /rate-limited/.test(entry.error ?? '')),
+    true,
+  )
+})
+
+test('prepares have a separate snapshot-protecting quota (review N2)', async () => {
+  const rig = writeRig({ prepareRateLimit: 2, rateLimit: 10 })
+  const first = await rig.service.prepare({ action: 'delete-memory', target: MEMORY })
+  assert.equal(first.ok, true)
+  // Cancelling does not refund the quota: the snapshot was already taken.
+  assert.equal(rig.service.cancel(first.token).status, 'cancelled')
+  const second = await rig.service.prepare({ action: 'delete-memory', target: MEMORY })
+  assert.equal(second.ok, true)
+  assert.equal(rig.service.cancel(second.token).status, 'cancelled')
+  const third = await rig.service.prepare({ action: 'delete-memory', target: MEMORY })
+  assert.equal(third.ok, false)
+  assert.equal(third.error.code, 'rate-limited')
+  assert.equal(third.error.details.kind, 'prepare')
+  assert.equal(rig.fake.calls.filter((call) => call[0] === 'snapshotCommit').length, 2, 'only two snapshots were committed')
+  assert.equal(
+    rig.audit.recent(20).entries.some((entry) => entry.kind === 'denied' && /confirmations per minute/.test(entry.error ?? '')),
+    true,
+  )
+  // The quota window rolls over.
+  rig.clock.now += 60_001
+  const afterWindow = await rig.service.prepare({ action: 'delete-memory', target: MEMORY })
+  assert.equal(afterWindow.ok, true)
 })
 
 test('the pending cap and the single-write guard fail closed', async () => {
@@ -988,6 +1030,21 @@ test('a delete only counts as verified when the read says 404', async () => {
   const clean = await cleanRig.service.prepare({ action: 'delete-memory', target: MEMORY })
   const cleanDone = await cleanRig.service.execute({ token: clean.token, typed: 'tools.md' })
   assert.equal(cleanDone.verified, true, 'a 404 stat verifies the delete')
+})
+
+test('a clean edit undo applies without the extra confirmation (regression)', async () => {
+  const rig = writeRig()
+  const prepared = await rig.service.prepare({ action: 'edit-memory', target: MEMORY })
+  assert.equal(prepared.ok, true)
+  const done = await rig.service.execute({ token: prepared.token, content: 'curated body' })
+  assert.equal(done.ok, true)
+  const plan = await rig.service.plan({ undoId: done.undoId })
+  assert.equal(plan.ok, true)
+  assert.equal(plan.plan.extraChanges, false, 'an untouched target is a clean undo (writtenSha256 matches)')
+  const undone = await rig.service.undo({ undoId: done.undoId })
+  assert.equal(undone.ok, true)
+  assert.equal(undone.outcome, 'restored')
+  assert.equal(rig.fake.appliedRestores.length, 1)
 })
 
 test('undo requires the second confirmation when a same-named file was rewritten (review S1)', async () => {
@@ -1112,6 +1169,8 @@ test('the test-connection endpoint is not a general URL prober (review S9)', () 
     'http://localhost:1933',
     'https://memory.example.com',
     'http://192.168.1.5:1933',
+    'http://[::1]:1933',
+    'https://[2001:db8::1]',
   ]) {
     assert.equal(isProbeableEndpoint(allowed), true, `${allowed} may be probed`)
   }
@@ -1124,6 +1183,13 @@ test('the test-connection endpoint is not a general URL prober (review S9)', () 
     'http://224.0.0.1:1933',
     'http://[::]',
     'http://[fd00:ec2::254]',
+    // Review N3: WHATWG normalizes IPv4-mapped IPv6 to hex, and IPv6 link-local
+    // is fe80::/10.
+    'http://[::ffff:169.254.169.254]',
+    'http://[::ffff:a9fe:a9fe]',
+    'http://[fe80::1]',
+    'http://[febf::1]',
+    'http://[::a9fe:a9fe]',
   ]) {
     assert.equal(isProbeableEndpoint(refused), false, `${refused} must be refused`)
   }
@@ -1727,4 +1793,21 @@ test('every crossed token/verb pairing is refused before any write (review B1 ma
       assert.equal(correct.action, action)
     }
   }
+})
+
+test('/viking undo explains an extra-changes plan, including same-named staleness (review N4)', async () => {
+  const rig = writeRig()
+  const command = commandFor(rig)
+  const prepared = await command.run('forget viking://user/default/memories/preferences/tools.md', 's1')
+  const token = envelopeOf(prepared).prepare.token
+  const confirmed = await command.run(`forget --confirm ${token}`, 's1')
+  const undoId = /Undo handle: ([0-9a-f]{32})/.exec(confirmed.text)?.[1]
+  assert.ok(undoId)
+  // Recreate the same-named file after the delete: undo is stale and needs the dialog.
+  rig.fake.files.set(MEMORY, { content: 'recreated elsewhere', modTime: null })
+  const undone = await command.run(`undo ${undoId}`, 's1')
+  assert.equal(undone.kind, 'error')
+  assert.match(undone.text, /rewritten after the action/)
+  assert.match(undone.text, /undo dialog/)
+  assert.equal(rig.fake.appliedRestores.length, 0, 'the command path does not apply an extra-changes plan')
 })

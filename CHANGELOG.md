@@ -62,7 +62,8 @@ it, and audited locally.
   remote endpoints; identity headers are only sent in dev/trusted mode (in
   `api_key` mode the key determines the identity). Writes are refused when the
   identity is ambiguous, undo is bound to the writing identity, and switching is
-  guarded while a confirmation is pending.
+  guarded while a confirmation is pending (the UI blocks it; a racing settings
+  save fails closed with `identity-changed`).
 - **`/viking` write commands.** `forget`, `tag` and `commit` prepare an action
   and return either a rich `conversation.chat.commandview` card with
   Confirm/Cancel (typed delete, tag chips, commit warning) or, on clients without
@@ -89,7 +90,7 @@ it, and audited locally.
   undo, typed delete, tags undo, force commit, task cancel, profile
   save/delete/test, write cancel, 0600 audit, no body leakage, fail-closed
   paths, crossed-token refusal, undo staleness and concurrency), plus client
-  render/smoke coverage for the new surfaces; 254 unit tests in total.
+  render/smoke coverage for the new surfaces; 257 unit tests in total.
 
 ### Changed
 
@@ -105,7 +106,7 @@ it, and audited locally.
 
 ### Verified
 
-- `pnpm test`: typecheck, build, packaging contract, **254** unit tests, client
+- `pnpm test`: typecheck, build, packaging contract, **257** unit tests, client
   smoke and host smoke all green; the host smoke exercises the read-only live
   server paths plus every fail-closed write path.
 - Unit and end-to-end tests never touch a real memory store: the write paths run

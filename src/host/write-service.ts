@@ -11,8 +11,10 @@
  *    capability, an uncuratable target, a changed revision, a missing pre-write
  *    `commit_oid`: each refuses *before* the mutation with a stable error code;
  *  - **single use** — a 32-byte token with a 120 s TTL, bound to the identity
- *    fingerprint + action + target; at most 8 pending, at most 3 prepares per
- *    minute per profile;
+ *    fingerprint + action + target; at most 8 pending, at most 3 successful
+ *    writes per minute (enforced at execution, so prepared tokens cannot burst
+ *    past it), and a separate quota of 10 snapshot-creating preparations per
+ *    minute (prepares take a real snapshot commit even if later cancelled);
  *  - **one write in flight** per profile, no automatic retries anywhere;
  *  - **undo is a snapshot restore** — an undo handle records the pre-write
  *    commit and the directory scope; applying it first runs a `dry_run` plan
@@ -33,6 +35,8 @@ import { createHash, randomBytes } from 'node:crypto'
 import {
   WRITE_CONTENT_MAX_CHARS,
   WRITE_MAX_PENDING,
+  WRITE_PREPARE_RATE_LIMIT,
+  WRITE_PREPARE_RATE_WINDOW_MS,
   WRITE_RATE_LIMIT,
   WRITE_RATE_WINDOW_MS,
   WRITE_TOKEN_TTL_MS,
@@ -178,6 +182,9 @@ export interface WriteServiceOptions {
   maxPending?: number
   rateLimit?: number
   rateWindowMs?: number
+  /** Separate quota for snapshot-creating prepares (review round 2, N2). */
+  prepareRateLimit?: number
+  prepareRateWindowMs?: number
   now?: () => number
   randomToken?: () => string
 }
@@ -193,17 +200,26 @@ export class WriteService {
    */
   private settling = false
   /**
-   * Successful executions in the current rate window. Prepares are cheap reads
-   * (and are cancelled often); only writes that actually happened spend the
-   * per-minute budget (review S2).
+   * Successful executions in the current rate window. Only writes that actually
+   * happened spend this budget (review S2); the limit is enforced when a token
+   * is executed, not when it is prepared (review round 2, N1).
    */
   private readonly executionsAt: number[] = []
+  /**
+   * Snapshot-creating prepares in the current window. A prepare is **not** a
+   * cheap read: it commits a snapshot before the user can approve it, so a
+   * prepare→cancel loop would pollute the server's snapshot history. Cancels do
+   * not reclaim this quota; only the window does (review round 2, N2).
+   */
+  private readonly preparesAt: number[] = []
   private readonly now: () => number
   private readonly randomToken: () => string
   private readonly tokenTtlMs: number
   private readonly maxPending: number
   private readonly rateLimit: number
   private readonly rateWindowMs: number
+  private readonly prepareRateLimit: number
+  private readonly prepareRateWindowMs: number
 
   constructor(options: WriteServiceOptions) {
     this.options = options
@@ -213,6 +229,8 @@ export class WriteService {
     this.maxPending = options.maxPending ?? WRITE_MAX_PENDING
     this.rateLimit = options.rateLimit ?? WRITE_RATE_LIMIT
     this.rateWindowMs = options.rateWindowMs ?? WRITE_RATE_WINDOW_MS
+    this.prepareRateLimit = options.prepareRateLimit ?? WRITE_PREPARE_RATE_LIMIT
+    this.prepareRateWindowMs = options.prepareRateWindowMs ?? WRITE_PREPARE_RATE_WINDOW_MS
   }
 
   /**
@@ -283,10 +301,12 @@ export class WriteService {
     if (gate !== null) return { ok: false, error: gate }
     this.purge()
 
-    const rate = this.checkRateLimit()
-    if (rate !== null) {
-      this.auditDenied(request.action, request.target, request.sessionId ?? null, rate)
-      return { ok: false, error: rate }
+    // Preparing is not free: it takes the pre-write snapshot. A separate quota
+    // bounds the snapshot history a prepare→cancel loop can create (N2).
+    const prepareQuota = this.checkPrepareQuota()
+    if (prepareQuota !== null) {
+      this.auditDenied(request.action, request.target, request.sessionId ?? null, prepareQuota)
+      return { ok: false, error: prepareQuota }
     }
     const pending = [...this.tokens.values()].filter((token) => token.status === 'pending')
     if (pending.length >= this.maxPending) {
@@ -338,6 +358,7 @@ export class WriteService {
         confirmWord: null,
         facts,
       })
+      this.recordPrepare()
       return {
         ok: true,
         ...this.preparePayload({
@@ -421,6 +442,7 @@ export class WriteService {
         confirmWord: null,
         facts: null,
       })
+      this.recordPrepare()
       return {
         ok: true,
         ...this.preparePayload({
@@ -472,6 +494,7 @@ export class WriteService {
         confirmWord: target.fileName,
         facts: null,
       })
+      this.recordPrepare()
       return {
         ok: true,
         ...this.preparePayload({
@@ -533,6 +556,7 @@ export class WriteService {
       confirmWord: null,
       facts: null,
     })
+    this.recordPrepare()
     return {
       ok: true,
       ...this.preparePayload({
@@ -569,6 +593,13 @@ export class WriteService {
     // Cheap token checks first: a rejected/cancelled/expired token — and above all
     // a token prepared for a *different action* — must write nothing, so they run
     // before any capability probe or server read (review B1 ordering).
+    //
+    // These settlement refusals (unknown/used/cancelled/expired token,
+    // write-in-flight) are deliberately NOT audited: the token store already
+    // constrains them, a double-click or an expired dialog is not a security
+    // event, and logging every one would flood the local trail. Authorization
+    // and policy denials — identity, curatable target, snapshot capability,
+    // rate limits, crossed tokens — are audited.
     this.purge()
     const token = this.tokens.get(request.token)
     if (token === undefined) {
@@ -612,6 +643,15 @@ export class WriteService {
       const error = err('identity-changed', 'The active identity changed after this action was prepared.')
       this.auditDenied(token.action, token.target, token.sessionId, error)
       return { ok: false, error }
+    }
+    // The documented "three writes per minute" is enforced HERE, at execution
+    // time (review round 2, N1): preparing several tokens does not let them
+    // burst past it. A rate rejection keeps the token pending, so it remains
+    // usable once the window rolls over.
+    const rate = this.checkExecutionRate()
+    if (rate !== null) {
+      this.auditDenied(token.action, token.target, token.sessionId, rate)
+      return { ok: false, error: rate }
     }
     // Re-check after the awaits above: a concurrent execute/undo may have claimed
     // the write path while this one was probing.
@@ -699,6 +739,11 @@ export class WriteService {
    * `finally`, so a failure never strands the write path.
    */
   async undo(request: UndoRequest): Promise<OveResult<WriteUndoPayload>> {
+    // Settlement refusals below (unknown/expired handle, already undone,
+    // write-in-flight) are deliberately unaudited: like the execute-side token
+    // refusals, a double-click or a stale toast is not a security event and
+    // auditing each one would flood the local trail. Identity/authorization
+    // refusals are audited.
     if (this.settling) {
       return { ok: false, error: err('write-in-flight', 'A write or undo is already executing; wait for it to settle.') }
     }
@@ -1397,15 +1442,37 @@ export class WriteService {
     return { path, expected: planName === expectedName }
   }
 
-  private checkRateLimit(): OveError | null {
+  /** Record one successful snapshot-creating prepare (N2 quota). */
+  private recordPrepare(): void {
+    this.preparesAt.push(this.now())
+  }
+
+  private checkExecutionRate(): OveError | null {
     const cutoff = this.now() - this.rateWindowMs
     while (this.executionsAt.length > 0 && (this.executionsAt[0] as number) < cutoff) this.executionsAt.shift()
     if (this.executionsAt.length < this.rateLimit) return null
     const oldest = this.executionsAt[0] as number
-    return err('rate-limited', `At most ${this.rateLimit} write actions per minute; try again in ${Math.ceil((oldest + this.rateWindowMs - this.now()) / 1000)}s.`, {
+    return err('rate-limited', `At most ${this.rateLimit} writes per minute; try again in ${Math.ceil((oldest + this.rateWindowMs - this.now()) / 1000)}s.`, {
+      kind: 'execute',
       retryAfterMs: Math.max(0, oldest + this.rateWindowMs - this.now()),
       limit: this.rateLimit,
     })
+  }
+
+  private checkPrepareQuota(): OveError | null {
+    const cutoff = this.now() - this.prepareRateWindowMs
+    while (this.preparesAt.length > 0 && (this.preparesAt[0] as number) < cutoff) this.preparesAt.shift()
+    if (this.preparesAt.length < this.prepareRateLimit) return null
+    const oldest = this.preparesAt[0] as number
+    return err(
+      'rate-limited',
+      `At most ${this.prepareRateLimit} confirmations per minute (each one takes a snapshot); try again in ${Math.ceil((oldest + this.prepareRateWindowMs - this.now()) / 1000)}s.`,
+      {
+        kind: 'prepare',
+        retryAfterMs: Math.max(0, oldest + this.prepareRateWindowMs - this.now()),
+        limit: this.prepareRateLimit,
+      },
+    )
   }
 
   private purge(): void {
