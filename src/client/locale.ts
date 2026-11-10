@@ -1342,7 +1342,6 @@ const zh: Record<string, string> = {
   'notice.officialPluginMismatch': '官方记忆插件在 {host} 上捕获对话记忆，与面板当前作用域不同。',
   'notice.officialPluginUnknown': '无法读取官方插件的连接信息，无法给出一致性判断（不做猜测）。',
   'notice.overridesIgnored': '身份覆写未生效（{reason}）。',
-  'notice.profileNotFound': '配置档 {id} 不存在。',
   'notice.scopeStateProfileMissing': 'scope-state.json 指向的配置档 {id} 已不存在，已回退。',
   'notice.profileHeaderMissing': 'profiles.json 头部指向的配置档 {id} 已不存在，已回退。',
 }
@@ -2662,7 +2661,6 @@ const en: Record<string, string> = {
   'notice.officialPluginMismatch': 'The official memory plugin captures this conversation on {host}, which differs from the cockpit scope.',
   'notice.officialPluginUnknown': 'The official plugin connection cannot be read, so no consistency verdict is possible (no guessing).',
   'notice.overridesIgnored': 'Identity overrides are inactive ({reason}).',
-  'notice.profileNotFound': 'Profile {id} does not exist.',
   'notice.scopeStateProfileMissing': 'scope-state.json names the missing profile {id}; fell back.',
   'notice.profileHeaderMissing': 'The profiles.json header names the missing profile {id}; fell back.',
 }
