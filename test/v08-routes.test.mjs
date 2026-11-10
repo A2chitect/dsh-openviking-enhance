@@ -531,6 +531,23 @@ async function boot(configOverrides = {}) {
 const MEMORY = 'viking://user/default/memories'
 const OUT = 'viking://user/default/resources/out'
 
+/**
+ * Poll `predicate` until true, bounded by `timeoutMs` (CI-safe).
+ *
+ * Filesystem side-effects of a completed HTTP response (the one-time download's
+ * unlink) are event-driven and can land after the client has the last byte, so
+ * tests assert the settled state with a bounded wait rather than assuming the
+ * same tick.
+ */
+async function waitFor(predicate, timeoutMs = 2_000, intervalMs = 20) {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    if (predicate()) return true
+    if (Date.now() >= deadline) return false
+    await new Promise((resolve) => setTimeout(resolve, intervalMs))
+  }
+}
+
 /* ========================================================================
  * The tests
  * ===================================================================== */
@@ -882,10 +899,17 @@ test('pack export: bounded host temp file, one-time download token, metadata-onl
     assert.equal(download.headers.get('content-type'), 'application/zip')
     assert.match(download.headers.get('content-disposition') ?? '', /attachment; filename="out.ovpack"/)
     assert.equal(Buffer.from(await download.arrayBuffer()).equals(ZIP), true)
-    // Single use: the file is deleted and the token refused.
+    // Single use: the token is refused on replay (synchronous capability state).
     const replayed = await fetch(`${app.base}/api/openviking-enhance/ops/download?token=${executed.body.downloadId}`)
     assert.equal(replayed.status, 404)
-    assert.equal(readdirSync(downloadsDir).length, 0, 'the temp file is deleted after the one download')
+    // The unlink happens on the response's `finish` event, i.e. a tick after the
+    // client consumed the last byte: wait for the filesystem to settle instead of
+    // racing the event loop (this assertion was the CI flake).
+    assert.equal(
+      await waitFor(() => readdirSync(downloadsDir).length === 0, 3_000),
+      true,
+      'the temp file is deleted after the one download',
+    )
 
     const auditRaw = readFileSync(join(app.stateHome, 'state', 'dsh-openviking-enhance', 'audit.jsonl'), 'utf8')
     assert.equal(auditRaw.includes(executed.body.downloadId), false, 'the one-time token is never audited')

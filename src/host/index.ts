@@ -1833,14 +1833,22 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
             'cache-control': 'no-store',
           })
           const stream = createReadStream(download.filePath)
+          // Delete the one-time temp file exactly once, and only once the
+          // response is finished (all bytes handed to the OS) or the client
+          // aborted. Deleting on the read stream's own 'end'/'close' raced the
+          // response flush; `finish` is the deterministic point where the file
+          // is no longer needed and unlinking cannot truncate the download.
+          let cleaned = false
           const cleanup = (): void => {
+            if (cleaned) return
+            cleaned = true
             try {
               unlinkSync(download.filePath)
             } catch {
-              // Already gone (sweep) is fine.
+              // Already gone (sweep/route race) is fine.
             }
           }
-          stream.on('error', () => {
+          stream.once('error', () => {
             cleanup()
             try {
               res.destroy()
@@ -1848,10 +1856,12 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
               // The socket may already be gone.
             }
           })
-          stream.on('end', cleanup)
-          // A client abort fires `close`, not `end`: never leave the temp file.
-          stream.on('close', cleanup)
-          res.on('close', cleanup)
+          res.once('finish', cleanup)
+          res.once('close', () => {
+            // A completed response emits 'finish' first; this branch is the
+            // client-abort path (never leave the temp file behind).
+            if (!res.writableFinished) cleanup()
+          })
           stream.pipe(res)
         } catch (error) {
           packBroker.remove(token)
