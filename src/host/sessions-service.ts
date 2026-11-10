@@ -86,7 +86,8 @@ export class SessionsService {
         return payload
       })
       .finally(() => {
-        this.inflight.delete(key)
+        // Compare the promise: a `fresh=1` call may have replaced the entry.
+        if (this.inflight.get(key) === work) this.inflight.delete(key)
       })
     this.inflight.set(key, work)
     return work
@@ -110,8 +111,13 @@ export class SessionsService {
     const warnings: PluginNotice[] = []
     if (!answer.ok) {
       if (answer.status === 404 || answer.errorCode === 'NOT_FOUND') {
+        // A fresh server has no sessions directory yet; the client renders the
+        // warning so this never silently reads as "no sessions ever".
         warnings.push({ code: 'staleDirectory', params: { uri } })
         return { items: [], hasMore: false, nextOffset: null, warnings, observedAt: new Date(this.now()).toISOString() }
+      }
+      if (answer.status === 405 || answer.status === 501 || answer.errorCode === 'UNSUPPORTED') {
+        throw new BrowseFailure('unsupported', answer.error ?? `HTTP ${answer.status}`)
       }
       throw new BrowseFailure('unreadable', answer.error ?? `HTTP ${answer.status}`)
     }

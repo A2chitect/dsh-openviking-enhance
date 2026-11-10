@@ -17,7 +17,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { EnhanceConfig, StudioStatus } from '../shared/protocol.ts'
 import { fetchConfig, fetchStudioStatus } from './host-api.ts'
-import { noticeText, t } from './locale.ts'
+import { noticeText, t, writeErrorText } from './locale.ts'
 import { back, canSelectPanel, forward, navigate, useNative } from './native-store.ts'
 import { ScopeChip } from './scope-chip.tsx'
 import { StudioPanel } from './studio-panel.tsx'
@@ -36,11 +36,33 @@ function viewLabel(view: NativeViewId): string {
 }
 
 /**
+ * The visible Studio fallback note: the probe's honest verdict above the iframe.
+ *
+ * Extracted and exported so the server-render harness can pin the states the
+ * browser test cannot easily produce (an iframe that refuses to embed cannot
+ * report why). `frameable: 'yes'` renders nothing; every other verdict keeps
+ * "open in a new tab" one click away.
+ */
+export function StudioFallbackNote(props: { status: StudioStatus; onOpenInNewTab: () => void }) {
+  if (props.status.frameable === 'yes') return null
+  return (
+    <div className={`ove-nat-studio-note${props.status.frameable === 'no' ? ' ove-nat-studio-blocked' : ''}`} role="status">
+      <span>{t(`native.studio.note.${props.status.reason}`, { detail: props.status.detail ?? '' })}</span>
+      <button type="button" className="ove-preview-button" onClick={props.onOpenInNewTab}>
+        {t('native.studio.openInNewTab')}
+      </button>
+    </div>
+  )
+}
+
+/**
  * The Studio fallback view: the v0.6 iframe plus the host probe's honest verdict.
  *
  * The probe never replaces the explicit fallback: it only explains what the
  * browser cannot report about a cross-origin frame, and "open in a new tab" stays
- * one click away in the panel toolbar *and* here.
+ * one click away in the panel toolbar *and* here. A probe request that itself
+ * fails is surfaced as the same `probe-failed` note instead of leaving a blank
+ * frame with no explanation.
  */
 function StudioView(props: { refreshKey: number; config: EnhanceConfig | null }) {
   const [status, setStatus] = useState<StudioStatus | null>(null)
@@ -50,29 +72,36 @@ function StudioView(props: { refreshKey: number; config: EnhanceConfig | null })
     const controller = new AbortController()
     void fetchStudioStatus(props.refreshKey > 0, controller.signal).then((answer) => {
       if (cancelled) return
-      if (answer.ok) setStatus(answer.studio)
+      if (answer.ok) {
+        setStatus(answer.studio)
+        return
+      }
+      // The probe route itself failed (host route missing, transport error):
+      // say so rather than rendering an unexplained empty iframe.
+      setStatus({
+        url: props.config?.studioUrl ?? '',
+        frameable: 'unknown',
+        reason: 'probe-failed',
+        detail: writeErrorText(answer.error),
+        observedAt: new Date().toISOString(),
+      })
     })
     return () => {
       cancelled = true
       controller.abort()
     }
-  }, [props.refreshKey])
+  }, [props.refreshKey, props.config?.studioUrl])
 
   const openInTab = (): void => {
     const url = props.config?.studioUrl ?? status?.url
-    if (url !== undefined && typeof window !== 'undefined') window.open(url, '_blank', 'noopener,noreferrer')
+    if (url !== undefined && url.length > 0 && typeof window !== 'undefined') {
+      window.open(url, '_blank', 'noopener,noreferrer')
+    }
   }
 
   return (
     <div className="ove-nat-studio">
-      {status !== null && status.frameable !== 'yes' && (
-        <div className={`ove-nat-studio-note${status.frameable === 'no' ? ' ove-nat-studio-blocked' : ''}`} role="status">
-          <span>{t(`native.studio.note.${status.reason}`, { detail: status.detail ?? '' })}</span>
-          <button type="button" className="ove-preview-button" onClick={openInTab}>
-            {t('native.studio.openInNewTab')}
-          </button>
-        </div>
-      )}
+      {status !== null && <StudioFallbackNote status={status} onOpenInNewTab={openInTab} />}
       <StudioPanel />
     </div>
   )
@@ -95,8 +124,6 @@ export function NativeCockpit() {
   }, [refreshKey])
 
   const refresh = useCallback(() => setRefreshKey((value) => value + 1), [])
-
-  if (!native.switches.nativeViews) return <StudioPanel />
 
   const studioUrl = config?.studioUrl ?? null
   const canBack = native.index > 0

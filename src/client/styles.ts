@@ -1262,6 +1262,13 @@ button.ove-pill-errored:hover, button.ove-pill-errored[aria-expanded="true"] {
   border-radius: var(--dsw-radius-sm); color: var(--dsw-alias-label-secondary);
 }
 .ove-nat-part-error-label { font-weight: 500; color: var(--dsw-alias-label-tertiary); }
+.ove-nat-warnings-box {
+  flex: none; margin: 4px 8px; padding: 4px 8px; font-size: 11px;
+  border: .5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-sm);
+  color: var(--dsw-alias-label-tertiary);
+}
+.ove-nat-warnings-box summary { cursor: pointer; color: var(--dsw-alias-state-warn-primary, #d29922); }
+.ove-nat-warnings-box ul { margin: 4px 0 0; padding-left: 16px; display: flex; flex-direction: column; gap: 2px; }
 .ove-nat-partial {
   display: flex; gap: 8px; padding: 6px 10px; font-size: 12px;
   border: .5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-sm);

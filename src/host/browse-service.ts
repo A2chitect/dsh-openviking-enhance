@@ -46,7 +46,7 @@ import {
 } from '../shared/viking-tree.ts'
 import type { OpenVikingApi, OvFsListEntryWithMeta, OvFsTreeEntry } from './openviking-api.ts'
 
-export type BrowseFailureCode = 'not-allowed' | 'unreadable' | 'aborted'
+export type BrowseFailureCode = 'not-allowed' | 'unreadable' | 'unsupported' | 'aborted'
 
 /** A browse read that cannot produce a payload; the route maps it to JSON. */
 export class BrowseFailure extends Error {
@@ -114,13 +114,24 @@ function isNotFound(answer: { status: number; errorCode?: string | null }): bool
   return answer.status === 404 || answer.errorCode === 'NOT_FOUND'
 }
 
+/**
+ * Whether a failed answer means "this server build does not have the route".
+ *
+ * A 405/501 (or the generic `unsupported` code some builds use) is a server
+ * capability answer, not a stale path: rendering it as an empty tree would claim
+ * "nothing here" when the truth is "this build cannot list it".
+ */
+function isUnsupportedRoute(answer: { status: number; errorCode?: string | null }): boolean {
+  return answer.status === 405 || answer.status === 501 || answer.errorCode === 'UNSUPPORTED'
+}
+
 export class BrowseService {
   private readonly options: BrowseServiceOptions
   private readonly now: () => number
   /** `uri\0offset` → page; Map insertion order doubles as the LRU order. */
   private readonly cache = new Map<string, PageCacheEntry>()
   private readonly inflight = new Map<string, Promise<BrowsePayload>>()
-  private cachedRoots: { user: string; at: number; payload: BrowseRootsPayload } | null = null
+  private cachedRoots: { user: string; payload: BrowseRootsPayload } | null = null
 
   constructor(options: BrowseServiceOptions) {
     this.options = options
@@ -143,7 +154,7 @@ export class BrowseService {
       warnings: [],
       observedAt: new Date(this.now()).toISOString(),
     }
-    this.cachedRoots = { user, at: this.now(), payload }
+    this.cachedRoots = { user, payload }
     return payload
   }
 
@@ -152,14 +163,16 @@ export class BrowseService {
    *
    * @throws {BrowseFailure} `not-allowed` for a URI outside the allowlist,
    * `unreadable` for a transport/auth failure and `aborted` when the caller
-   * cancelled while the request was in flight.
+   * cancelled while the request was in flight. The personal tree is pinned to
+   * the active identity, so another user's `viking://user/<u>/…` path is refused
+   * rather than listed.
    */
   async list(
     rawUri: string,
     options: { offset?: number; limit?: number; fresh?: boolean; signal?: AbortSignal } = {},
   ): Promise<BrowsePayload> {
     const uri = normalizeVikingUri(rawUri)
-    if (!isAllowedBrowseUri(uri)) throw new BrowseFailure('not-allowed', 'not-allowed')
+    if (!isAllowedBrowseUri(uri, { user: this.options.user() })) throw new BrowseFailure('not-allowed', 'not-allowed')
     const limit = clampLimit(options.limit)
     const offset = clampOffset(options.offset)
     const key = `${uri}\u0000${offset}\u0000${limit}`
@@ -183,7 +196,9 @@ export class BrowseService {
         return payload
       })
       .finally(() => {
-        this.inflight.delete(key)
+        // Compare the promise, not just the key: a `fresh=1` call may have
+        // replaced the in-flight entry while this one was settling.
+        if (this.inflight.get(key) === work) this.inflight.delete(key)
       })
     this.inflight.set(key, work)
     return work
@@ -214,9 +229,10 @@ export class BrowseService {
       throw new BrowseFailure('unreadable', answer.error ?? `HTTP ${answer.status}`)
     }
     const page = answer.result
+    const user = this.options.user()
     const entries = (page?.entries ?? [])
       .map(normalizeBrowseEntry)
-      .filter((entry): entry is BrowseEntry => entry !== null)
+      .filter((entry): entry is BrowseEntry => entry !== null && isAllowedBrowseUri(entry.uri, { user }))
     return {
       uri,
       entries,
@@ -239,7 +255,7 @@ export class BrowseService {
     options: { levels?: number; nodes?: number; signal?: AbortSignal } = {},
   ): Promise<BrowseSubtreePayload> {
     const uri = normalizeVikingUri(rawUri)
-    if (!isAllowedBrowseUri(uri)) throw new BrowseFailure('not-allowed', 'not-allowed')
+    if (!isAllowedBrowseUri(uri, { user: this.options.user() })) throw new BrowseFailure('not-allowed', 'not-allowed')
     const levels = Math.min(Math.max(Math.trunc(options.levels ?? BROWSE_SUBTREE_MAX_LEVELS), 1), BROWSE_SUBTREE_MAX_LEVELS)
     const nodes = Math.min(Math.max(Math.trunc(options.nodes ?? BROWSE_SUBTREE_MAX_NODES), 1), BROWSE_SUBTREE_MAX_NODES)
     const answer = await this.options.api.fsTree(uri, {
@@ -252,8 +268,14 @@ export class BrowseService {
     const warnings: PluginNotice[] = []
     if (!answer.ok) {
       if (isNotFound(answer)) {
+        // A stale path: the directory moved since the tree page was listed.
         warnings.push({ code: 'staleDirectory', params: { uri } })
         return { uri, entries: [], truncated: false, levels, nodes, warnings, observedAt: new Date(this.now()).toISOString() }
+      }
+      if (isUnsupportedRoute(answer)) {
+        // The tree route is absent on this build: that is distinct from "the
+        // directory is empty", and the client must be able to say so.
+        throw new BrowseFailure('unsupported', answer.error ?? `HTTP ${answer.status}`)
       }
       throw new BrowseFailure('unreadable', answer.error ?? `HTTP ${answer.status}`)
     }

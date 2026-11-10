@@ -1305,7 +1305,16 @@ export interface MetricsPayload {
 
 /* ---- local audit trail (the plugin's JSONL file) ------------------------- */
 
-export type AuditKind = 'write' | 'commit' | 'undo' | 'switch' | 'denied' | 'profile' | 'cancel'
+export type AuditKind =
+  | 'write'
+  | 'commit'
+  | 'undo'
+  | 'switch'
+  | 'denied'
+  | 'profile'
+  | 'cancel'
+  /** v0.7: local onboarding-state actions (dismiss/reset/forget/…); never OpenViking. */
+  | 'onboarding'
 
 export interface AuditIdentity {
   profileId: string | null
@@ -1643,12 +1652,16 @@ export interface OverviewPartState {
   error: string | null
 }
 
-/** The mounted official memory plugin, as `/overview` reports it. */
+/**
+ * The mounted official memory plugin, as `/overview` reports it.
+ *
+ * Deliberately identity-free: the peer is a per-session runtime fact (the
+ * cockpit is root-scoped and has no session), so reporting "a peer" here would
+ * read as the identity's peer. The session-scoped tabs/Doctor own that display.
+ */
 export interface OverviewPluginFact {
   mounted: boolean
   version: string | null
-  peer: string | null
-  peerSource: string | null
 }
 
 /**
@@ -1689,7 +1702,7 @@ export interface NativeTarget {
 }
 
 /** The actions the local onboarding-state route accepts. */
-export const ONBOARDING_ACTIONS = ['dismiss', 'reset', 'complete-step', 'full-check'] as const
+export const ONBOARDING_ACTIONS = ['dismiss', 'reset', 'forget', 'complete-step', 'full-check'] as const
 export type OnboardingAction = (typeof ONBOARDING_ACTIONS)[number]
 
 /** The stable step ids the checklist renders (also the only ids `complete-step` accepts). */

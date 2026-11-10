@@ -368,6 +368,10 @@ async function checkV07(base) {
 
   const refused = await rawStatus(base, `${prefix}/browse?uri=${encodeURIComponent('viking://queue/job-1')}`)
   check(refused === 400, `the browse allowlist refuses an internal scope at the route (${refused}, expected 400)`)
+  // The personal tree is pinned to the active identity's user; account-level
+  // trees stay readable. A crafted cross-user URI must be refused at the route.
+  const crossUser = await rawStatus(base, `${prefix}/browse?uri=${encodeURIComponent('viking://user/not-the-active-user/memories')}`)
+  check(crossUser === 400, `browse refuses another user's personal tree (${crossUser}, expected 400)`)
 
   const sessions = await get(`${base}${prefix}/sessions?limit=2`)
   check(

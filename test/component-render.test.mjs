@@ -936,3 +936,80 @@ test('the Plugins-page Setup card renders for this plugin only, and the shared p
   const pending = renderToStaticMarkup(createElement(exports.PreviewBody, { uri: 'viking://user/default/memories/x.md', readOnly: true }))
   assert.ok(pending.includes('ove-preview-body'), 'the preview body renders its shell for a URI')
 })
+
+/* ========================================================================
+ * PR #5 review round 1: degraded reads are visible, Studio fallback is honest
+ * ===================================================================== */
+
+test('host warnings render as a collapsed, translated row instead of an empty state (S1)', () => {
+  const { exports } = loadBundle('en')
+  const stale = renderToStaticMarkup(
+    createElement(exports.NativeWarnings, {
+      warnings: [{ code: 'staleDirectory', params: { uri: 'viking://user/default/memories/gone' } }],
+    }),
+  )
+  assert.ok(stale.includes('1 host warning'), 'the row names how many warnings there are')
+  assert.ok(stale.includes('no longer on the server'), 'the stale-directory copy is translated, not a raw key')
+  assert.ok(stale.includes('viking://user/default/memories/gone'), 'the warning keeps the URI it applies to')
+  assert.equal(
+    renderToStaticMarkup(createElement(exports.NativeWarnings, { warnings: [] })),
+    '',
+    'no warnings renders nothing at all',
+  )
+
+  const zh = loadBundle('zh')
+  const zhStale = renderToStaticMarkup(
+    createElement(zh.exports.NativeWarnings, {
+      warnings: [{ code: 'staleDirectory', params: { uri: 'viking://user/default/memories/gone' } }],
+    }),
+  )
+  assert.ok(zhStale.includes('宿主警告'), 'the warning row speaks Chinese when the app does')
+  assert.ok(zhStale.includes('已不在服务端'), 'and the stale-directory reason is translated')
+})
+
+test('the Studio fallback note renders denied and probe-failed states with the new-tab action (S4)', () => {
+  const { exports } = loadBundle('en')
+  const denied = renderToStaticMarkup(
+    createElement(exports.StudioFallbackNote, {
+      status: {
+        url: 'http://127.0.0.1:1933/studio/',
+        frameable: 'no',
+        reason: 'x-frame-options',
+        detail: 'SAMEORIGIN',
+        observedAt: '2026-11-10T00:00:00.000Z',
+      },
+      onOpenInNewTab: () => {},
+    }),
+  )
+  assert.ok(denied.includes('ove-nat-studio-blocked'), 'a denied frame is marked blocked')
+  assert.ok(denied.includes('X-Frame-Options'), 'the note names the blocking header')
+  assert.ok(denied.includes('SAMEORIGIN'), 'and the header value')
+  assert.ok(denied.includes('Open Studio in a new tab'), 'with the explicit fallback action')
+
+  const failed = renderToStaticMarkup(
+    createElement(exports.StudioFallbackNote, {
+      status: {
+        url: 'http://127.0.0.1:1933/studio/',
+        frameable: 'unknown',
+        reason: 'probe-failed',
+        detail: 'connection refused',
+        observedAt: '2026-11-10T00:00:00.000Z',
+      },
+      onOpenInNewTab: () => {},
+    }),
+  )
+  assert.ok(failed.includes('probe failed'), 'a failed probe is explained')
+  assert.ok(failed.includes('connection refused'), 'with the probe error detail')
+  assert.ok(failed.includes('Open Studio in a new tab'), 'and keeps the fallback one click away')
+
+  assert.equal(
+    renderToStaticMarkup(
+      createElement(exports.StudioFallbackNote, {
+        status: { url: 'http://127.0.0.1:1933/studio/', frameable: 'yes', reason: 'ok', detail: null, observedAt: 'x' },
+        onOpenInNewTab: () => {},
+      }),
+    ),
+    '',
+    'a frameable yes state renders no note',
+  )
+})

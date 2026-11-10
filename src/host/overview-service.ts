@@ -9,8 +9,9 @@
  *
  * The host caches the composed answer for 5 s (`OVERVIEW_CACHE_TTL_MS`); the
  * Refresh button passes `fresh=1`. The onboarding state's `lastOpenedAt` is
- * touched through `OnboardingStore.touchOpened()`, which is throttled and best
- * effort — a read-only home directory never breaks the default view.
+ * touched through `OnboardingStore.touchOpened(enabled)`, which is throttled and
+ * best effort — and skipped entirely while the `showOnboarding` switch is off,
+ * so turning the checklist off also stops its local writes.
  */
 import { OVERVIEW_CACHE_TTL_MS } from '../shared/limits.ts'
 import type {
@@ -38,6 +39,8 @@ export interface OverviewServiceOptions {
   /** The Studio frameability probe. */
   studio: (fresh: boolean) => Promise<StudioStatus>
   onboarding: OnboardingStore
+  /** The live `showOnboarding` switch; false = no onboarding write from this read. */
+  onboardingEnabled: () => boolean
   now?: () => number
 }
 
@@ -95,7 +98,7 @@ export class OverviewService {
     const { options } = this
     // The plugin fact is in-process and cannot fail; it still has a part flag so
     // the shape is uniform.
-    let plugin: OverviewPluginFact = { mounted: false, version: null, peer: null, peerSource: null }
+    let plugin: OverviewPluginFact = { mounted: false, version: null }
     let pluginPart: OverviewPartState = { available: true, error: null }
     try {
       plugin = options.plugin()
@@ -110,7 +113,7 @@ export class OverviewService {
       settle(() => options.studio(fresh)),
     ])
 
-    const state = options.onboarding.touchOpened()
+    const state = options.onboarding.touchOpened(options.onboardingEnabled())
     const checks = computeOnboardingChecks({
       config: config.value,
       scope: scope.value,

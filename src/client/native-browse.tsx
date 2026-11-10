@@ -5,7 +5,8 @@
  *  - the host resolves the roots from the identity; the client never hardcodes
  *    `viking://user/<user>/…`;
  *  - expanding a directory is ONE host request for its first 50 rows; "Load more"
- *    pages with the server cursor; nothing is auto-expanded recursively;
+ *    pages with the server cursor; nothing is auto-expanded recursively; every
+ *    in-flight read is aborted on refresh, view change and unmount;
  *  - "Show subtree" is the single bounded `fs/tree` action (≤2 levels, ≤100
  *    nodes) and is labelled with its cost;
  *  - the preview pane is the shared `PreviewBody` in read-only mode: no write
@@ -20,6 +21,7 @@ import type {
   BrowseEntry,
   BrowseRoot,
   BrowseSubtreePayload,
+  PluginNotice,
 } from '../shared/protocol.ts'
 import { fetchBrowsePage, fetchBrowseRoots, fetchBrowseSubtree } from './host-api.ts'
 import { t, writeErrorText } from './locale.ts'
@@ -27,6 +29,7 @@ import { navigate, useNative } from './native-store.ts'
 import { formatBytes, PreviewBody } from './preview-body.tsx'
 import { openPreview } from './preview-store.ts'
 import { openRightTab } from './tab-store.ts'
+import { NativeWarnings } from './native-warnings.tsx'
 
 interface NodeState {
   loaded: boolean
@@ -62,6 +65,19 @@ export interface NativeBrowseProps {
 /** Width under which the tree and preview stack into one column. */
 const WIDE_BREAKPOINT = 720
 
+/** Append host warnings without duplicating an identical code+params pair. */
+function mergeWarnings(current: readonly PluginNotice[], next: readonly PluginNotice[]): PluginNotice[] {
+  const seen = new Set(current.map((warning) => `${warning.code}:${JSON.stringify(warning.params ?? {})}`))
+  const merged = [...current]
+  for (const warning of next) {
+    const key = `${warning.code}:${JSON.stringify(warning.params ?? {})}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    merged.push(warning)
+  }
+  return merged
+}
+
 function ScopeBadge({ root }: { root: BrowseRoot }) {
   if (root.scope === 'user') return null
   return <span className="ove-browse-scope">{t(`browse.scope.${root.scope}`)}</span>
@@ -76,6 +92,8 @@ function ReadOnlyBadge({ root }: { root: BrowseRoot }) {
 function DirectoryTools(props: {
   uri: string
   entryCount: number | null
+  /** The loaded page says more entries exist: the count is a lower bound. */
+  more: boolean
   subtree: SubtreeState | null
   onSubtree: () => void
 }) {
@@ -84,7 +102,9 @@ function DirectoryTools(props: {
     <div className="ove-browse-dir-tools">
       <div className="ove-browse-dir-line">
         {props.entryCount !== null && (
-          <span className="ove-nat-muted">{t('browse.entryCount', { count: props.entryCount })}</span>
+          <span className="ove-nat-muted">
+            {props.more ? t('browse.entryCountMore', { count: props.entryCount }) : t('browse.entryCount', { count: props.entryCount })}
+          </span>
         )}
         <button type="button" className="ove-preview-button" disabled={subtree?.loading === true} onClick={props.onSubtree}>
           {subtree?.loading === true ? t('native.loading') : t('browse.showSubtree')}
@@ -125,23 +145,48 @@ export function NativeBrowse(props: NativeBrowseProps) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [selected, setSelected] = useState<string | null>(null)
   const [subtree, setSubtree] = useState<SubtreeState | null>(null)
+  const [warnings, setWarnings] = useState<PluginNotice[]>([])
   const [wide, setWide] = useState(true)
   const rootRef = useRef<HTMLDivElement>(null)
   const deepLinkHandled = useRef<string>('')
+  /**
+   * One request cycle per mount/refresh. Collapsing a node, switching views,
+   * refreshing or unmounting aborts every read started in the current cycle, so
+   * the host's upstream `fs/ls` read stops too (the route cancels on response
+   * close). The signal travels into every `fetchBrowse*` call below.
+   */
+  const abortRef = useRef<AbortController | null>(null)
 
-  const loadRoots = useCallback(async (fresh: boolean): Promise<BrowseRoot[]> => {
-    setRootsLoading(true)
-    const answer = await fetchBrowseRoots(fresh)
-    if (!answer.ok) {
-      setRootsError(writeErrorText(answer.error))
-      setRootsLoading(false)
-      return []
+  useEffect(() => {
+    const controller = new AbortController()
+    abortRef.current = controller
+    return () => {
+      controller.abort()
+      if (abortRef.current === controller) abortRef.current = null
     }
-    setRoots(answer.roots)
-    setRootsError(null)
-    setRootsLoading(false)
-    return answer.roots
-  }, [])
+  }, [props.refreshKey])
+
+  const requestSignal = useCallback((): AbortSignal | undefined => abortRef.current?.signal, [])
+  const isAborted = useCallback((): boolean => abortRef.current?.signal.aborted === true, [])
+
+  const loadRoots = useCallback(
+    async (fresh: boolean): Promise<BrowseRoot[]> => {
+      setRootsLoading(true)
+      const answer = await fetchBrowseRoots(fresh, requestSignal())
+      if (isAborted()) return []
+      if (!answer.ok) {
+        setRootsError(writeErrorText(answer.error))
+        setRootsLoading(false)
+        return []
+      }
+      setRoots(answer.roots)
+      setRootsError(null)
+      setWarnings((current) => mergeWarnings(current, answer.warnings))
+      setRootsLoading(false)
+      return answer.roots
+    },
+    [isAborted, requestSignal],
+  )
 
   const loadNode = useCallback(
     async (uri: string, options: { offset?: number; append?: boolean; fresh?: boolean } = {}): Promise<void> => {
@@ -152,7 +197,9 @@ export function NativeBrowse(props: NativeBrowseProps) {
       const answer = await fetchBrowsePage(uri, {
         ...(options.offset === undefined ? {} : { offset: options.offset }),
         fresh: options.fresh === true,
+        signal: requestSignal(),
       })
+      if (isAborted()) return
       if (!answer.ok) {
         setNodes((current) => ({
           ...current,
@@ -161,6 +208,7 @@ export function NativeBrowse(props: NativeBrowseProps) {
         return
       }
       const page = answer.page
+      setWarnings((current) => mergeWarnings(current, page.warnings))
       setNodes((current) => {
         const previous = current[uri] ?? EMPTY_NODE
         return {
@@ -177,7 +225,7 @@ export function NativeBrowse(props: NativeBrowseProps) {
         }
       })
     },
-    [],
+    [isAborted, requestSignal],
   )
 
   // Roots on first entry and on an explicit Refresh.
@@ -190,6 +238,7 @@ export function NativeBrowse(props: NativeBrowseProps) {
         setNodes({})
         setExpanded({})
         setSubtree(null)
+        setWarnings([])
         if (list.length > 0) setSelected((current) => (current !== null && list.some((root) => current.startsWith(root.uri)) ? current : null))
       }
     })()
@@ -210,14 +259,6 @@ export function NativeBrowse(props: NativeBrowseProps) {
     observer.observe(element)
     return () => observer.disconnect()
   }, [])
-
-  const openNode = useCallback(
-    (uri: string, known: Record<string, NodeState>): void => {
-      setExpanded((current) => ({ ...current, [uri]: true }))
-      if (known[uri]?.loaded !== true && known[uri]?.loading !== true) void loadNode(uri)
-    },
-    [loadNode],
-  )
 
   const toggleNode = useCallback(
     (uri: string): void => {
@@ -280,15 +321,20 @@ export function NativeBrowse(props: NativeBrowseProps) {
     }
   }, [native.view, native.target, roots, loadRoots, loadNode])
 
-  const loadSubtree = useCallback(async (uri: string): Promise<void> => {
-    setSubtree({ uri, loading: true, error: null, payload: null })
-    const answer = await fetchBrowseSubtree(uri)
-    if (!answer.ok) {
-      setSubtree({ uri, loading: false, error: writeErrorText(answer.error), payload: null })
-      return
-    }
-    setSubtree({ uri, loading: false, error: null, payload: answer.subtree })
-  }, [])
+  const loadSubtree = useCallback(
+    async (uri: string): Promise<void> => {
+      setSubtree({ uri, loading: true, error: null, payload: null })
+      const answer = await fetchBrowseSubtree(uri, { signal: requestSignal() })
+      if (isAborted()) return
+      if (!answer.ok) {
+        setSubtree({ uri, loading: false, error: writeErrorText(answer.error), payload: null })
+        return
+      }
+      setWarnings((current) => mergeWarnings(current, answer.subtree.warnings))
+      setSubtree({ uri, loading: false, error: null, payload: answer.subtree })
+    },
+    [isAborted, requestSignal],
+  )
 
   const renderEntry = (entry: BrowseEntry, depth: number) => {
     const node = nodes[entry.uri]
@@ -460,7 +506,9 @@ export function NativeBrowse(props: NativeBrowseProps) {
   }
 
   const selectedEntry = selected === null ? null : findEntry(nodes, selected)
-  const childCount = selected === null ? null : (nodes[selected]?.entries.length ?? null)
+  const selectedNode = selected === null ? undefined : nodes[selected]
+  const childCount = selected === null ? null : (selectedNode?.entries.length ?? null)
+  const childHasMore = selectedNode?.hasMore === true
   const showDirectoryTools = selected !== null && selectedEntry?.isDir === true
 
   return (
@@ -473,6 +521,7 @@ export function NativeBrowse(props: NativeBrowseProps) {
             {t('native.refresh')}
           </button>
         </div>
+        <NativeWarnings warnings={warnings} />
         {rootsLoading && roots.length === 0 ? (
           <p className="ove-preview-status">{t('native.loading')}</p>
         ) : rootsError !== null ? (
@@ -500,6 +549,7 @@ export function NativeBrowse(props: NativeBrowseProps) {
               <DirectoryTools
                 uri={selected}
                 entryCount={childCount}
+                more={childHasMore}
                 subtree={subtree}
                 onSubtree={() => void loadSubtree(selected)}
               />

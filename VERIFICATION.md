@@ -76,9 +76,9 @@ CI covers 1–6, 8–10 on Linux; the rest is maintainer evidence recorded here:
 | 11 | Desktop carrier from the Plugins page | manual, Desktop app (not CI) |
 | 12 | `pnpm test` full gate | CI `test` job |
 
-| 0.7.0 (Unreleased branch) | — | TBD (native cockpit is browser-only) | TBD | TBD | TBD read-only | `pnpm pack` tarball → clean DSH profile (visual evidence teammate) | pending its PR | scenario checklist below; screenshots to be attached to PR #5 |
+| 0.7.0 (PR #5, pending) | — | TBD (native cockpit is browser-only) | TBD | TBD | TBD read-only | `pnpm pack` tarball → clean DSH profile (verification teammate) | pending PR #5 | scenario checklist below; browser captures under `assets/v07-*` (before/after) attached to PR #5, final row filled at merge |
 
-### v0.7 native-cockpit scenario checklist (evidence owner: verification teammate)
+### v0.7 native-cockpit scenario checklist (evidence owner: verification teammate; captures under `assets/v07-before-*` / `assets/v07-after-*`)
 
 The native cockpit is browser-only, so the install-verify script can only prove
 the bundle/route halves. The browser evidence must record, from a **clean DSH

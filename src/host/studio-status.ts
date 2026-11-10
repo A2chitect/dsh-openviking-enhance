@@ -10,9 +10,13 @@
  * new tab" one click away.
  *
  * Privacy rules: the probe sends **no credentials and no cookies** (a plain,
- * anonymous GET), follows no redirect into a secret and reports only header
- * facts, never the page body. The request is bounded by its own timeout, and the
- * constructed URL is the same `endpoint + studioPath` the iframe would load.
+ * anonymous GET), does **not follow redirects** (`redirect: 'manual'`; a 3xx is
+ * classified as an HTTP error because the headers that matter belong to the
+ * redirect target, which this probe deliberately never fetches) and reports only
+ * header facts, never the page body. The request is bounded by its own timeout,
+ * and the constructed URL is the same `endpoint + studioPath` the iframe would
+ * load. Endpoints that are not probeable at all (metadata/link-local/multicast,
+ * refused by `isProbeableEndpoint`) are classified without any fetch at all.
  *
  * The GUI's own origin is deliberately NOT known here: the host has no business
  * knowing which port the browser reached it on, so an explicit CSP origin list
@@ -20,6 +24,7 @@
  */
 import { STUDIO_STATUS_TIMEOUT_MS, STUDIO_STATUS_TTL_MS } from '../shared/limits.ts'
 import type { StudioFrameable, StudioStatus, StudioStatusReason } from '../shared/protocol.ts'
+import { isProbeableEndpoint } from './profiles.ts'
 
 export interface StudioStatusOptions {
   /** The ready-to-embed Studio URL (`endpoint + studioPath`), resolved live. */
@@ -119,7 +124,9 @@ export class StudioStatusService {
     }
     if (!fresh && this.inflight !== null && this.inflight.url === url) return this.inflight.promise
     const promise = this.probe(url).finally(() => {
-      if (this.inflight?.url === url) this.inflight = null
+      // Compare the promise, not just the URL: a `fresh=1` call may have
+      // replaced the in-flight entry.
+      if (this.inflight?.promise === promise) this.inflight = null
     })
     this.inflight = { url, promise }
     const status = await promise
@@ -129,6 +136,17 @@ export class StudioStatusService {
 
   /** One anonymous, bounded GET; every failure becomes `probe-failed`. */
   private async probe(url: string): Promise<StudioStatus> {
+    // Refuse to fetch metadata/link-local/multicast endpoints: this probe is not
+    // a general-purpose URL fetcher and its privacy comment above promises that.
+    if (!isProbeableEndpoint(url)) {
+      return {
+        url,
+        frameable: 'unknown',
+        reason: 'probe-failed',
+        detail: 'endpoint-not-probeable',
+        observedAt: new Date(this.now()).toISOString(),
+      }
+    }
     const fetchImpl = this.options.fetch ?? fetch
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), STUDIO_STATUS_TIMEOUT_MS)
@@ -136,7 +154,9 @@ export class StudioStatusService {
     try {
       const response = await fetchImpl(url, {
         method: 'GET',
-        redirect: 'follow',
+        // Never fetch the redirect target: a login page or internal hop is not
+        // this probe's data, and its headers are not the Studio page's headers.
+        redirect: 'manual',
         // No credentials, no cookies: this is a header probe, not a login.
         credentials: 'omit',
         headers: { accept: 'text/html' },

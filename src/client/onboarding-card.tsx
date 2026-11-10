@@ -312,6 +312,27 @@ function OnboardingSetupSummary() {
     }
   }
 
+  /**
+   * Delete the local onboarding file completely (not a rewrite of the fresh
+   * state). The route records the action in the plugin's own audit trail; the
+   * card then re-reads the now-missing file as a first run.
+   */
+  const forget = async (): Promise<void> => {
+    setBusy(true)
+    setNote(null)
+    try {
+      const answer = await postOnboardingState({ action: 'forget' })
+      if (!answer.ok) {
+        setNote(writeErrorText(answer.error))
+        return
+      }
+      await load(true)
+      setNote(answer.writeError === null ? t('native.onboarding.forgetDone') : t('native.onboarding.writeFailed', { error: answer.writeError }))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const counts = onboarding === null ? null : onboardingCounts(onboarding.checks)
   return (
     <section className="ove-plugin-health ove-onb-setup" data-dsh-plugin="openviking-enhance-setup">
@@ -373,7 +394,11 @@ function OnboardingSetupSummary() {
             <button type="button" className="ove-health-button" disabled={busy} onClick={() => void reset()}>
               {t('native.onboarding.resetSetup')}
             </button>
+            <button type="button" className="ove-health-button" disabled={busy} onClick={() => void forget()}>
+              {t('native.onboarding.forgetSetup')}
+            </button>
           </div>
+          <p className="ove-health-hint">{t('native.onboarding.forgetHint')}</p>
           {note !== null && <p className="ove-health-hint">{note}</p>}
           <p className="ove-health-hint">{t('native.onboarding.privacy')}</p>
         </>

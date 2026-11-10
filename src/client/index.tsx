@@ -73,6 +73,8 @@ export { NativeCommits } from './native-commits.tsx'
 export { NativeStats } from './native-stats.tsx'
 export { PreviewBody } from './preview-body.tsx'
 export { OnboardingCard, OnboardingSetupSection } from './onboarding-card.tsx'
+export { NativeWarnings } from './native-warnings.tsx'
+export { StudioFallbackNote } from './native-panel.tsx'
 export { MetricsCards, MetricCard } from './metrics-view.tsx'
 export {
   getNativeState,

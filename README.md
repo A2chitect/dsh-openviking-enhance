@@ -4,9 +4,9 @@ English | [中文](README.zh.md)
 
 **v0.3.0** · [Changelog](CHANGELOG.md) · [Roadmap](ROADMAP.md)
 
-> The v0.4 Act, v0.5 Collaborate and v0.6 Trust-and-verify changes below are
-> under `Unreleased`; the version line and package stay at 0.3.0 until the
-> release script promotes them.
+> The v0.4 Act, v0.5 Collaborate, v0.6 Trust-and-verify and v0.7 Native changes
+> below are under `Unreleased`; the version line and package stay at 0.3.0 until
+> the release script promotes them.
 
 Brings your local [OpenViking](https://docs.openviking.ai) memory server into the
 DeepSeek Harness (DSH) Web GUI: a Studio panel in the left sidebar, a commit
@@ -56,7 +56,9 @@ One sidebar row, one main panel, six internal views — no second shell seat:
 - **First-run checklist.** A read-only setup card appears in Overview and as a
   second section on the plugin's Plugins page: endpoint/health/identity/memory
   plugin/capabilities/suggested first step. "Run full check" reuses the Doctor;
-  dismissal/completion is stored per DSH home in a 0600 local file (see privacy).
+  dismissal/completion is stored per DSH home in a 0600 local file (see privacy),
+  writes are skipped while `showOnboarding` is off, and "Forget local setup state"
+  deletes the file (the action is audited).
 - **The right-sidebar tabs are unchanged.** Recall, Memory health, Preview,
   Explore and Activity stay the session-contextual surfaces; the cockpit is the
   global reading surface and links to them (Rules/Experience live in Explore).
@@ -354,11 +356,11 @@ The client half is a prebuilt bundle: installing from a source checkout without
   calls. They answer loopback + same-origin requests only, carry a JSON body of at
   most 64 KiB, and never write OpenViking.
 - **Mutations only through the authenticated `ctx.connection.fetch` transport**
-  (DSH 0.2.2-rc.1+); there is deliberately no loopback POST write path. Session
-  authentication is enforced by that DSH transport, not by this plugin, and the
-  plugin's own HTTP server exposes no write route: a direct unauthenticated POST
-  to any plugin route is a read-only query or a 404 (the smoke harness asserts
-  404 on every `/write/*` path).
+  (DSH 0.2.2-rc.1+); there is deliberately **no loopback POST path that reaches
+  OpenViking**. Session authentication is enforced by that DSH transport, not by
+  this plugin, and a direct unauthenticated POST to any plugin route is a
+  read-only query, a 404, or the local onboarding-state write below — never an
+  OpenViking mutation (the smoke harness asserts 404 on every `/write/*` path).
 - **Reads from the official plugin**: per-session runtime config/state, the
   pending-queue directory (file names/ages only, never payloads), capability
   memos, and server-produced commit/archive artifacts. It never writes them.
@@ -366,7 +368,10 @@ The client half is a prebuilt bundle: installing from a source checkout without
   `onboarding.json` under `${DSH_HOME:-~/.dsh}/state/dsh-openviking-enhance/`,
   plus user-triggered curation requests sent to OpenViking. The onboarding state
   POST rides the same loopback/same-origin JSON guard as the read routes, not the
-  authenticated mutation transport, because it is not an OpenViking mutation.
+  authenticated mutation transport, because it is not an OpenViking mutation: it
+  writes **only** the plugin's own 0600 `onboarding.json`, is clamped to the
+  documented action vocabulary (`dismiss`/`reset`/`forget`/`complete-step`/
+  `full-check`), and every action is recorded in the local audit trail.
 - **Startup is non-blocking and contained**: an activation failure is logged and
   the entry provides nothing; it cannot take the profile down. OpenViking being
   down degrades route answers, never the host.
@@ -385,7 +390,7 @@ onboarding-state POST:
 | `GET /api/openviking-enhance/sessions?offset=&limit=` | paginated session-directory page (50/page, mtime-desc) with DSH/non-DSH kinds |
 | `GET /api/openviking-enhance/recent-commits?limit=&fresh=0` | bounded fan-out (≤8 sessions, pool 4, 10 s deadline, 30 s cache) with `partial`/`limitedBy`/`progress` |
 | `GET /api/openviking-enhance/studio-status?fresh=0` | credential-free header probe: `frameable` yes/no/unknown + reason, cached 60 s |
-| `POST /api/openviking-enhance/onboarding/state` | `{action:'dismiss'|'reset'|'complete-step'|'full-check', …}` → writes only the 0600 local `onboarding.json`, zero OpenViking calls |
+| `POST /api/openviking-enhance/onboarding/state` | `{action:'dismiss'|'reset'|'forget'|'complete-step'|'full-check', …}` → writes/deletes only the 0600 local `onboarding.json`, records the action in the local audit trail, zero OpenViking calls |
 
 ### Timeouts and limits
 
@@ -429,7 +434,6 @@ from the code. Times are milliseconds; sizes are bytes unless marked.
 | BROWSE_CACHE_TTL_MS | 15000 |
 | BROWSE_CACHE_MAX_DIRECTORIES | 100 |
 | SESSIONS_PAGE_SIZE | 50 |
-| SESSION_DETAIL_CACHE_TTL_MS | 15000 |
 | RECENT_COMMITS_SESSION_CAP | 8 |
 | RECENT_COMMITS_CONCURRENCY | 4 |
 | RECENT_COMMITS_DEADLINE_MS | 10000 |
@@ -507,7 +511,11 @@ rules and 20 scenarios, and an L2 preview page returns at most 1 000 lines.
   rotated at 1 MiB, two rotations kept) and `onboarding.json` (0600, atomic), all
   under `${DSH_HOME:-~/.dsh}/state/dsh-openviking-enhance/`. `onboarding.json`
   holds only check ids/status timestamps and last-check counts — never an
-  endpoint, account, user, key, peer, memory URI or memory body.
+  endpoint, account, user, key, peer, memory URI or memory body. Its
+  `lastOpenedAt` is written only while the `showOnboarding` switch is on (turning
+  the checklist off stops the writes); "Forget local setup state" on the
+  Plugins-page Setup card deletes the file completely, and the action is recorded
+  in the local audit trail.
 
 ### What the plugin sends (and what it costs)
 
@@ -524,7 +532,7 @@ work. The full-window actions and their cost:
 | Activity tab while visible | `tasks`/metrics polling; **no polling when the tab is hidden** |
 | Writes, forced commit | user-triggered only, one confirmed action at a time |
 | Native Overview (first paint) | one composed request: config health + capability probe + four metric reads + a cached Studio header probe; cached 5 s |
-| Browse expand | one `fs/ls` page: 50 entries, 160-char abstracts, tags; cached 15 s (LRU 100), cancelled on collapse/view change |
+| Browse expand | one `fs/ls` page: 50 entries, 160-char abstracts, tags; cached 15 s (LRU 100); in-flight reads are aborted on refresh, view change and unmount |
 | Browse "Show subtree" | one `fs/tree` call capped at 2 levels/100 nodes — explicit button only |
 | Sessions list | one `fs/ls` page of 50 session directories; detail = the existing bounded session log on selection only (no polling) |
 | Commits view | up to 8 sessions × 3–4 cheap reads, pool 4, 10 s deadline, cached 30 s, never polled |

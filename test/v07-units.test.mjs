@@ -119,6 +119,20 @@ test('the browse URI allowlist refuses internal scopes and unsafe paths', () => 
   }
 })
 
+test('the browse allowlist pins the personal tree to the active identity (S2)', () => {
+  const personal = 'viking://user/default/memories/preferences/tools.md'
+  assert.equal(isAllowedBrowseUri(personal, { user: 'default' }), true)
+  assert.equal(isAllowedBrowseUri(personal, { user: 'other' }), false, 'another user\'s personal tree is refused')
+  assert.equal(isAllowedBrowseUri('viking://user/mallory/memories', { user: 'default' }), false)
+  // Account-level trees stay readable regardless of which user is active.
+  assert.equal(isAllowedBrowseUri('viking://resources/team/x.md', { user: 'other' }), true)
+  assert.equal(isAllowedBrowseUri('viking://agent/skills/pdf', { user: 'other' }), true)
+  // A user segment is required once an identity is named.
+  assert.equal(isAllowedBrowseUri('viking://user', { user: 'default' }), false)
+  // The structural form (no identity supplied) keeps the v0.7 allowlist contract.
+  assert.equal(isAllowedBrowseUri(personal), true)
+})
+
 test('directories keep their meaning only where the tree model has one', () => {
   const session = 'viking://user/default/sessions/dsh-s1'
   assert.equal(browseEntryKind(session, true), 'session')
@@ -263,6 +277,7 @@ test('a missing/corrupt onboarding state is a clean first run, never an error', 
 test('the onboarding POST validator accepts exactly the documented actions', () => {
   assert.deepEqual(parseOnboardingUpdate({ action: 'dismiss' }), { ok: true, update: { action: 'dismiss' } })
   assert.deepEqual(parseOnboardingUpdate({ action: 'reset' }), { ok: true, update: { action: 'reset' } })
+  assert.deepEqual(parseOnboardingUpdate({ action: 'forget' }), { ok: true, update: { action: 'forget' } })
   assert.deepEqual(parseOnboardingUpdate({ action: 'complete-step', stepId: 'health' }), {
     ok: true,
     update: { action: 'complete-step', stepId: 'health' },
@@ -328,7 +343,7 @@ test('the cheap checks derive every step from the composed overview parts', () =
     config,
     scope,
     metrics,
-    plugin: { mounted: true, version: '0.3.1', peer: null, peerSource: null },
+    plugin: { mounted: true, version: '0.3.1' },
     studio: { url: 'http://127.0.0.1:1933/studio/', frameable: 'yes', reason: 'ok', detail: null, observedAt: 'x' },
   })
   assert.deepEqual(
@@ -349,7 +364,7 @@ test('the cheap checks derive every step from the composed overview parts', () =
     config: { ...config, healthy: false, version: null, warnings: [{ code: 'unreachable', params: { endpoint: 'x', error: 'ECONNREFUSED' } }] },
     scope: null,
     metrics: null,
-    plugin: { mounted: false, version: null, peer: null, peerSource: null },
+    plugin: { mounted: false, version: null },
     studio: null,
   })
   assert.deepEqual(
@@ -441,7 +456,6 @@ test('the v0.7 budget constants exist with their documented values', () => {
   assert.equal(limits.BROWSE_CACHE_TTL_MS, 15_000)
   assert.equal(limits.BROWSE_CACHE_MAX_DIRECTORIES, 100)
   assert.equal(limits.SESSIONS_PAGE_SIZE, 50)
-  assert.equal(limits.SESSION_DETAIL_CACHE_TTL_MS, 15_000)
   assert.equal(limits.RECENT_COMMITS_SESSION_CAP, 8)
   assert.equal(limits.RECENT_COMMITS_CONCURRENCY, 4)
   assert.equal(limits.RECENT_COMMITS_DEADLINE_MS, 10_000)
@@ -452,6 +466,92 @@ test('the v0.7 budget constants exist with their documented values', () => {
   assert.equal(limits.NATIVE_HISTORY_MAX, 20)
   assert.ok(limits.RECENT_COMMITS_CONCURRENCY < limits.RECENT_COMMITS_SESSION_CAP, 'the pool is narrower than the fan-out')
   assert.ok(limits.STUDIO_STATUS_TIMEOUT_MS < limits.STUDIO_STATUS_TTL_MS, 'the probe has a sane relationship to its cache')
+})
+
+/* ========================================================================
+ * The onboarding store's write rules (review S5)
+ * ===================================================================== */
+
+test('onboarding writes are gated by the switch and forget removes the file', async () => {
+  const { OnboardingStore } = await import('../src/host/onboarding.ts')
+  const { mkdtempSync, existsSync, readFileSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const dir = mkdtempSync(join(tmpdir(), 'ove-onb-'))
+  const store = new OnboardingStore({ dir, now: () => 1_000_000 })
+  const path = store.filePath()
+  assert.equal(existsSync(path), false, 'a fresh store has no file')
+
+  // A user who turned the checklist off asked for no onboarding writes.
+  store.touchOpened(false)
+  assert.equal(existsSync(path), false, 'touchOpened(false) does not create the file')
+
+  const opened = store.touchOpened(true)
+  assert.equal(existsSync(path), true, 'touchOpened(true) records the first run')
+  assert.equal(typeof opened.lastOpenedAt, 'string')
+
+  store.apply({ action: 'dismiss' })
+  assert.equal(JSON.parse(readFileSync(path, 'utf8')).dismissedAt !== null, true)
+
+  // forget deletes the file completely; the returned state is a fresh first run.
+  const forgotten = store.apply({ action: 'forget' })
+  assert.equal(existsSync(path), false, 'forget unlinks onboarding.json')
+  assert.deepEqual(forgotten.state, { version: 1, dismissedAt: null, completedStepIds: [], lastOpenedAt: null, lastFullCheck: null })
+  assert.equal(forgotten.writeError, null)
+})
+
+/* ========================================================================
+ * The Studio probe's gates (review S3/S4)
+ * ===================================================================== */
+
+test('the studio probe refuses non-probeable endpoints without fetching', async () => {
+  const { StudioStatusService } = await import('../src/host/studio-status.ts')
+  let fetched = 0
+  const service = new StudioStatusService({
+    studioUrl: () => 'http://169.254.169.254/studio/',
+    fetch: async () => {
+      fetched += 1
+      return new Response('', { status: 200 })
+    },
+    now: () => 0,
+  })
+  const status = await service.status(true)
+  assert.equal(fetched, 0, 'the metadata endpoint is never fetched')
+  assert.equal(status.frameable, 'unknown')
+  assert.equal(status.reason, 'probe-failed')
+  assert.equal(status.detail, 'endpoint-not-probeable')
+})
+
+test('the studio probe passes redirect:manual and never follows a redirect', async () => {
+  const { StudioStatusService } = await import('../src/host/studio-status.ts')
+  let seenOptions = null
+  const service = new StudioStatusService({
+    studioUrl: () => 'http://127.0.0.1:1933/studio/',
+    fetch: async (_url, options) => {
+      seenOptions = options
+      return new Response('', { status: 302, headers: { location: '/login' } })
+    },
+    now: () => 0,
+  })
+  const status = await service.status(true)
+  assert.equal(seenOptions.redirect, 'manual', 'the redirect target is never fetched')
+  assert.equal(status.frameable, 'unknown')
+  assert.equal(status.reason, 'http-error', 'a 3xx cannot be classified as frameable and is not followed')
+})
+
+test('the studio probe classifies a transport failure as probe-failed (S4)', async () => {
+  const { StudioStatusService } = await import('../src/host/studio-status.ts')
+  const service = new StudioStatusService({
+    studioUrl: () => 'http://127.0.0.1:1933/studio/',
+    fetch: async () => {
+      throw new Error('connection refused')
+    },
+    now: () => 0,
+  })
+  const status = await service.status(true)
+  assert.equal(status.frameable, 'unknown')
+  assert.equal(status.reason, 'probe-failed')
+  assert.match(status.detail ?? '', /connection refused/)
 })
 
 /* ========================================================================
@@ -566,6 +666,15 @@ test('EN and ZH ship exactly the same v0.7 keys', async () => {
     assert.ok(enKeys.includes(`native.commits.phase.${phase}`), `EN commit phase for ${phase}`)
     assert.ok(zhKeys.includes(`native.commits.phase.${phase}`), `ZH commit phase for ${phase}`)
   }
+  for (const code of ['not-allowed', 'unreadable', 'unsupported']) {
+    assert.ok(enKeys.includes(`wcode.${code}`), `EN write-error copy for ${code}`)
+    assert.ok(zhKeys.includes(`wcode.${code}`), `ZH write-error copy for ${code}`)
+  }
+  assert.ok(enKeys.includes('notice.staleDirectory'), 'EN stale-directory notice')
+  assert.ok(zhKeys.includes('notice.staleDirectory'), 'ZH stale-directory notice')
+  assert.ok(enKeys.includes('native.warnings.summary'), 'EN warning-row summary')
+  assert.ok(enKeys.includes('browse.entryCountMore'), 'EN lower-bound entry count')
+  assert.ok(enKeys.includes('native.onboarding.forgetSetup'), 'EN forget action copy')
   for (const frameable of ['yes', 'no', 'unknown']) {
     assert.ok(enKeys.includes(`native.studio.frameable.${frameable}`), `EN Studio frameability for ${frameable}`)
   }

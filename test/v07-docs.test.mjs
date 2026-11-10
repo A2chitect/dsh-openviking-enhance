@@ -28,6 +28,28 @@ function bothLanguages(assertions) {
   }
 }
 
+test('the README version note covers v0.7 in both languages (D1)', () => {
+  assert.match(readmeEn, /> The v0\.4 Act, v0\.5 Collaborate[^>]*v0\.7 Native[^>]*>/)
+  assert.match(readmeZh, /v0\.7 Native/)
+})
+
+test('both READMEs document the local onboarding write boundary honestly (S5/S7/S8)', () => {
+  // S8: the trust invariant is about the POST that cannot reach OpenViking.
+  assert.match(readmeEn, /no loopback POST path that reaches\s+OpenViking/i)
+  assert.match(readmeZh, /能到达 OpenViking 的 loopback POST 路径/)
+  // The local-state POST is clamped and audited, and the onboarding write is gated.
+  assert.ok(readmeEn.includes('forget'), 'EN README names the forget action')
+  assert.ok(readmeEn.includes('audit trail'), 'EN README says the action is audited')
+  assert.ok(readmeZh.includes('forget'), 'ZH README names the forget action')
+  assert.ok(readmeZh.includes('审计'), 'ZH README says the action is audited')
+  assert.match(readmeEn, /lastOpenedAt[^.]*only while the `showOnboarding` switch is on/s)
+  assert.match(readmeZh, /lastOpenedAt.*showOnboarding/)
+  // S7: no documented constant without a consumer remains.
+  for (const markdown of [readmeEn, readmeZh]) {
+    assert.ok(!markdown.includes('SESSION_DETAIL_CACHE_TTL_MS'), 'the unused session-detail TTL is not documented')
+  }
+})
+
 test('both READMEs document the native cockpit and its six views', () => {
   bothLanguages(['showNativeViews', 'showOnboarding', 'onboarding.json', '0600'])
   assert.match(readmeEn, /native read cockpit/i)

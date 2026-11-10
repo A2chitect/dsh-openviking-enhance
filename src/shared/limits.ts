@@ -95,8 +95,6 @@ export const BROWSE_CACHE_MAX_DIRECTORIES = 100
 
 /** Sessions browser page size (the server's `/sessions` list has no pagination). */
 export const SESSIONS_PAGE_SIZE = 50
-/** One session detail (`/session-log`) is reused this long. */
-export const SESSION_DETAIL_CACHE_TTL_MS = 15_000
 
 /** How many sessions the recent-commits browser fans out over. */
 export const RECENT_COMMITS_SESSION_CAP = 8

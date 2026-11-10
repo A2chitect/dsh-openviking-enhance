@@ -46,6 +46,10 @@ class FakeServer {
     this.failMetrics = opts.failMetrics === true
     this.studioStatus = 200
     this.studioHeaders = {}
+    /** Override the `fs/tree` answer status (405 = route unsupported). */
+    this.fsTreeStatus = 200
+    /** Destroy the socket instead of answering `/studio/` (a probe failure). */
+    this.studioDestroy = false
     this.requests = []
     this.writes = []
     this.listings = new Map([
@@ -140,6 +144,10 @@ class FakeServer {
       return
     }
     if (path === '/studio/') {
+      if (this.studioDestroy) {
+        request.socket.destroy()
+        return
+      }
       reply(this.studioStatus === 200 ? 200 : this.studioStatus, '<html><body>studio</body></html>', {
         'content-type': 'text/html',
         ...this.studioHeaders,
@@ -179,6 +187,10 @@ class FakeServer {
       return
     }
     if (path === '/api/v1/fs/tree') {
+      if (this.fsTreeStatus !== 200) {
+        reply(this.fsTreeStatus, failure('UNSUPPORTED', 'route not available on this build'))
+        return
+      }
       const entries = [
         { uri: `${MEMORIES}/preferences`, rel_path: 'preferences', isDir: true, level: 1, size: 0, modTime: '2026-11-10T09:00:00Z' },
         { uri: `${MEMORIES}/preferences/tools.md`, rel_path: 'preferences/tools.md', isDir: false, level: 2, size: 42, modTime: '2026-11-10T08:00:00Z' },
@@ -485,6 +497,42 @@ test('browse pages a directory with the documented params, caches and pages with
   }
 })
 
+test('browse pins the personal tree to the active identity (S2)', async () => {
+  const app = await boot()
+  try {
+    // Structurally a valid viking:// path, but not the active identity's tree.
+    const other = await app.get(`/api/openviking-enhance/browse?uri=${encodeURIComponent('viking://user/mallory/memories')}`)
+    assert.equal(other.status, 400)
+    assert.equal(other.body.ok, false)
+    assert.equal(other.body.error.code, 'not-allowed')
+    const subtree = await app.get(`/api/openviking-enhance/browse/subtree?uri=${encodeURIComponent('viking://user/mallory/memories')}`)
+    assert.equal(subtree.status, 400)
+    assert.equal(subtree.body.error.code, 'not-allowed')
+    // Account-level trees stay readable.
+    const account = await app.get(`/api/openviking-enhance/browse?uri=${encodeURIComponent('viking://resources')}`)
+    assert.equal(account.status, 200)
+    assert.equal(account.body.ok, true)
+  } finally {
+    await app.shutdown()
+  }
+})
+
+test('an unsupported subtree route is distinct from a stale directory (S1)', async () => {
+  const app = await boot()
+  try {
+    app.fake.fsTreeStatus = 405
+    const unsupported = await app.get(`/api/openviking-enhance/browse/subtree?uri=${encodeURIComponent(MEMORIES)}`)
+    assert.equal(unsupported.status, 200)
+    assert.equal(unsupported.body.ok, false)
+    assert.equal(unsupported.body.error.code, 'unsupported', 'a 405 is a server-capability answer, never an empty tree')
+    app.fake.fsTreeStatus = 200
+    const recovered = await app.get(`/api/openviking-enhance/browse/subtree?uri=${encodeURIComponent(MEMORIES)}`)
+    assert.equal(recovered.body.ok, true)
+  } finally {
+    await app.shutdown()
+  }
+})
+
 test('browse refuses internal scopes and treats a stale directory as an empty page', async () => {
   const app = await boot()
   try {
@@ -623,6 +671,16 @@ test('the Studio probe classifies real headers host-side and caches its answer',
     const auth = await app.get('/api/openviking-enhance/studio-status?fresh=1')
     assert.equal(auth.body.studio.frameable, 'unknown')
     assert.equal(auth.body.studio.reason, 'auth-required')
+
+    // A probe request that cannot complete is still an explicit answer (S4):
+    // the client must show probe-failed, not an unexplained blank iframe.
+    app.fake.studioStatus = 200
+    app.fake.studioDestroy = true
+    const failed = await app.get('/api/openviking-enhance/studio-status?fresh=1')
+    assert.equal(failed.body.ok, true)
+    assert.equal(failed.body.studio.frameable, 'unknown')
+    assert.equal(failed.body.studio.reason, 'probe-failed')
+    assert.equal(typeof failed.body.studio.detail, 'string')
   } finally {
     await app.shutdown()
   }
@@ -669,10 +727,30 @@ test('the onboarding POST writes only the 0600 local state file and never calls 
     const overview = await app.get('/api/openviking-enhance/overview?fresh=1')
     assert.equal(typeof overview.body.overview.onboarding.state.dismissedAt, 'string')
 
+    const beforeLocalActions = app.fake.requests.length
     const reset = await app.post('/api/openviking-enhance/onboarding/state', { action: 'reset' })
     assert.equal(reset.body.state.dismissedAt, null)
     assert.deepEqual(reset.body.state.completedStepIds, [])
     assert.equal(reset.body.state.lastFullCheck, null)
+
+    // forget removes the file completely (not just a fresh rewrite) and every
+    // local onboarding action is recorded in the plugin's own audit trail.
+    const forget = await app.post('/api/openviking-enhance/onboarding/state', { action: 'forget' })
+    assert.equal(forget.status, 200)
+    assert.equal(forget.body.ok, true)
+    assert.deepEqual(forget.body.state, { version: 1, dismissedAt: null, completedStepIds: [], lastOpenedAt: null, lastFullCheck: null })
+    assert.equal(existsSync(app.onboardingPath), false, 'forget unlinks onboarding.json')
+    const auditPath = join(app.stateHome, 'state', 'dsh-openviking-enhance', 'audit.jsonl')
+    assert.equal(existsSync(auditPath), true, 'the local audit trail records onboarding actions')
+    const auditLines = readFileSync(auditPath, 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    const onboardingActions = auditLines.filter((entry) => entry.kind === 'onboarding').map((entry) => entry.action)
+    for (const action of ['dismiss', 'complete-step', 'full-check', 'reset', 'forget']) {
+      assert.ok(onboardingActions.includes(action), `the audit trail records the ${action} action`)
+    }
+    const onboardingAudit = JSON.stringify(auditLines.filter((entry) => entry.kind === 'onboarding'))
+    assert.ok(!onboardingAudit.includes('127.0.0.1'), 'an onboarding audit entry stores no endpoint value')
+    assert.ok(!onboardingAudit.includes('default'), 'and no identity value')
+    assert.equal(app.fake.requests.length, beforeLocalActions, 'none of the local-state actions called OpenViking')
 
     // The same-origin read-only JSON guard still applies to this POST.
     const get = await app.get('/api/openviking-enhance/onboarding/state')

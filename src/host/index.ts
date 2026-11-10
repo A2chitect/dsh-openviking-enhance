@@ -10,9 +10,11 @@
  *     `{ok:false, error}` instead of throwing, because a plugin route that
  *     throws can take a request down with it.
  *
- * It deliberately performs **no writes** to OpenViking and never touches the
- * third-party memory plugin's objects; the only cross-plugin reads are the two
- * optional lookups documented in `commit-service.ts`.
+ * It deliberately performs **no writes** to OpenViking and never mutates the
+ * third-party memory plugin's objects. The cross-plugin reads are the optional
+ * in-process runtime lookups documented in `commit-service.ts` (mounted-ness,
+ * per-session peer/config, installed version) plus the read-only pending-queue
+ * and capability-memo files under the OpenViking home.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
@@ -508,29 +510,20 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
   /**
    * v0.7: the mounted official memory plugin's facts for the Overview.
    *
-   * Read in-process and read-only: `mounted` from the runtime object, the
-   * installed version from its package manifest, and the peer/peerSource of the
-   * first session the runtime knows about (the panel is root-scoped, so there is
-   * no one session it could ask; `null` is honest when the runtime has none yet).
+   * Read in-process and read-only: `mounted` from the runtime object and the
+   * installed version from its package manifest. No identity/peer fields: the
+   * cockpit is root-scoped, so a peer read from an arbitrary session would be
+   * misread as the identity's peer (the session-scoped tabs and the Doctor own
+   * that display).
    */
   const overviewPluginFact = (): OverviewPluginFact => {
-    const runtime = memoryRuntime()
-    if (runtime === null) return { mounted: false, version: null, peer: null, peerSource: null }
-    let peer: string | null = null
-    let peerSource: string | null = null
-    try {
-      for (const state of runtime.states?.values() ?? []) {
-        const config = state?.config
-        if (peer === null && typeof config?.peerId === 'string' && config.peerId.length > 0) peer = config.peerId
-        if (peerSource === null && typeof config?.peerSource === 'string' && config.peerSource.length > 0) {
-          peerSource = config.peerSource
-        }
-        if (peer !== null && peerSource !== null) break
-      }
-    } catch {
-      // A runtime object that throws is simply not inspectable.
+    // No identity fields here on purpose: the cockpit is root-scoped, so any
+    // peer read from an arbitrary session would be misread as *the* peer. The
+    // per-session peer belongs to the session-scoped tabs and the Doctor.
+    return {
+      mounted: memoryRuntime() !== null,
+      version: memoryRuntime() === null ? null : readMemoryPluginVersion(),
     }
-    return { mounted: true, version: readMemoryPluginVersion(), peer, peerSource }
   }
 
   const service = new CommitService({
@@ -1318,22 +1311,59 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
     plugin: overviewPluginFact,
     studio: (fresh) => studioStatus.status(fresh),
     onboarding: onboardingStore,
+    onboardingEnabled: () => configField(config.showOnboarding) !== false,
   })
 
-  /** Cancel an upstream read when the browser collapses/deselects the node. */
-  const abortOnClose = (req: IncomingMessage): { signal: AbortSignal; dispose: () => void } => {
+  /**
+   * Cancel an upstream read when the browser collapses/deselects the node.
+   *
+   * Listens on the RESPONSE's `close`, not the request's: a GET request's stream
+   * is complete (and emits `close`) as soon as its headers/body are read, which
+   * on a keep-alive socket can be well before the handler finishes, so listening
+   * on `req` would abort every read. `res` closes when the response is finished
+   * or the connection drops — either way there is no reader left.
+   */
+  const abortOnClose = (res: ServerResponse): { signal: AbortSignal; dispose: () => void } => {
     const controller = new AbortController()
     const onClose = (): void => controller.abort()
-    req.once('close', onClose)
+    res.once('close', onClose)
     return {
       signal: controller.signal,
       dispose: () => {
         try {
-          req.off('close', onClose)
+          res.off('close', onClose)
         } catch {
-          // A finished request cannot be unlistened to on very old Node builds.
+          // A finished response cannot be unlistened to on very old Node builds.
         }
       },
+    }
+  }
+
+  /**
+   * Record one local onboarding-state write in the plugin's own audit trail.
+   *
+   * These actions never reach OpenViking, but "forget the checklist state" is a
+   * local mutation a reviewer should be able to see; `identity` stays null on
+   * purpose because the state file is per DSH home, not per scope.
+   */
+  const auditOnboarding = (action: string, writeError: string | null): void => {
+    try {
+      audit.append({
+        kind: 'onboarding',
+        action,
+        target: null,
+        identity: null,
+        fingerprint: null,
+        confirmation: null,
+        preCommit: null,
+        postCommit: null,
+        requestId: null,
+        result: writeError === null ? 'ok' : 'failed',
+        error: writeError,
+        undo: null,
+      })
+    } catch {
+      // The audit trail is best effort; a failed append must not fail the write.
     }
   }
 
@@ -1375,7 +1405,7 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
           fail(res, 400, 'invalid-request', 'uri is required')
           return
         }
-        const abort = abortOnClose(req)
+        const abort = abortOnClose(res)
         try {
           const page = await browse.list(uri, {
             offset: offsetParam(params),
@@ -1402,7 +1432,7 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
           fail(res, 400, 'invalid-request', 'uri is required')
           return
         }
-        const abort = abortOnClose(req)
+        const abort = abortOnClose(res)
         try {
           const subtree = await browse.subtree(uri, {
             levels: limitParam(params, 'levels', 2, 2),
@@ -1423,7 +1453,7 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
       handler: async (req, res) => {
         if (!guard(req, res)) return
         const params = query(req)
-        const abort = abortOnClose(req)
+        const abort = abortOnClose(res)
         try {
           const sessionsPage = await sessions.list({
             offset: offsetParam(params),
@@ -1445,7 +1475,7 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
       handler: async (req, res) => {
         if (!guard(req, res)) return
         const params = query(req)
-        const abort = abortOnClose(req)
+        const abort = abortOnClose(res)
         try {
           const recent = await recentCommits.recent({
             limit: limitParam(params, 'limit', 8, 8),
@@ -1479,6 +1509,7 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
         try {
           // Writes the plugin's own state file only. No OpenViking call, ever.
           const result = onboardingStore.apply(parsed.update)
+          auditOnboarding(parsed.update.action, result.writeError)
           writeJson(res, 200, { ok: true, state: result.state, writeError: result.writeError })
         } catch (error) {
           failFrom(res, error)

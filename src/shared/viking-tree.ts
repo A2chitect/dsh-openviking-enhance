@@ -92,15 +92,30 @@ function isCanonical(uri: string): boolean {
  * `resources` is the account-shared resource tree and `agent` is the account's
  * shared skill tree. Everything else is either an internal server scratch area
  * or something this read-only release has no business listing.
+ *
+ * `options.user`, when given, pins the personal tree to the **active identity**:
+ * `viking://user/<other-user>/…` is refused, so a crafted query string cannot
+ * turn the read-only cockpit into a cross-user reader. The account-shared trees
+ * (`viking://resources`, `viking://agent/skills`) stay readable at account
+ * level; a profile switch changes which user tree is addressable.
  */
-export function isAllowedBrowseUri(uri: string): boolean {
+export interface BrowseAllowlistOptions {
+  /** The active identity's user; omitted = structural allowlist only. */
+  user?: string
+}
+
+export function isAllowedBrowseUri(uri: string, options: BrowseAllowlistOptions = {}): boolean {
   const trimmed = (uri ?? '').trim()
   if (!isVikingUri(trimmed) || !isCanonical(trimmed)) return false
   const segments = vikingSegments(trimmed)
   const top = segments[0]
   if (top === undefined) return false
   if (INTERNAL_SCOPES.has(top)) return false
-  return top === 'user' || top === 'resources' || top === 'agent'
+  if (top === 'resources' || top === 'agent') return true
+  if (top !== 'user') return false
+  if (options.user === undefined) return true
+  const owner = segments[1]
+  return typeof owner === 'string' && owner.length > 0 && owner === options.user
 }
 
 /** Whether the URI is the top-level shared resources tree. */

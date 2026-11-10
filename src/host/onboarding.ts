@@ -17,6 +17,12 @@
  * The cheap checks are computed from the composed `/overview` parts (no extra
  * OpenViking calls); "run full check" is an explicit user action that goes
  * through the existing `/doctor?probe=1` route and records the counts here.
+ *
+ * Two write rules keep the file unsurprising: `lastOpenedAt` is only written
+ * while the `showOnboarding` switch is on (a user who turned the checklist off
+ * asked for no onboarding writes at all), and `forget` unlinks the file so a
+ * user can remove the local state completely. Every action is also recorded in
+ * the plugin's own local audit trail by the route.
  */
 import { ONBOARDING_STEP_IDS, type OnboardingCheck, type OnboardingState } from '../shared/protocol.ts'
 import type {
@@ -26,6 +32,7 @@ import type {
   ScopePayload,
   StudioStatus,
 } from '../shared/protocol.ts'
+import { existsSync, unlinkSync } from 'node:fs'
 import { pluginStateDir, readFileOrNull, writePrivateFile } from './plugin-state.ts'
 import { join } from 'node:path'
 
@@ -101,6 +108,7 @@ export function normalizeOnboardingState(parsed: unknown): OnboardingState {
 export type OnboardingUpdate =
   | { action: 'dismiss' }
   | { action: 'reset' }
+  | { action: 'forget' }
   | { action: 'complete-step'; stepId: string }
   | { action: 'full-check'; ok: number; warn: number; error: number }
 
@@ -119,6 +127,7 @@ export function parseOnboardingUpdate(body: Record<string, unknown>): Onboarding
   const action = body.action
   if (action === 'dismiss') return { ok: true, update: { action: 'dismiss' } }
   if (action === 'reset') return { ok: true, update: { action: 'reset' } }
+  if (action === 'forget') return { ok: true, update: { action: 'forget' } }
   if (action === 'complete-step') {
     const stepId = body.stepId
     if (typeof stepId !== 'string' || !(ONBOARDING_STEP_IDS as readonly string[]).includes(stepId)) {
@@ -208,6 +217,19 @@ export class OnboardingStore {
       case 'reset':
         next = { ...freshOnboardingState() }
         break
+      case 'forget': {
+        // Remove the file completely (not a rewrite of the fresh state): the
+        // point of "forget" is that nothing about the checklist remains on disk.
+        let unlinkError: string | null = null
+        try {
+          if (existsSync(this.filePath())) unlinkSync(this.filePath())
+        } catch (error) {
+          unlinkError = error instanceof Error ? error.message : String(error)
+        }
+        const fresh = freshOnboardingState()
+        this.cached = fresh
+        return { state: fresh, writeError: unlinkError }
+      }
       case 'complete-step': {
         const completed = current.completedStepIds.includes(update.stepId)
           ? current.completedStepIds
@@ -228,14 +250,18 @@ export class OnboardingStore {
   }
 
   /**
-   * Record that the native cockpit was opened.
+   * Record that the native cockpit was opened, but only while onboarding is on.
    *
-   * Throttled to once per minute and best effort: the default view must not write
-   * a file on every cached overview read, and a home directory that cannot be
-   * written must not make opening the panel fail.
+   * The caller passes the live `showOnboarding` value: a user who turned the
+   * checklist off asked for no onboarding writes, so the overview read must not
+   * touch the file at all. When it is on, the write is throttled to once per
+   * minute and best effort: the default view must not write a file on every
+   * cached overview read, and a read-only home directory must not make opening
+   * the panel fail.
    */
-  touchOpened(): OnboardingState {
+  touchOpened(enabled: boolean): OnboardingState {
     const current = this.read()
+    if (!enabled) return current
     if (this.now() - this.lastTouchAt < (this.options.touchThrottleMs ?? 60_000)) return current
     this.lastTouchAt = this.now()
     const next: OnboardingState = { ...current, lastOpenedAt: new Date(this.now()).toISOString() }

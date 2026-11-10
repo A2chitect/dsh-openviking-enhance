@@ -584,7 +584,6 @@ export function testProfileEndpoint(endpoint: string): Promise<OveResult<Profile
   return postOve<ProfileTestResponse>(`${BASE}/profiles/test`, { endpoint })
 }
 
-
 /* ========================================================================
  * v0.7 native cockpit routes
  *

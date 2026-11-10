@@ -83,7 +83,9 @@ export class RecentCommitsService {
         return payload
       })
       .finally(() => {
-        if (this.inflight?.key === key) this.inflight = null
+        // Compare the promise, not just the key: a `fresh=1` call may have
+        // replaced the in-flight entry while this one was settling.
+        if (this.inflight?.promise === promise) this.inflight = null
       })
     this.inflight = { key, promise }
     return promise
@@ -124,7 +126,9 @@ export class RecentCommitsService {
       partial,
       limitedBy,
       progress: {
-        sessionsScanned: outcome.started,
+        // Rows present in this answer: a session whose read completed (even with a
+        // row-level error) counts as scanned; pool starts that produced no row do not.
+        sessionsScanned: items.length,
         elapsedMs: Math.max(0, this.now() - started),
         deadlineMs: RECENT_COMMITS_DEADLINE_MS,
         sessionCap: limit,

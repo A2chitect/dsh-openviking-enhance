@@ -31,8 +31,10 @@ read-only, still one sidebar row, no new dependencies.
 - **Browse.** A lazy `viking://` tree from host-resolved identity roots
   (memories, peers, shared/personal resources, personal/agent skills, rules and
   session shortcuts), one paged `fs/ls` request per expanded directory (50 rows,
-  160-char abstracts, tags, server cursor), per-page cache (15 s, LRU 100) and
-  abort on collapse/view change. The read-only preview pane is the extracted
+  160-char abstracts, tags, server cursor), per-page cache (15 s, LRU 100),
+  in-flight reads aborted on refresh/unmount/view change, and the personal tree
+  pinned to the active identity (another user's `viking://user/<u>/…` is refused;
+  shared resources/agent skills stay account-level). The read-only preview pane is the extracted
   v0.4 `PreviewBody`, so L0/L1/L2 paging has one implementation and the native
   pane cannot reach a write path. An explicit "Show subtree" action is the only
   `fs/tree` caller and is capped at 2 levels / 100 nodes.
@@ -54,12 +56,17 @@ read-only, still one sidebar row, no new dependencies.
   step. "Run full check" reuses the Doctor and records counts; dismissal and
   completed steps persist in a new 0600 `onboarding.json`, written through the
   same-origin read-only JSON guard and **never** through an OpenViking call. The
-  file holds only ids/timestamps/counts. New switch `showOnboarding` (default
-  true).
+  file holds only ids/timestamps/counts; `lastOpenedAt` is written only while
+  `showOnboarding` is on, every local action is recorded in the local audit
+  trail, and a `forget` action deletes the file completely. New switch
+  `showOnboarding` (default true).
 - **Studio fallback.** A host-side frameability probe (`GET /studio-status`)
   classifies `X-Frame-Options` (DENY/SAMEORIGIN), CSP `frame-ancestors`
   (`'none'`/`'self'`/wildcard/explicit list), 401/403, other HTTP errors and
-  timeouts, cached 60 s; the Studio view explains a refusal and keeps
+  timeouts, cached 60 s. It uses `redirect: 'manual'` (never fetches a redirect
+  target) and refuses non-probeable endpoints without a fetch; a probe that
+  cannot complete is reported as `probe-failed` instead of leaving a blank
+  iframe. The Studio view explains every non-frameable verdict and keeps
   open-in-a-new-tab one click away. No unreliable browser-side iframe
   auto-detection.
 - **Deep links.** Explicit "Open in cockpit" actions (Preview tab and the
@@ -79,6 +86,23 @@ read-only, still one sidebar row, no new dependencies.
   render tests for the cockpit/onboarding/preview extraction, EN+ZH parity, new
   limits in both README contract tables, smoke additions and a
   `VERIFICATION.md` scenario checklist.
+
+#### Fixed (review round 1, PR #5)
+
+- Native Browse/Sessions render non-empty host `warnings` as a collapsed,
+  translated row (`staleDirectory`, unsupported); an unsupported/405 subtree
+  answer is split from "the directory is empty" instead of reading as one.
+- Browse's URI allowlist is identity-aware (active user only for the personal
+  tree); the Studio probe gained `redirect:'manual'` + the non-probeable-endpoint
+  gate; failed probes surface as `probe-failed`; denied-Studio rendering is
+  covered by a render test.
+- Onboarding: no `lastOpenedAt` write while `showOnboarding` is off; new audited
+  `forget` action deletes `onboarding.json`; the Setup card exposes it.
+- Removed the dead `OverviewPluginFact.peer/peerSource` (the cockpit is
+  root-scoped) and the documented-but-unused `SESSION_DETAIL_CACHE_TTL_MS`;
+  corrected the README trust-invariant wording for the local-state POST.
+- In-flight browse/session requests are now actually aborted on
+  refresh/unmount/view change (the claim now matches the code).
 
 #### Changed
 

@@ -13,9 +13,10 @@
  * message bodies out of anything but deliberate previews. Studio remains the
  * transcript reader.
  */
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
   MemoryDiff,
+  PluginNotice,
   SessionListRow,
   SessionMemoryLog,
 } from '../shared/protocol.ts'
@@ -25,6 +26,7 @@ import { fetchDiff, fetchSessionLog, fetchSessionsPage } from './host-api.ts'
 import { errorText, t, writeErrorText } from './locale.ts'
 import { navigate, useNative } from './native-store.ts'
 import { openRightTab } from './tab-store.ts'
+import { NativeWarnings } from './native-warnings.tsx'
 
 export interface NativeSessionsProps {
   refreshKey: number
@@ -51,6 +53,19 @@ interface DiffState {
   diff: MemoryDiff | null
 }
 
+/** Append host warnings without duplicating an identical code+params pair. */
+function mergeListWarnings(current: readonly PluginNotice[], next: readonly PluginNotice[]): PluginNotice[] {
+  const seen = new Set(current.map((warning) => `${warning.code}:${JSON.stringify(warning.params ?? {})}`))
+  const merged = [...current]
+  for (const warning of next) {
+    const key = `${warning.code}:${JSON.stringify(warning.params ?? {})}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    merged.push(warning)
+  }
+  return merged
+}
+
 export function NativeSessions(props: NativeSessionsProps) {
   const native = useNative()
   const [rows, setRows] = useState<SessionListRow[]>([])
@@ -69,16 +84,40 @@ export function NativeSessions(props: NativeSessionsProps) {
   const [diffs, setDiffs] = useState<Record<string, DiffState>>({})
   const [copied, setCopied] = useState(false)
   const [note, setNote] = useState<string | null>(null)
+  const [warnings, setWarnings] = useState<PluginNotice[]>([])
+  /**
+   * One list-request cycle per mount/refresh. A view switch, a Refresh or an
+   * unmount aborts the previous cycle, so a page that is no longer needed stops
+   * at the host and the client drops its stale answer.
+   */
+  const listAbortRef = useRef<AbortController | null>(null)
+
+  useEffect(() => {
+    const controller = new AbortController()
+    listAbortRef.current = controller
+    return () => {
+      controller.abort()
+      if (listAbortRef.current === controller) listAbortRef.current = null
+    }
+  }, [props.refreshKey])
 
   const loadPage = useCallback(async (offset: number, append: boolean): Promise<void> => {
+    const signal = listAbortRef.current?.signal
     setListLoading(!append)
-    const answer = await fetchSessionsPage({ offset, fresh: offset === 0 && props.refreshKey > 0 })
+    const answer = await fetchSessionsPage({
+      offset,
+      fresh: offset === 0 && props.refreshKey > 0,
+      ...(signal === undefined ? {} : { signal }),
+    })
+    if (signal?.aborted === true) return
     if (!answer.ok) {
       setListError(writeErrorText(answer.error))
       setListLoading(false)
       return
     }
     setListError(null)
+    if (!append) setWarnings([])
+    setWarnings((current) => mergeListWarnings(current, answer.sessions.warnings))
     setRows((current) => (append ? [...current, ...answer.sessions.items] : answer.sessions.items))
     setHasMore(answer.sessions.hasMore)
     setNextOffset(answer.sessions.nextOffset)
@@ -212,6 +251,7 @@ export function NativeSessions(props: NativeSessionsProps) {
             onChange={(event) => setTextFilter(event.target.value)}
           />
         </div>
+        <NativeWarnings warnings={warnings} />
         {listError !== null && <p className="ove-preview-error">{listError}</p>}
         {listLoading && rows.length === 0 ? (
           <p className="ove-preview-status">{t('native.loading')}</p>
