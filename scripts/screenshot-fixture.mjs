@@ -52,6 +52,7 @@
 //       → the experiences root answers 404 NOT_FOUND so the AFTER capture can
 //         screenshot the Explore tab's "no Experience records yet" state.
 import { createServer } from 'node:http'
+import { randomUUID } from 'node:crypto'
 
 const PORT = Number(process.argv[2] ?? 1999)
 /** Test switch for the Experience tab's empty state (see `.scratch/v04`). */
@@ -712,9 +713,309 @@ for (const uri of STAT.keys()) {
 }
 for (const children of CHILDREN.values()) children.sort()
 
+/* ========================================================================
+ * v0.5 stateful mock — the F9/F10/F11/F12 write and control endpoints.
+ *
+ * The store is an in-memory copy of the invented catalogue above: writes mutate
+ * it, snapshots capture it, and restore really undoes the mutations. Nothing
+ * here ever touches a real store; the process is the whole persistence layer.
+ * ===================================================================== */
+
+/** Live entries. Initialised from the v0.4 catalogue so reads stay identical. */
+const STORE = new Map()
+for (const [uri, entry] of STAT) {
+  STORE.set(uri, {
+    ...entry,
+    tags: [...entry.tags],
+    memory: { ...entry.memory },
+  })
+}
+
+/** Direct children of a store directory, sorted (recomputed on every read). */
+function childrenOf(dirUri) {
+  const out = []
+  for (const uri of STORE.keys()) if (parentOf(uri) === dirUri) out.push(uri)
+  return out.sort()
+}
+
+/** Touch one entry: length + mtime follow the body. */
+function touched(entry) {
+  entry.size = Buffer.byteLength(entry.text ?? '')
+  entry.modTime = new Date().toISOString()
+  return entry
+}
+
+/** Create any missing directory ancestors of a URI (writes create parents). */
+function ensureParents(uri) {
+  let dir = parentOf(uri)
+  while (dir.length > USER.length && !STORE.has(dir)) {
+    STORE.set(dir, {
+      uri: dir,
+      name: dir.slice(dir.lastIndexOf('/') + 1),
+      size: 0,
+      mode: 493,
+      modTime: new Date().toISOString(),
+      isDir: true,
+      count: 0,
+      contextType: 'memory',
+      tags: [],
+      memory: {},
+    })
+    dir = parentOf(dir)
+  }
+}
+
+/** One placeholder failure body, envelope-style. */
+const failure = (code, messageText, details) => ({ status: 'error', result: null, error: details === undefined ? { code, message: messageText } : { code, message: messageText, details } })
+
+/** Normalise a snapshot path (accepts a file or directory URI). */
+function snapshotPath(raw) {
+  const uri = canonical(raw)
+  return uri.length > 1 ? uri.replace(/\/+$/, '') : uri
+}
+
+/** Whether a store URI is inside the given snapshot paths (prefix match). */
+function underPaths(uri, paths) {
+  return paths.some((raw) => {
+    const prefix = snapshotPath(raw)
+    return uri === prefix || uri.startsWith(`${prefix}/`)
+  })
+}
+
+/** Deep copy of the store (the snapshot tree). */
+const snapshotTree = () =>
+  new Map(
+    [...STORE.entries()].map(([uri, entry]) => [
+      uri,
+      { ...entry, tags: [...entry.tags], memory: { ...entry.memory } },
+    ]),
+  )
+
+/** Newest-first snapshot commits; the mock never prunes them. */
+const SNAPSHOTS = []
+let HEAD_OID = null
+
+const hexOid = () => randomUUID().replace(/-/g, '') + randomUUID().replace(/-/g, '').slice(0, 8)
+
+function sameStoreEntry(a, b) {
+  if (a === undefined || b === undefined) return false
+  return (
+    a.isDir === b.isDir &&
+    (a.text ?? null) === (b.text ?? null) &&
+    (a.size ?? 0) === (b.size ?? 0) &&
+    a.contextType === b.contextType &&
+    JSON.stringify(a.tags ?? []) === JSON.stringify(b.tags ?? [])
+  )
+}
+
+/** Commit the current store (optionally scoped to paths) as a snapshot. */
+function commitSnapshot(message, paths) {
+  const scope = Array.isArray(paths) && paths.length > 0 ? paths.map(snapshotPath) : null
+  const inScope = (uri) => (scope === null ? true : underPaths(uri, scope))
+  const headTree = HEAD_OID === null ? new Map() : SNAPSHOTS.find((snap) => snap.oid === HEAD_OID).tree
+  let changed = 0
+  for (const [uri, entry] of STORE) {
+    if (!inScope(uri)) continue
+    if (!sameStoreEntry(entry, headTree.get(uri))) changed += 1
+  }
+  for (const uri of headTree.keys()) if (inScope(uri) && !STORE.has(uri)) changed += 1
+  if (changed === 0 && HEAD_OID !== null) return { result: 'noop', commit_oid: HEAD_OID, changed: 0, ignored: 0 }
+  const oid = hexOid()
+  SNAPSHOTS.unshift({
+    oid,
+    tree: snapshotTree(),
+    message: message || 'mock snapshot',
+    time: Math.floor(Date.now() / 1000),
+    parent: HEAD_OID,
+  })
+  HEAD_OID = oid
+  return { result: 'created', commit_oid: oid, changed, ignored: 0 }
+}
+
+/** Restore a directory scope from a snapshot (dry-run and applied modes). */
+function restoreSnapshot(projectDir, sourceCommit, dryRun) {
+  const dir = snapshotPath(projectDir)
+  const source = SNAPSHOTS.find((snap) => snap.oid === sourceCommit)
+  if (source === undefined) return { error: failure('NOT_FOUND', `Commit not found: ${sourceCommit}`, { type: 'git_commit', resource: sourceCommit }) }
+  const headTree = HEAD_OID === null ? new Map() : SNAPSHOTS.find((snap) => snap.oid === HEAD_OID).tree
+  const toWrite = []
+  const toDelete = []
+  let unchanged = 0
+  for (const [uri, entry] of source.tree) {
+    if (!underPaths(uri, [dir])) continue
+    if (sameStoreEntry(entry, headTree.get(uri))) unchanged += 1
+    else toWrite.push({ path: uri, oid: hexOid() })
+  }
+  for (const uri of headTree.keys()) {
+    if (!underPaths(uri, [dir])) continue
+    if (!source.tree.has(uri)) toDelete.push({ path: uri, oid: hexOid() })
+  }
+  if (dryRun) {
+    return {
+      status: 'ok',
+      result: { result: 'dry_run', head: HEAD_OID, source: sourceCommit, diff: { to_write: toWrite, to_delete: toDelete, unchanged } },
+    }
+  }
+  const parentCommit = HEAD_OID
+  for (const item of toDelete) STORE.delete(item.path)
+  for (const item of toWrite) {
+    const sourceEntry = source.tree.get(item.path)
+    STORE.set(item.path, { ...sourceEntry, tags: [...sourceEntry.tags], memory: { ...sourceEntry.memory } })
+  }
+  const commit = commitSnapshot(`restore ${dir} to ${sourceCommit}`, [dir])
+  const task = createTask({
+    taskType: 'snapshot_restore_reindex',
+    resourceId: dir,
+    status: 'running',
+    stage: 'reindex',
+    settleMs: 2500,
+    result: { reindexed: toWrite.length + toDelete.length, restored_paths: toWrite.map((item) => item.path) },
+  })
+  return {
+    status: 'ok',
+    result: {
+      result: 'applied',
+      new_commit_oid: commit.commit_oid,
+      parent_commit: parentCommit,
+      source_commit: sourceCommit,
+      written: toWrite.length,
+      deleted: toDelete.length,
+      unchanged,
+      written_paths: toWrite.map((item) => item.path),
+      deleted_paths: toDelete.map((item) => item.path),
+      task_id: task.task_id,
+    },
+  }
+}
+
+/* ---------------------------- task mock -------------------------------- */
+
+const TASKS = new Map()
+const nowSeconds = () => Date.now() / 1000
+
+/** Register a task; `settleMs` later it reads as completed (for polling shots). */
+function createTask({ taskId, taskType, resourceId, status = 'completed', stage = 'done', settleMs = 0, result = null, error = null, events = [] }) {
+  const id = taskId ?? `task_${randomUUID().slice(0, 8)}`
+  const createdAt = nowSeconds()
+  const task = {
+    task_id: id,
+    task_type: taskType,
+    status,
+    stage,
+    created_at: createdAt,
+    updated_at: createdAt,
+    processing_seconds: status === 'completed' ? 2 : undefined,
+    resource_id: resourceId ?? '',
+    meta: {},
+    result: result ?? undefined,
+    error: error ?? null,
+    settle_at: settleMs > 0 ? Date.now() + settleMs : 0,
+    events,
+  }
+  TASKS.set(id, task)
+  return task
+}
+
+/** A task's live status: a running task settles to completed after its delay. */
+function taskView(task) {
+  if (task.status === 'running' && task.settle_at > 0 && Date.now() >= task.settle_at) {
+    task.status = 'completed'
+    task.stage = 'done'
+    task.updated_at = nowSeconds()
+    task.processing_seconds = Math.max(1, Math.round((Date.now() - task.created_at * 1000) / 1000))
+  }
+  const view = {
+    task_id: task.task_id,
+    task_type: task.task_type,
+    status: task.status,
+    stage: task.stage,
+    created_at: task.created_at,
+    updated_at: task.updated_at,
+    processing_seconds: task.processing_seconds,
+    resource_id: task.resource_id,
+    meta: task.meta,
+    result: task.result,
+    error: task.error,
+  }
+  return view
+}
+
+/** Execution events for the detail view (capped like the real server). */
+function taskEvents(task) {
+  const seed = task.events.length > 0 ? task.events : [{ kind: 'created', status: 'pending', stage: 'queued' }]
+  return {
+    items: seed.map((event, index) => ({
+      seq: index + 1,
+      recorded_at: task.created_at + index,
+      kind: event.kind,
+      status: event.status ?? task.status,
+      stage: event.stage ?? task.stage,
+      operation: event.operation ?? null,
+      error: event.error ?? null,
+    })),
+    dropped_count: 0,
+    started_mid_task: false,
+  }
+}
+
+// Seed the Activity tab with a realistic mix: a completed session commit, a
+// failed compile, a cancellable resource import and a finished reindex.
+createTask({
+  taskId: 'task_demo_003',
+  taskType: 'session_commit',
+  status: 'completed',
+  stage: 'extract',
+  resourceId: 'dsh-session-47a8cdea-8bbd-42c5-8150-b8676f8b86e7',
+  result: {
+    session_id: 'dsh-session-47a8cdea-8bbd-42c5-8150-b8676f8b86e7',
+    archive_uri: `${USER}/sessions/2026-10-02/demo-session/history/archive_003`,
+    memories_extracted: { memory_write: 7, memory_edit: 2 },
+    token_usage: { total: { input: 1843, output: 96 } },
+  },
+  events: [
+    { kind: 'created', status: 'pending', stage: 'queued' },
+    { kind: 'status_changed', status: 'running', stage: 'archive' },
+    { kind: 'stage_changed', status: 'running', stage: 'extract' },
+    { kind: 'status_changed', status: 'completed', stage: 'extract' },
+  ],
+})
+createTask({
+  taskId: 'task_compile_002',
+  taskType: 'compile',
+  status: 'failed',
+  stage: 'extract',
+  resourceId: 'viking://resources/dsh',
+  error: { code: 'MODEL_UNAVAILABLE', message: 'The configured summary model was unavailable; the compile batch was not retried.', details: {} },
+  events: [
+    { kind: 'created', status: 'pending', stage: 'queued' },
+    { kind: 'status_changed', status: 'running', stage: 'extract' },
+    { kind: 'error_recorded', status: 'failed', stage: 'extract', operation: 'compile_batch' },
+  ],
+})
+createTask({
+  taskId: 'task_resource_004',
+  taskType: 'add_resource',
+  status: 'running',
+  stage: 'index',
+  resourceId: 'viking://resources/dsh/openviking-api.md',
+  settleMs: 86_400_000,
+  events: [
+    { kind: 'created', status: 'pending', stage: 'queued' },
+    { kind: 'status_changed', status: 'running', stage: 'index' },
+  ],
+})
+createTask({
+  taskId: 'task_reindex_001',
+  taskType: 'snapshot_restore_reindex',
+  status: 'completed',
+  stage: 'reindex',
+  resourceId: `${USER}/memories/entities/project`,
+  result: { reindexed: 2 },
+})
+
 /** A JSON listing entry as `fs/ls` returns it (`output=agent` shape). */
 function listingEntry(uri) {
-  const entry = STAT.get(uri)
+  const entry = STORE.get(uri)
   return {
     uri: entry.uri,
     size: entry.isDir ? 0 : entry.size,
@@ -729,7 +1030,7 @@ function listingEntry(uri) {
 /** The L0/L1 sidecar for a file (its directory's) or a directory (its own). */
 function sidecarFor(uri) {
   const canonicalUri = canonical(uri)
-  const entry = STAT.get(canonicalUri)
+  const entry = STORE.get(canonicalUri)
   if (entry === undefined) return null
   const dir = entry.isDir ? canonicalUri : parentOf(canonicalUri)
   if (dir === NOT_GENERATED_DIR) {
@@ -883,9 +1184,63 @@ const OUTCOMES = new Map([
   ]],
 ])
 
+/**
+ * Read one JSON request body. The write endpoints come back through
+ * `res` themselves; a malformed body is the caller's problem (400), never a
+ * process exception.
+ */
+function withJsonBody(req, res, handle) {
+  let body = ''
+  req.on('data', (chunk) => {
+    body += chunk
+    if (body.length > 256 * 1024) req.destroy()
+  })
+  req.on('end', () => {
+    let parsed = null
+    try {
+      parsed = JSON.parse(body || '{}')
+    } catch {
+      parsed = null
+    }
+    if (parsed === null || typeof parsed !== 'object') {
+      return json(res, failure('INVALID_ARGUMENT', 'request body must be a JSON object'), 400)
+    }
+    handle(parsed)
+  })
+}
+
+/** Newest-first human timestamp helper for mock commit metadata. */
+const commitAuthor = (time) => ({ name: 'OpenViking demo', email: 'demo@example.invalid', time_seconds: time, tz_offset_seconds: 0 })
+
+/** A naive unified diff for the snapshot diff endpoint (mock fidelity only). */
+function mockUnifiedDiff(path, fromText, toText) {
+  const from = (fromText ?? '').split('\n')
+  const to = (toText ?? '').split('\n')
+  let prefix = 0
+  while (prefix < from.length && prefix < to.length && from[prefix] === to[prefix]) prefix += 1
+  let suffix = 0
+  while (
+    suffix < from.length - prefix &&
+    suffix < to.length - prefix &&
+    from[from.length - 1 - suffix] === to[to.length - 1 - suffix]
+  ) {
+    suffix += 1
+  }
+  const removed = from.slice(prefix, from.length - suffix)
+  const added = to.slice(prefix, to.length - suffix)
+  const header = `--- a/${path}\n+++ b/${path}\n@@ -${prefix + 1},${removed.length} +${prefix + 1},${added.length} @@\n`
+  return header + removed.map((line) => `-${line}`).join('\n') + (removed.length > 0 && added.length > 0 ? '\n' : '') + added.map((line) => `+${line}`).join('\n')
+}
+
 const json = (res, body, status = 200) => {
   const payload = JSON.stringify(body)
-  res.writeHead(status, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) })
+  res.writeHead(status, {
+    'content-type': 'application/json',
+    'content-length': Buffer.byteLength(payload),
+    // Present on every real OpenViking response; the plugin correlates audit
+    // entries with it. Adding the header does not change any response body.
+    'x-request-id': randomUUID(),
+  })
   res.end(payload)
 }
 
@@ -909,6 +1264,355 @@ function pageText(text, offsetRaw, limitRaw) {
 createServer((req, res) => {
   const url = new URL(req.url ?? '/', `http://127.0.0.1:${PORT}`)
   const path = url.pathname
+
+  /* ==================================================================
+   * v0.5 write / control endpoints — stateful mock ONLY.
+   *
+   * These never reach a real memory store: the process's STORE map is the
+   * whole persistence layer, and snapshot restore really rolls it back.
+   * ================================================================== */
+
+  // DELETE /api/v1/fs?uri=&recursive= — idempotent, permanent in the mock.
+  if (req.method === 'DELETE' && path === '/api/v1/fs') {
+    const uri = canonical(url.searchParams.get('uri') ?? '')
+    const recursive = url.searchParams.get('recursive') === 'true'
+    if (!uri.startsWith('viking://') || uri === USER) {
+      return json(res, failure('INVALID_ARGUMENT', `Cannot delete: ${uri}`), 400)
+    }
+    if (STORE.has(uri)) {
+      const entry = STORE.get(uri)
+      if (entry.isDir && !recursive) {
+        return json(res, failure('INVALID_ARGUMENT', `Cannot delete directory without recursive=true: ${uri}`, { type: 'directory', resource: uri }), 400)
+      }
+      let deleted = 0
+      const victims = entry.isDir ? [...STORE.keys()].filter((key) => key === uri || key.startsWith(`${uri}/`)) : [uri]
+      for (const victim of victims) {
+        STORE.delete(victim)
+        deleted += 1
+      }
+      return json(res, {
+        status: 'ok',
+        result: { uri, ...(entry.isDir ? { estimated_deleted_count: deleted } : {}) },
+      })
+    }
+    // The real server is idempotent for a valid but absent URI.
+    return json(res, { status: 'ok', result: { uri } })
+  }
+
+  // POST /api/v1/content/write — replace/append a memory file body.
+  if (path === '/api/v1/content/write') {
+    return withJsonBody(req, res, (body) => {
+      if (typeof body.uri !== 'string' || body.uri.trim().length === 0) {
+        return json(res, failure('INVALID_ARGUMENT', 'uri is required'), 400)
+      }
+      const uri = canonical(body.uri)
+      if (!/^viking:\/\/user\/demo\/memories\/[^/]/.test(uri) || !/\.(md|txt|json|yaml|yml|toml)$/i.test(uri)) {
+        return json(res, failure('INVALID_ARGUMENT', `write target is not a curatable memory file: ${uri}`, { type: 'file', resource: uri }), 400)
+      }
+      const existing = STORE.get(uri)
+      if (existing !== undefined && existing.isDir) {
+        return json(res, failure('INVALID_ARGUMENT', `Cannot read directory as file: ${uri}`, { expected: 'file', actual: 'directory' }), 400)
+      }
+      const content = typeof body.content === 'string' ? body.content : ''
+      const mode = body.mode === 'append' ? 'append' : 'replace'
+      ensureParents(uri)
+      const base =
+        existing ?? {
+          uri,
+          name: uri.slice(uri.lastIndexOf('/') + 1),
+          mode: 420,
+          modTime: new Date().toISOString(),
+          isDir: false,
+          contextType: 'memory',
+          tags: [],
+          memory: { memory_type: 'entity' },
+        }
+      const text = mode === 'append' ? `${existing?.text ?? ''}${content}` : content
+      STORE.set(uri, touched({ ...base, uri, isDir: false, text }))
+      return json(res, {
+        status: 'ok',
+        result: {
+          uri,
+          root_uri: parentOf(uri),
+          context_type: 'memory',
+          mode,
+          written_bytes: Buffer.byteLength(content),
+          content_updated: true,
+          semantic_status: 'complete',
+          vector_status: 'complete',
+          queue_status: { Semantic: { processed: 1, error_count: 0, errors: [] } },
+        },
+      })
+    })
+  }
+
+  // POST /api/v1/content/set_tags — replace/append/clear the tag list.
+  if (path === '/api/v1/content/set_tags' || path === '/api/v1/fs/attrs/set_tags') {
+    return withJsonBody(req, res, (body) => {
+      const uri = canonical(typeof body.uri === 'string' ? body.uri : '')
+      const entry = STORE.get(uri)
+      if (entry === undefined) {
+        return json(res, failure('NOT_FOUND', `Resource not found: ${uri}`, { type: 'resource', resource: uri }), 404)
+      }
+      const mode = body.mode === 'clear' ? 'clear' : body.mode === 'append' ? 'append' : 'replace'
+      const tags = Array.isArray(body.tags) ? body.tags.filter((tag) => typeof tag === 'string') : []
+      if (mode === 'clear') entry.tags = []
+      else if (mode === 'append') entry.tags = [...new Set([...entry.tags, ...tags])]
+      else if (tags.length > 0) entry.tags = [...tags]
+      entry.modTime = new Date().toISOString()
+      return json(res, {
+        status: 'ok',
+        result: {
+          uri,
+          updated_uris: [uri],
+          root_uri: parentOf(uri),
+          context_type: entry.contextType,
+          tags: entry.tags,
+          mode,
+          success_count: 1,
+          skipped_count: 0,
+          failed_count: 0,
+          tags_updated: true,
+        },
+      })
+    })
+  }
+
+  // POST /api/v1/snapshot/commit — a real commit into the mock's history.
+  if (path === '/api/v1/snapshot/commit') {
+    return withJsonBody(req, res, (body) => {
+      if (typeof body.message !== 'string' || body.message.trim().length === 0) {
+        return json(res, failure('INVALID_ARGUMENT', 'message is required'), 400)
+      }
+      if (body.paths !== undefined && body.paths !== null && !Array.isArray(body.paths)) {
+        return json(res, failure('INVALID_ARGUMENT', 'paths must be an array'), 400)
+      }
+      return json(res, { status: 'ok', result: commitSnapshot(body.message, body.paths ?? null) })
+    })
+  }
+
+  // POST /api/v1/snapshot/restore — dry-run plan or applied restore.
+  if (path === '/api/v1/snapshot/restore') {
+    return withJsonBody(req, res, (body) => {
+      if (typeof body.project_dir !== 'string' || typeof body.source_commit !== 'string') {
+        return json(res, failure('INVALID_ARGUMENT', 'project_dir and source_commit are required'), 400)
+      }
+      const out = restoreSnapshot(body.project_dir, body.source_commit, body.dry_run === true)
+      if (out.error !== undefined) return json(res, out.error, 404)
+      return json(res, out)
+    })
+  }
+
+  // GET /api/v1/snapshot/log — commit list; an empty branch is 404 git_ref.
+  if (path === '/api/v1/snapshot/log') {
+    if (SNAPSHOTS.length === 0) {
+      return jsonError(res, 404, 'NOT_FOUND', 'Git_ref not found: main', { type: 'git_ref', resource: 'main' })
+    }
+    const limit = Number(url.searchParams.get('limit') ?? '20')
+    const rows = SNAPSHOTS.slice(0, Number.isFinite(limit) && limit > 0 ? limit : 20).map((snap) => ({
+      oid: snap.oid,
+      tree: snap.oid,
+      parents: snap.parent === null ? [] : [snap.parent],
+      author: commitAuthor(snap.time),
+      committer: commitAuthor(snap.time),
+      message: snap.message,
+    }))
+    return json(res, { status: 'ok', result: rows })
+  }
+
+  // GET /api/v1/snapshot/show — commit metadata or one historical blob.
+  if (path === '/api/v1/snapshot/show') {
+    const ref = url.searchParams.get('target_ref') ?? ''
+    const snap = SNAPSHOTS.find((candidate) => candidate.oid === ref) ?? SNAPSHOTS[0]
+    if (snap === undefined) {
+      return jsonError(res, 404, 'NOT_FOUND', `Commit not found: ${ref}`, { type: 'git_commit', resource: ref })
+    }
+    const blobPath = url.searchParams.get('path') ?? ''
+    if (blobPath.length > 0) {
+      const entry = snap.tree.get(canonical(blobPath))
+      if (entry === undefined || entry.text === undefined) {
+        return jsonError(res, 404, 'NOT_FOUND', `Path not found in commit: ${blobPath}`, { type: 'file', resource: blobPath })
+      }
+      res.writeHead(200, {
+        'content-type': 'application/octet-stream',
+        'x-snapshot-oid': snap.oid,
+        'x-snapshot-size': String(Buffer.byteLength(entry.text)),
+      })
+      return res.end(entry.text)
+    }
+    return json(res, {
+      status: 'ok',
+      result: {
+        oid: snap.oid,
+        tree: snap.oid,
+        parents: snap.parent === null ? [] : [snap.parent],
+        author: commitAuthor(snap.time),
+        committer: commitAuthor(snap.time),
+        message: snap.message,
+      },
+    })
+  }
+
+  // GET /api/v1/snapshot/diff — one file as a unified diff between commits.
+  if (path === '/api/v1/snapshot/diff') {
+    const fileUri = canonical(url.searchParams.get('path') ?? '')
+    const from = SNAPSHOTS.find((snap) => snap.oid === (url.searchParams.get('from') ?? ''))
+    const to = SNAPSHOTS.find((snap) => snap.oid === (url.searchParams.get('to') ?? ''))
+    if (from === undefined || to === undefined) {
+      return jsonError(res, 404, 'NOT_FOUND', 'commit not found', { type: 'git_commit', resource: '' })
+    }
+    const fromEntry = from.tree.get(fileUri)
+    const toEntry = to.tree.get(fileUri)
+    const fromText = fromEntry?.text ?? null
+    const toText = toEntry?.text ?? null
+    const changeType =
+      fromText === null && toText === null ? 'unchanged' : fromText === null ? 'added' : toText === null ? 'deleted' : fromText === toText ? 'unchanged' : 'modified'
+    return json(res, {
+      status: 'ok',
+      result: {
+        path: fileUri,
+        from_commit: from.oid,
+        to_commit: to.oid,
+        change_type: changeType,
+        diff_text: mockUnifiedDiff(fileUri, fromText, toText),
+      },
+    })
+  }
+
+  // GET /api/v1/snapshot/ignore — empty ignore-file body on this mock.
+  if (path === '/api/v1/snapshot/ignore') {
+    return json(res, { status: 'ok', result: '' })
+  }
+
+  // POST /api/v1/sessions/{id}/commit — force commit: archive + async task.
+  if (req.method === 'POST' && path.startsWith('/api/v1/sessions/') && path.endsWith('/commit')) {
+    const ovSessionId = decodeURIComponent(path.split('/')[4] ?? 'demo-session')
+    const task = createTask({
+      taskType: 'session_commit',
+      resourceId: ovSessionId,
+      status: 'running',
+      stage: 'archive',
+      settleMs: 3000,
+      result: {
+        session_id: ovSessionId,
+        archive_uri: `${USER}/sessions/${ovSessionId}/history/archive_004`,
+        memories_extracted: { memory_write: 2, memory_edit: 1 },
+        memory_diff_uri: `${USER}/sessions/${ovSessionId}/history/archive_004/memory_diff.json`,
+        token_usage: { total: { input: 1902, output: 88 } },
+      },
+      events: [
+        { kind: 'created', status: 'pending', stage: 'queued' },
+        { kind: 'status_changed', status: 'running', stage: 'archive' },
+      ],
+    })
+    return json(res, {
+      status: 'ok',
+      result: {
+        session_id: ovSessionId,
+        status: 'accepted',
+        task_id: task.task_id,
+        archive_uri: `${USER}/sessions/${ovSessionId}/history/archive_004`,
+        archived: true,
+      },
+    })
+  }
+
+  // GET /api/v1/tasks/{id} (+ optional execution events).
+  if (req.method === 'GET' && path.startsWith('/api/v1/tasks/') && !path.endsWith('/cancel')) {
+    const taskId = decodeURIComponent(path.slice('/api/v1/tasks/'.length))
+    const task = TASKS.get(taskId)
+    if (task === undefined) {
+      return json(res, failure('NOT_FOUND', `Task not found: ${taskId}`, { type: 'task', resource: taskId }), 404)
+    }
+    const includeEvents = ['1', 'true'].includes(url.searchParams.get('include_events') ?? '')
+    const view = taskView(task)
+    if (!includeEvents) return json(res, { status: 'ok', result: view })
+    // The 0.5.3 contract puts the event container inside `result`
+    // (`result.execution_events`); keep the top-level copy too for older readers.
+    const events = taskEvents(task)
+    return json(res, {
+      status: 'ok',
+      result: { ...view, result: { ...(view.result ?? {}), execution_events: events }, execution_events: events },
+    })
+  }
+
+  // POST /api/v1/tasks/{id}/cancel — cooperative cancel (mock succeeds).
+  if (req.method === 'POST' && path.startsWith('/api/v1/tasks/') && path.endsWith('/cancel')) {
+    const taskId = decodeURIComponent(path.slice('/api/v1/tasks/'.length, -'/cancel'.length))
+    const task = TASKS.get(taskId)
+    if (task === undefined) {
+      return json(res, failure('NOT_FOUND', `Task not found: ${taskId}`, { type: 'task', resource: taskId }), 404)
+    }
+    if (['completed', 'failed', 'cancelled'].includes(task.status)) {
+      return json(res, failure('FAILED_PRECONDITION', `Task is already ${task.status}: ${taskId}`, { type: 'task', resource: taskId }), 412)
+    }
+    task.status = 'cancelled'
+    task.stage = 'cancelled'
+    task.updated_at = nowSeconds()
+    return json(res, { status: 'ok', result: taskView(task) })
+  }
+
+  // GET /api/v1/console/dashboard/summary — F11 metric card.
+  if (path === '/api/v1/console/dashboard/summary') {
+    return json(res, {
+      status: 'ok',
+      result: {
+        context_counts: { files: 42, skills: 2, memories: 9, total: 53 },
+        today_tokens: { vlm_input: 3210, vlm_output: 980, embedding_input: 640, total: 4830 },
+        today_retrievals: { find: 12, search: 31, total: 43 },
+      },
+    })
+  }
+
+  // GET /api/v1/observer/queue?format=json — F11 metric card.
+  if (path === '/api/v1/observer/queue') {
+    return json(res, {
+      status: 'ok',
+      result: {
+        name: 'queue',
+        is_healthy: true,
+        has_errors: false,
+        status: {
+          queues: [
+            { queue: 'memory_extract', pending: 1, in_progress: 0, processed: 14, requeued: 0, errors: 0, total: 15 },
+            { queue: 'semantic', pending: 0, in_progress: 0, processed: 9, requeued: 1, errors: 0, total: 10 },
+            { queue: 'vector', pending: 2, in_progress: 1, processed: 22, requeued: 0, errors: 1, total: 25 },
+          ],
+        },
+      },
+    })
+  }
+
+  // GET /api/v1/stats/memories — F11 metric card.
+  if (path === '/api/v1/stats/memories') {
+    return json(res, {
+      status: 'ok',
+      result: {
+        total_memories: 9,
+        by_category: { profile: 1, preferences: 2, entities: 4, events: 1, cases: 0, patterns: 0, tools: 1, skills: 0 },
+        hotness_distribution: { cold: 5, warm: 3, hot: 1 },
+        staleness: { not_accessed_7d: 4, not_accessed_30d: 2, oldest_memory_age_days: 38 },
+      },
+    })
+  }
+
+  // GET /api/v1/stats/sessions/{id} — F11 metric card.
+  if (path.startsWith('/api/v1/stats/sessions/')) {
+    const sessionId = decodeURIComponent(path.slice('/api/v1/stats/sessions/'.length))
+    return json(res, {
+      status: 'ok',
+      result: { session_id: sessionId, total_turns: 1, memories_extracted: 9 },
+    })
+  }
+
+  // GET /api/v1/acl?uri= — resources-only; unavailable on the mock (like dev).
+  if (path === '/api/v1/acl') {
+    const uri = canonical(url.searchParams.get('uri') ?? '')
+    if (!uri.startsWith('viking://resources')) {
+      return json(res, failure('INVALID_ARGUMENT', 'ACL is only supported for viking://resources'), 400)
+    }
+    return json(res, failure('PERMISSION_DENIED', 'manage permission required'), 403)
+  }
 
   if (path === '/health') {
     // v0.3 and v0.4 both read this; the version has to be 0.5.3-like so the
@@ -946,7 +1650,7 @@ createServer((req, res) => {
         result: { uri: `${USER}`, name: 'demo', size: 320, isDir: true, modTime: '2026-10-02T07:00:00Z', count: 108 },
       })
     }
-    const entry = STAT.get(uri)
+    const entry = STORE.get(uri)
     if (entry === undefined) {
       return jsonError(res, 404, 'NOT_FOUND', `Resource not found: ${uri}`, { type: 'resource', resource: uri })
     }
@@ -954,7 +1658,7 @@ createServer((req, res) => {
   }
   if (path === '/api/v1/fs/attrs') {
     const uri = canonical(url.searchParams.get('uri') ?? '')
-    const entry = STAT.get(uri)
+    const entry = STORE.get(uri)
     if (entry === undefined) {
       return jsonError(res, 404, 'NOT_FOUND', `Resource not found: ${uri}`, { type: 'resource', resource: uri })
     }
@@ -1042,25 +1746,23 @@ createServer((req, res) => {
     if (uri === EXPERIENCES_ROOT && EMPTY_EXPERIENCES) {
       return jsonError(res, 404, 'NOT_FOUND', `Directory not found: ${uri}`, { type: 'directory', resource: uri })
     }
-    const children = CHILDREN.get(uri)
-    if (children === undefined) {
+    if (!STORE.has(uri) || STORE.get(uri).isDir !== true) {
       return jsonError(res, 404, 'NOT_FOUND', `Directory not found: ${uri}`, { type: 'directory', resource: uri })
     }
-    return json(res, { status: 'ok', result: children.map(listingEntry) })
+    return json(res, { status: 'ok', result: childrenOf(uri).map(listingEntry) })
   }
   if (path === '/api/v1/fs/tree') {
     const uri = canonical(url.searchParams.get('uri') ?? '')
     if (uri === EXPERIENCES_ROOT && EMPTY_EXPERIENCES) {
       return jsonError(res, 404, 'NOT_FOUND', `Directory not found: ${uri}`, { type: 'directory', resource: uri })
     }
-    const children = CHILDREN.get(uri)
-    if (children === undefined) {
+    if (!STORE.has(uri) || STORE.get(uri).isDir !== true) {
       return jsonError(res, 404, 'NOT_FOUND', `Directory not found: ${uri}`, { type: 'directory', resource: uri })
     }
     const flat = []
     const visit = (dirUri, rel) => {
-      for (const childUri of CHILDREN.get(dirUri) ?? []) {
-        const entry = STAT.get(childUri)
+      for (const childUri of childrenOf(dirUri)) {
+        const entry = STORE.get(childUri)
         flat.push({ ...listingEntry(childUri), rel_path: rel.length === 0 ? entry.name : `${rel}/${entry.name}` })
         if (entry.isDir) visit(childUri, rel.length === 0 ? entry.name : `${rel}/${entry.name}`)
       }
@@ -1076,7 +1778,7 @@ createServer((req, res) => {
       // both. Every file under the archive answers the archived diff.
       return json(res, { result: JSON.stringify(DIFFS[archive.stamp]) })
     }
-    const entry = STAT.get(canonical(uri))
+    const entry = STORE.get(canonical(uri))
     if (entry === undefined || entry.isDir || entry.text === undefined) {
       // Unchanged: the released build saw this 404 for every non-archive read
       // (recall-panel detail, session log, skill bodies) and the v0.4 preview
@@ -1110,6 +1812,24 @@ createServer((req, res) => {
       return jsonError(res, 404, 'NOT_FOUND', `File not found: ${experienceUri}`, { type: 'file', resource: experienceUri })
     }
     return json(res, { status: 'ok', result: { experience_uri: experienceUri, outcome_distribution: distribution } })
+  }
+  if (path === '/api/v1/tasks' && (url.searchParams.get('pagination') === 'cursor' || url.searchParams.has('limit'))) {
+    const statuses = url.searchParams.getAll('status')
+    const types = url.searchParams.getAll('task_type')
+    let items = [...TASKS.values()].map(taskView)
+    if (statuses.length > 0) items = items.filter((task) => statuses.includes(task.status))
+    if (types.length > 0) items = items.filter((task) => types.includes(task.task_type))
+    items.sort((a, b) => b.created_at - a.created_at)
+    const limitRaw = Number(url.searchParams.get('limit') ?? '20')
+    const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(1, limitRaw), 200) : 20
+    const cursorRaw = url.searchParams.get('cursor')
+    const offset = cursorRaw !== null && /^\d+$/.test(cursorRaw) ? Number(cursorRaw) : 0
+    const page = items.slice(offset, offset + limit)
+    const hasMore = offset + limit < items.length
+    return json(res, {
+      status: 'ok',
+      result: { items: page, has_more: hasMore, next_cursor: hasMore ? String(offset + limit) : null },
+    })
   }
   if (path === '/api/v1/tasks') {
     const resourceId = url.searchParams.get('resource_id') ?? 'dsh-demo-session'
