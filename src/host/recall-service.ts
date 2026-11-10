@@ -99,6 +99,11 @@ export class RecallService {
    * `query` overrides the session's own last prompt: an empty string asks the
    * session, whitespace-only is treated as absent.
    */
+  /** Drop cached recall answers; an identity switch changes what they describe. */
+  resetCaches(): void {
+    this.cache.clear()
+  }
+
   async recall(
     sessionId: string,
     query?: string,

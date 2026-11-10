@@ -42,7 +42,7 @@ import {
   type MemoryDiffEntry,
   type MemoryDiffSummary,
 } from '../shared/protocol.ts'
-import { fetchCommits, fetchDiff, type CommitsPayload } from './host-api.ts'
+import { fetchCommits, fetchDiff, fetchSessionControl, prepareWrite, type CommitsPayload } from './host-api.ts'
 import { t } from './locale.ts'
 import { nextPollDelay } from './poll-policy.ts'
 import {
@@ -58,6 +58,9 @@ import { lineDiff, type DiffRow } from '../shared/text-diff.ts'
 import { copyText } from './clipboard.ts'
 import { OpenVikingIcon } from './openviking-icon.tsx'
 import { VikingUriLink } from './viking-uri-link.tsx'
+import { ensureScope, useScope } from './scope-store.ts'
+import { openWriteConfirm } from './write-store.ts'
+import { writeErrorText } from './locale.ts'
 
 export interface CommitStatusProps {
   sessionId?: string
@@ -83,6 +86,9 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
   const [open, setOpen] = useState(false)
   const [diff, setDiff] = useState<MemoryDiff | null>(null)
   const [diffPending, setDiffPending] = useState(false)
+  const [commitError, setCommitError] = useState<string | null>(null)
+  const [captureLine, setCaptureLine] = useState<string | null>(null)
+  const scope = useScope()
   const [selected, setSelected] = useState<string | null>(null)
   /** How many commit records to fetch counts for; the popover widens this on demand. */
   const [summaryLimit, setSummaryLimit] = useState(TIMELINE_DEFAULT)
@@ -203,6 +209,37 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
     [sessionId],
   )
 
+  const openSessionId = sessionId !== undefined && open ? sessionId : null
+  // F10: read-only capture state, fetched only while the popover is open. The
+  // pause/resume gap is stated in the UI; the official plugin exposes no API.
+  useEffect(() => {
+    if (openSessionId === null) return
+    let cancelled = false
+    void fetchSessionControl(openSessionId).then((answer) => {
+      if (cancelled || !answer.ok) return
+      const capture = answer.capture
+      if (!capture.mounted) setCaptureLine(t('pill.captureNoPlugin'))
+      else {
+        setCaptureLine(
+          t('pill.captureLine', {
+            enabled: capture.enabled === true ? t('write.yes') : capture.enabled === false ? t('write.no') : '—',
+            auto: capture.autoCapture === true ? t('write.yes') : capture.autoCapture === false ? t('write.no') : '—',
+            threshold: capture.commitTokenThreshold ?? '—',
+          }),
+        )
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [openSessionId])
+
+  // The scope chip's store is shared; asking once here keeps the popover's
+  // "Commit now" gate in sync with the identity panel.
+  useEffect(() => {
+    void ensureScope()
+  }, [])
+
   if (!sessionId) return null
 
   // The archive markers are the accurate signal and every poll already carries
@@ -261,6 +298,33 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
             <span className="ove-row-count">{status ? t('pill.commitCount', { count: status.commitCount }) : '—'}</span>
           </div>
           <div className="ove-pop-rule" aria-hidden="true" />
+          {/*
+            F10: force commit lives here (and in the Activity tab and `/viking
+            commit`). It always goes through the prepared confirmation dialog —
+            never one-click — and it is the only supported session control: the
+            official plugin exposes no pause/resume API.
+          */}
+          <div className="ove-pop-actions">
+            {scope.scope !== null && scope.scope.writes.enabled && scope.scope.writes.transport ? (
+              <button
+                type="button"
+                className="ove-diff-action"
+                onClick={async () => {
+                  setCommitError(null)
+                  const answer = await prepareWrite({ action: 'force-commit', target: sessionId, sessionId })
+                  if (answer.ok) openWriteConfirm(answer)
+                  else setCommitError(writeErrorText(answer.error))
+                }}
+              >
+                {t('pill.commitNow')}
+              </button>
+            ) : (
+              <span className="ove-row-count">{t('pill.commitDisabled')}</span>
+            )}
+          </div>
+          {commitError !== null ? <div className="ove-empty ove-error">{commitError}</div> : null}
+          {captureLine !== null ? <div className="ove-empty">{captureLine}</div> : null}
+          <div className="ove-empty">{t('pill.capturePauseUnavailable')}</div>
           <dl className="ove-facts">
             <dt>{t('pill.session')}</dt>
             <dd>

@@ -48,6 +48,8 @@ import {
 } from '../src/host/catalog-service.ts'
 import {
   VIKING_USAGE,
+  VIKING_WRITE_USAGE,
+  vikingUsage,
   VikingCommand,
   commandErrorText,
   doctorMarker,
@@ -1211,7 +1213,7 @@ test('experience empty, not-found and unsupported states are distinct', async ()
  * F6: the /viking command
  * ===================================================================== */
 
-test('the command parser maps verbs and aliases, and never invents a write verb', () => {
+test('the command parser maps the read verbs and v0.5 write verbs', () => {
   assert.deepEqual(parseVikingCommand(''), { subcommand: 'status', argument: '' })
   assert.deepEqual(parseVikingCommand('   '), { subcommand: 'status', argument: '' })
   assert.deepEqual(parseVikingCommand(' status '), { subcommand: 'status', argument: '' })
@@ -1228,12 +1230,17 @@ test('the command parser maps verbs and aliases, and never invents a write verb'
   assert.deepEqual(parseVikingCommand('help'), { subcommand: 'help', argument: '' })
   assert.deepEqual(parseVikingCommand('?'), { subcommand: 'help', argument: '' })
   assert.deepEqual(parseVikingCommand('RECALL x'), { subcommand: 'recall', argument: 'x' })
-  // v0.4 is read-only: the v0.5 verbs are unknown here.
-  for (const verb of ['commit', 'remember', 'forget', 'pause', 'resume', 'write']) {
-    assert.equal(parseVikingCommand(verb).subcommand, 'unknown', `${verb} must not be a v0.4 verb`)
+  // v0.5 opens the write verbs; the ones that need an upstream API stay unknown.
+  for (const verb of ['edit', 'forget', 'tag', 'commit', 'undo', 'audit']) {
+    assert.equal(parseVikingCommand(verb).subcommand, verb, `${verb} is a write verb`)
   }
-  assert.match(VIKING_USAGE, /read-only/i)
-  assert.match(VIKING_USAGE, /v0\.5/)
+  for (const verb of ['remember', 'pause', 'resume', 'write']) {
+    assert.equal(parseVikingCommand(verb).subcommand, 'unknown', `${verb} is not a /viking verb`)
+  }
+  assert.match(VIKING_USAGE, /status/)
+  assert.match(VIKING_WRITE_USAGE, /commit/)
+  assert.match(vikingUsage(true), /forget/)
+  assert.match(vikingUsage(false), /Writes are off/i)
 })
 
 test('doctor markers map each check status', () => {
@@ -1342,6 +1349,26 @@ function commandDeps(overrides = {}) {
     },
     dshVersion: () => '0.2.2-rc.1',
     memoryPluginVersion: () => '0.5.33',
+    // v0.5 command deps: the write protocol is exercised in test/v05-units.test.mjs;
+    // here it only has to exist so the read verbs keep working.
+    writesEnabled: () => true,
+    identity: () => ({
+      profileId: null,
+      profileLabel: null,
+      endpoint: 'http://127.0.0.1:1933',
+      authMode: 'dev',
+      account: 'default',
+      user: 'default',
+      peer: null,
+      fingerprint: 'sha256:' + 'a'.repeat(64),
+    }),
+    writes: {
+      prepare: async () => ({ ok: false, error: { code: 'writes-disabled', message: 'test stub' } }),
+      execute: async () => ({ ok: false, error: { code: 'token-mismatch', message: 'test stub' } }),
+      plan: async () => ({ ok: false, error: { code: 'undo-unavailable', message: 'test stub' } }),
+      undo: async () => ({ ok: false, error: { code: 'undo-unavailable', message: 'test stub' } }),
+    },
+    audit: { recentLines: () => [], append: () => ({ ok: true, id: null, error: null }) },
     ...overrides,
   }
   const runner = new VikingCommand(deps)
@@ -1361,6 +1388,8 @@ test('status names the endpoint, identity, plugin and session state', async () =
     '0.2.2-rc.1',
     'Session session-1: 123 pending tokens (threshold 20000)',
     '3 commits',
+    'Writes: enabled',
+    'no profile',
   ]) {
     assert.ok(result.text.includes(fragment), `status shows ${fragment}`)
   }
@@ -1441,19 +1470,24 @@ test('help and an unknown verb render the usage', async () => {
   const { runner } = commandDeps()
   const help = await runner.run('help', 'session-1')
   assert.equal(help.kind, 'success')
-  assert.equal(help.text, VIKING_USAGE)
-  const unknown = await runner.run('commit', 'session-1')
+  assert.equal(help.text, vikingUsage(true))
+  const readOnly = await commandDeps({ writesEnabled: () => false })
+  const helpOff = await readOnly.runner.run('help', 'session-1')
+  assert.equal(helpOff.kind, 'success')
+  assert.match(helpOff.text, /Writes are off/i)
+  const unknown = await runner.run('remember', 'session-1')
   assert.equal(unknown.kind, 'error')
   assert.match(unknown.text, /Unknown \/viking command/)
-  assert.match(unknown.text, /v0\.5/)
+  assert.match(unknown.text, /forget/)
 })
 
 test('the registry definition takes the session id from invocation.agent.id', async () => {
   const { runner, calls } = commandDeps()
   const definition = vikingCommandDefinition(runner)
   assert.equal(definition.name, 'viking')
-  assert.match(definition.description, /read-only/i)
-  assert.deepEqual(definition.input, { hint: 'status | doctor | recall <query> | open <viking://…> | help' })
+  assert.match(definition.description, /curate/i)
+  assert.match(definition.input.hint, /forget/)
+  assert.match(definition.input.hint, /undo/)
 
   const success = await definition.handler({
     agent: { id: 'session-9' },

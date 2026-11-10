@@ -21,6 +21,7 @@ import { useCallback, useEffect, useState } from 'react'
 import type { EnhanceConfig } from '../shared/protocol.ts'
 import { fetchConfig } from './host-api.ts'
 import { noticeText, t } from './locale.ts'
+import { ScopeChip } from './scope-chip.tsx'
 
 /**
  * The panel page. `nonce` forces the iframe to remount on refresh, which is the
@@ -73,6 +74,7 @@ export function StudioPanel() {
         <span className="ove-empty">{config.version ? `v${config.version}` : t('panel.notConnected')}</span>
         <span className="ove-empty">{`${config.account}/${config.user}`}</span>
         <span className="ove-spacer" />
+        <ScopeChip compact />
         <button type="button" onClick={() => setNonce((n) => n + 1)} title={t('panel.reload')}>
           {t('panel.refresh')}
         </button>

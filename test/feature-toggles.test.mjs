@@ -37,6 +37,10 @@ const ALL_ON = {
   previewPanel: true,
   explorePanel: true,
   commands: true,
+  activityPanel: true,
+  scopeBanner: true,
+  // Writes are the one v0.5 switch whose absence means OFF (opt-in).
+  writes: false,
 }
 const ALL_OFF = {
   sidebarEntry: false,
@@ -47,6 +51,9 @@ const ALL_OFF = {
   previewPanel: false,
   explorePanel: false,
   commands: false,
+  activityPanel: false,
+  scopeBanner: false,
+  writes: false,
 }
 
 /** The same states as the settings form carries them: Config field names. */
@@ -59,6 +66,9 @@ const FORM_ALL_ON = {
   showPreview: true,
   showExplore: true,
   enableCommands: true,
+  enableActivity: true,
+  showScopeBanner: true,
+  enableWrites: true,
 }
 const FORM_ALL_OFF = {
   showSidebarEntry: false,
@@ -69,9 +79,12 @@ const FORM_ALL_OFF = {
   showPreview: false,
   showExplore: false,
   enableCommands: false,
+  enableActivity: false,
+  showScopeBanner: false,
+  enableWrites: false,
 }
 
-test('the defaults are all on, which is the pre-switch behaviour', () => {
+test('the defaults are all on except the opt-in writes switch', () => {
   assert.deepEqual(DEFAULT_FEATURE_FLAGS, ALL_ON)
 })
 
@@ -87,6 +100,9 @@ test('each surface names the Config field that carries it', () => {
     previewPanel: 'showPreview',
     explorePanel: 'showExplore',
     commands: 'enableCommands',
+    activityPanel: 'enableActivity',
+    scopeBanner: 'showScopeBanner',
+    writes: 'enableWrites',
   })
   // Mount order: the two v0.4 tabs follow the v0.3 surfaces. `commands` is the
   // host-owned switch and deliberately has no browser mount, so it is absent.
@@ -98,8 +114,11 @@ test('each surface names the Config field that carries it', () => {
     'healthPanel',
     'previewPanel',
     'explorePanel',
+    'activityPanel',
+    'scopeBanner',
   ])
   assert.equal(FEATURE_ORDER.includes('commands'), false, 'the command switch has no client mount')
+  assert.equal(FEATURE_ORDER.includes('writes'), false, 'writes gate buttons, not a mount')
 })
 
 test('only a literal boolean false hides a surface', () => {
@@ -123,6 +142,9 @@ test('only a literal boolean false hides a surface', () => {
       previewPanel: false,
       explorePanel: false,
       commands: false,
+      activityPanel: true,
+      scopeBanner: true,
+      writes: false,
     },
   )
   // Truthy values are not `false`: a stale string, 0, null or an object must all
@@ -136,8 +158,13 @@ test('only a literal boolean false hides a surface', () => {
     showPreview: 'off',
     showExplore: 0,
     enableCommands: null,
+    enableActivity: 'off',
+    showScopeBanner: 0,
+    enableWrites: 'true',
   })
+  // `writes` is opt-in: only a literal `true` enables it, everything else off.
   assert.deepEqual(malformed, ALL_ON)
+  assert.deepEqual(featureFlagsFrom({ enableWrites: true }), { ...ALL_ON, writes: true })
 })
 
 test('a missing value, missing fields or a malformed container mean on', () => {
@@ -154,6 +181,9 @@ test('a missing value, missing fields or a malformed container mean on', () => {
     previewPanel: true,
     explorePanel: true,
     commands: true,
+    activityPanel: true,
+    scopeBanner: true,
+    writes: false,
   })
 })
 
@@ -173,6 +203,9 @@ test('sameFeatureFlags compares surface by surface', () => {
   assert.equal(sameFeatureFlags(ALL_ON, { ...ALL_ON, previewPanel: false }), false)
   assert.equal(sameFeatureFlags(ALL_ON, { ...ALL_ON, explorePanel: false }), false)
   assert.equal(sameFeatureFlags(ALL_ON, { ...ALL_ON, commands: false }), false)
+  assert.equal(sameFeatureFlags(ALL_ON, { ...ALL_ON, activityPanel: false }), false)
+  assert.equal(sameFeatureFlags(ALL_ON, { ...ALL_ON, scopeBanner: false }), false)
+  assert.equal(sameFeatureFlags(ALL_ON, { ...ALL_ON, writes: true }), false)
   assert.equal(sameFeatureFlags(ALL_OFF, ALL_OFF), true)
 })
 
@@ -237,6 +270,9 @@ test('the watcher emits immediately from a ready snapshot and then on changes', 
       showPreview: true,
       showExplore: true,
       enableCommands: true,
+      enableActivity: true,
+      showScopeBanner: true,
+      enableWrites: true,
     },
   })
   const calls = []
@@ -244,13 +280,13 @@ test('the watcher emits immediately from a ready snapshot and then on changes', 
 
   assert.equal(shell.state.entryIds.length, 1, 'the form is read once at subscribe')
   assert.equal(shell.state.entryIds[0], 'openviking-enhance', 'under the namespace it was given')
-  assert.deepEqual(calls, [{ ...ALL_ON, sidebarEntry: false }])
+  assert.deepEqual(calls, [{ ...ALL_ON, sidebarEntry: false, writes: true }])
 
   shell.controller.setSnapshot({
     status: 'ready',
     value: { ...FORM_ALL_ON, showCommitStatus: false },
   })
-  assert.deepEqual(calls.at(-1), { ...ALL_ON, commitStatus: false })
+  assert.deepEqual(calls.at(-1), { ...ALL_ON, commitStatus: false, writes: true })
   assert.equal(calls.length, 2)
 
   dispose()
@@ -277,7 +313,7 @@ test('a not-ready snapshot is not an answer, and unchanged flags are not re-emit
   // A v0.4-only switch change is still a distinct answer.
   shell.controller.setSnapshot({ status: 'ready', value: { ...FORM_ALL_ON, showPreview: false } })
   assert.equal(calls.length, 2)
-  assert.deepEqual(calls.at(-1), { ...ALL_ON, previewPanel: false })
+  assert.deepEqual(calls.at(-1), { ...ALL_ON, previewPanel: false, writes: true })
 
   shell.controller.setSnapshot({ status: 'ready', value: { ...FORM_ALL_OFF } })
   assert.equal(calls.length, 3)

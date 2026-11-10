@@ -186,6 +186,12 @@ export interface EnhanceConfig {
   /** Identity the plugin reads and writes under. */
   account: string
   user: string
+  /** v0.5: live `enableWrites` value, so the panel header need not refetch settings. */
+  writesEnabled?: boolean
+  /** v0.5: the resolved active profile id, or null in legacy mode. */
+  activeProfileId?: string | null
+  /** v0.5: probed server auth mode (null while unknown). */
+  authMode?: string | null
   /** Non-fatal problems worth surfacing in the panel header. */
   warnings: PluginNotice[]
 }
@@ -476,7 +482,7 @@ export interface SessionMemoryLog {
 }
 
 /** Where one connection value came from. */
-export type ConnectionSource = 'override' | 'env' | 'ovcli.local' | 'ovcli' | 'default' | 'none'
+export type ConnectionSource = 'override' | 'env' | 'ovcli.local' | 'ovcli' | 'default' | 'none' | 'profile'
 
 export interface ConnectionFieldOrigin {
   field: 'endpoint' | 'apiKey' | 'account' | 'user'
@@ -844,3 +850,483 @@ export interface ExperiencePayload {
 
 export const EXPERIENCE_LIST_DEFAULT_LIMIT = 20
 export const EXPERIENCE_LIST_MAX_LIMIT = 100
+
+/* ========================================================================
+ * v0.5 "Collaborate" — identity/scope (F12), curation writes (F9),
+ * session control (F10), task centre + metrics (F11), write commands (F6)
+ *
+ * Everything here is additive. The v0.4 read routes and payloads above are
+ * unchanged; the new routes live under the same API prefix and the mutation
+ * routes ride `ctx.connection.fetch` (0.2.2-rc.1 authenticated transport), never
+ * the loopback webServer fence.
+ * ===================================================================== */
+
+/** Error envelope for every v0.5 route: a stable code plus an English message. */
+export interface OveError {
+  /** One of the documented codes, e.g. `writes-disabled`, `token-expired`. */
+  code: string
+  /** Host messages stay English; the client maps known codes to its copy. */
+  message: string
+  /** Structured detail a UI may render (an undo plan, a rate-limit window, …). */
+  details?: unknown
+}
+
+/** The envelope v0.5 routes return; nothing throws, so this is always the shape. */
+export type OveResult<T> = ({ ok: true } & T) | { ok: false; error: OveError }
+
+/** The identity a write is about to run as, safe to show and to persist in audit. */
+export interface IdentityScope {
+  /** Profile id, or null in legacy (no-profile) resolution. */
+  profileId: string | null
+  profileLabel: string | null
+  endpoint: string
+  /** Probed server auth mode (`dev` | `trusted` | `api_key` | …), null while unknown. */
+  authMode: string | null
+  account: string
+  user: string
+  peer: string | null
+  /** `sha256:…` over the profile descriptor; no secrets. */
+  fingerprint: string
+}
+
+/** The write actions v0.5 ships. No others exist. */
+export const WRITE_ACTIONS = ['edit-memory', 'delete-memory', 'set-tags', 'force-commit'] as const
+export type WriteAction = (typeof WRITE_ACTIONS)[number]
+
+/** The actions undo can revert (force commit deliberately cannot be undone). */
+export function isUndoableAction(action: string): action is 'edit-memory' | 'delete-memory' | 'set-tags' {
+  return action === 'edit-memory' || action === 'delete-memory' || action === 'set-tags'
+}
+
+/** A redacted profile row: the API key is never part of any payload. */
+export interface ProfileSummary {
+  id: string
+  label: string
+  endpoint: string
+  /** Configured expectation (`dev` | `trusted` | `api_key`); actual mode is probed. */
+  authMode: string
+  account: string
+  user: string
+  peerId: string | null
+  /** Whether a secret is stored; the secret itself never leaves the host. */
+  hasApiKey: boolean
+}
+
+export interface ProfilesPayload {
+  profiles: ProfileSummary[]
+  activeProfileId: string | null
+  /** False when the file is absent/unreadable — the plugin keeps legacy resolution. */
+  storeAvailable: boolean
+  storeError: string | null
+  /** The secret store of record, shown in the settings form. */
+  storePath: string
+  warnings: PluginNotice[]
+}
+
+/** One capability gate as the scope route reports it. */
+export interface ScopeCapability {
+  available: boolean
+  /** A short English fact or the refusal; the client maps known codes. */
+  detail: string | null
+}
+
+export interface ScopePayload {
+  identity: IdentityScope
+  activeProfileId: string | null
+  /** Server-reported role, when the credential exposes one. */
+  role: string | null
+  version: string | null
+  healthy: boolean
+  writes: {
+    /** `enableWrites` master switch (host-read live). */
+    enabled: boolean
+    /** `ctx.connection.fetch.register` present in this composition. */
+    transport: boolean
+    /** Stable code naming the first failing gate; null when writes may proceed. */
+    reason: string | null
+  }
+  /** Per-capability answers keyed by the design's gate names. */
+  capabilities: Record<string, ScopeCapability>
+  warnings: PluginNotice[]
+  observedAt: string
+}
+
+/** The revision a write was prepared against; shown in the dialog and checked on execute. */
+export interface WriteRevision {
+  /** `sha256:` + the full hex digest; the dialog shows a 12-char prefix. */
+  sha256: string
+  size: number
+  modifiedAt: string | null
+}
+
+/** Force-commit facts read before the confirmation dialog is shown. */
+export interface ForceCommitFacts {
+  sessionId: string
+  /** OpenViking-side session key, e.g. `dsh-<id>`. */
+  ovSessionId: string
+  pendingTokens: number | null
+  messageCount: number | null
+  commitCount: number | null
+  lastCommitAt: string | null
+}
+
+/** What `/write/prepare` returns: a single-use token plus everything the dialog shows. */
+export interface WritePreparePayload {
+  token: string
+  action: WriteAction
+  /** `viking://…` URI, or the DSH session id for a force commit. */
+  target: string
+  scope: IdentityScope
+  /** Epoch milliseconds; the token is useless afterwards. */
+  expiresAt: number
+  revision: WriteRevision | null
+  /** Snapshot commit_oid taken before the write; null when no snapshot was needed. */
+  preCommit: string | null
+  /** Edit only: the current body (bounded). Never put this in logs/command text. */
+  content: string | null
+  contentTruncated: boolean
+  beforeChars: number | null
+  afterChars: number | null
+  /** Set-tags: the tags read before the edit, and the requested final list. */
+  tagsBefore: string[] | null
+  tagsAfter: string[] | null
+  /** Set-tags: `replace` (the editor's set is final), `append`, or `clear`. */
+  tagMode: 'replace' | 'append' | 'clear' | null
+  /** Delete: the file name the user must type to confirm. Never the body. */
+  confirmWord: string | null
+  /** Force commit: session facts read before the dialog. */
+  session: ForceCommitFacts | null
+  /** Short English lines for logs and the plain-text command fallback. */
+  summary: string[]
+}
+
+/** What `/write/execute` returns after the write settled and was audited. */
+export interface WriteExecutePayload {
+  action: WriteAction
+  target: string
+  scope: IdentityScope
+  /** Id of the local audit entry written for this action. */
+  auditId: string
+  /** Undo handle id; null for force-commit. */
+  undoId: string | null
+  postCommit: string | null
+  /** OpenViking `x-request-id`, when the response carried one. */
+  requestId: string | null
+  /** Force commit: the async extraction task. */
+  taskId: string | null
+  task: ActivityTask | null
+  /** Edit/set-tags: the revision/tags read back after the write. */
+  revision: WriteRevision | null
+  tags: string[] | null
+  /** False means "written, verification pending" — the undo handle still exists. */
+  verified: boolean
+  warnings: PluginNotice[]
+}
+
+/** One path in the undo dry-run plan. */
+export interface UndoPlanPath {
+  path: string
+  /** False when restoring this path is outside the action's own inverse set. */
+  expected: boolean
+}
+
+/** The undo preview: `POST /write/plan`. Applying needs `POST /write/undo`. */
+export interface WriteUndoPlan {
+  undoId: string
+  action: WriteAction
+  target: string
+  projectDir: string
+  sourceCommit: string
+  toWrite: UndoPlanPath[]
+  toDelete: UndoPlanPath[]
+  unchanged: number
+  /** True when the plan touches paths the confirmed action did not change. */
+  extraChanges: boolean
+  /** True when this undo is a tag re-apply (no snapshot restore is involved). */
+  tagsOnly: boolean
+}
+
+/** The outcome of `write/cancel`: only a still-pending token can be cancelled. */
+export interface WriteCancelPayload {
+  /** `cancelled` = this call freed the pending slot; `settled`/`expired` = no-op. */
+  status: 'cancelled' | 'settled' | 'expired'
+  /** The action the cancelled token had prepared, when it was still pending. */
+  action: WriteAction | null
+}
+
+/** Result of applying an undo. */
+export interface WriteUndoPayload {
+  undoId: string
+  action: WriteAction
+  target: string
+  outcome: 'restored' | 'tags-restored'
+  newCommit: string | null
+  taskId: string | null
+  auditId: string | null
+  warnings: PluginNotice[]
+}
+
+/* ---- F10: session control (read-only capture state + diagnosis) ---------- */
+
+export interface CaptureState {
+  /** Whether the official memory plugin is mounted in this profile. */
+  mounted: boolean
+  enabled: boolean | null
+  autoCapture: boolean | null
+  captureAssistantTurns: boolean | null
+  captureToolResults: boolean | null
+  commitTokenThreshold: number | null
+  /**
+   * Always false in v0.5: pausing capture needs an upstream runtime API
+   * (`runtime.setCaptureEnabled(session, boolean)`) that the official plugin
+   * does not expose. The UI states this instead of shipping a dead button.
+   */
+  canPause: false
+}
+
+export interface FailedArchiveDiagnosis {
+  /** The failed archive's URI, when the newest archive is the failed one. */
+  archiveUri: string | null
+  taskId: string | null
+  error: string | null
+  state: ArchiveState | null
+  /** `memory_diff.json` is written even when extraction failed; it is the audit. */
+  memoryDiffUri: string | null
+}
+
+export interface SessionControlPayload {
+  sessionId: string
+  ovSessionId: string
+  capture: CaptureState
+  session: ForceCommitFacts | null
+  failedArchive: FailedArchiveDiagnosis | null
+  warnings: PluginNotice[]
+  observedAt: string
+}
+
+/* ---- F11: task centre and metrics ---------------------------------------- */
+
+/** A short, safe projection of a task `result`: counters and URIs only. */
+export interface TaskResultSummary {
+  sessionId: string | null
+  archiveUri: string | null
+  memoriesExtracted: { total: number | null; memoryWrite: number | null; memoryEdit: number | null } | null
+  memoryDiffUri: string | null
+  totalTokens: number | null
+}
+
+/** One task row as the Activity tab renders it (live server shape, flattened). */
+export interface ActivityTask {
+  taskId: string
+  taskType: string
+  status: string
+  stage: string | null
+  error: string | null
+  /** Unix seconds, as the server sends them. */
+  createdAt: number | null
+  updatedAt: number | null
+  processingSeconds: number | null
+  resourceId: string | null
+  resultSummary: TaskResultSummary | null
+}
+
+/** One execution event of a task; `GET /tasks/{id}?include_events=true`. */
+export interface TaskEvent {
+  seq: number
+  recordedAt: number | null
+  kind: string
+  status: string | null
+  stage: string | null
+  operation: string | null
+  error: string | null
+}
+
+/** One task, expanded (`GET ${API_PREFIX}/task`). */
+export interface ActivityTaskDetail extends ActivityTask {
+  events: TaskEvent[] | null
+  eventsDropped: number | null
+  result: Record<string, unknown> | null
+  meta: Record<string, unknown> | null
+}
+
+/** The task types `POST /tasks/{id}/cancel` supports (live server contract). */
+export const CANCELLABLE_TASK_TYPES = [
+  'add_resource',
+  'add_skill',
+  'compile',
+  'session_commit',
+  'admin_reindex',
+  'snapshot_restore_reindex',
+] as const
+
+/** Whether a task's status is still cooperative-cancellable. */
+export function isCancellableStatus(status: string): boolean {
+  return status === 'pending' || status === 'running' || status === 'cancelling'
+}
+
+export interface TaskListPayload {
+  tasks: ActivityTask[]
+  hasMore: boolean
+  nextCursor: string | null
+  /** False when this server build does not expose the task routes. */
+  available: boolean
+  /** A stable code the Activity tab can localize ("tasks-unavailable"). */
+  note: string | null
+  warnings: PluginNotice[]
+  observedAt: string
+}
+
+/** The four cheap metric sources, each independently degradable. */
+export interface MetricsDashboardCard {
+  available: boolean
+  error: string | null
+  files: number | null
+  skills: number | null
+  memories: number | null
+  total: number | null
+  todayTokens: number | null
+  todayRetrievals: number | null
+}
+
+export interface MetricsQueueCard {
+  available: boolean
+  error: string | null
+  queues: Array<{ queue: string; pending: number; inProgress: number; errors: number; processed: number }>
+}
+
+export interface MetricsMemoriesCard {
+  available: boolean
+  error: string | null
+  total: number | null
+  byCategory: Record<string, number>
+  hotness: Record<string, number>
+  stale7d: number | null
+  stale30d: number | null
+  oldestDays: number | null
+}
+
+export interface MetricsSessionCard {
+  available: boolean
+  error: string | null
+  sessionId: string | null
+  totalTurns: number | null
+  memoriesExtracted: number | null
+}
+
+export interface MetricsPayload {
+  sessionId: string | null
+  dashboard: MetricsDashboardCard
+  queue: MetricsQueueCard
+  memories: MetricsMemoriesCard
+  session: MetricsSessionCard
+  /** Always false in v0.5: Prometheus `/metrics` is disabled by default. */
+  prometheus: false
+  warnings: PluginNotice[]
+  observedAt: string
+}
+
+/* ---- local audit trail (the plugin's JSONL file) ------------------------- */
+
+export type AuditKind = 'write' | 'commit' | 'undo' | 'switch' | 'denied' | 'profile' | 'cancel'
+
+export interface AuditIdentity {
+  profileId: string | null
+  endpoint: string
+  authMode: string | null
+  account: string
+  user: string
+  peer: string | null
+  dshSessionId: string | null
+}
+
+/** One line of `audit.jsonl`; never contains a memory body or a secret. */
+export interface AuditEntry {
+  id: string
+  ts: string
+  kind: AuditKind
+  action: WriteAction | string
+  target: string | null
+  identity: AuditIdentity | null
+  fingerprint: string | null
+  /** `overlay` | `command` | `api` — where the explicit confirmation came from. */
+  confirmation: string | null
+  preCommit: string | null
+  postCommit: string | null
+  requestId: string | null
+  result: 'ok' | 'failed' | 'undone' | 'denied'
+  error: string | null
+  undo: { kind: string; projectDir: string; sourceCommit: string } | null
+}
+
+export interface AuditPayload {
+  entries: AuditEntry[]
+  /** The audit file path, so the UI can say where the record lives. */
+  path: string
+  /** True when the file could not be read at all (missing is not an error). */
+  unavailable: boolean
+  warnings: PluginNotice[]
+  observedAt: string
+}
+
+/** Token TTL: the confirmation is useless after two minutes. */
+export const WRITE_TOKEN_TTL_MS = 120_000
+/** At most this many un-settled confirmations may exist at once. */
+export const WRITE_MAX_PENDING = 8
+/** At most this many successful executions per window, per profile. */
+export const WRITE_RATE_LIMIT = 3
+export const WRITE_RATE_WINDOW_MS = 60_000
+/**
+ * A separate, larger quota for *confirmation preparations*.
+ *
+ * Every prepare takes a real snapshot commit before the user can approve it, so
+ * an unmetered prepare→cancel loop can create server-side snapshot history
+ * indefinitely (review round 2). Preparations are counted even when the token is
+ * later cancelled; only the window, not a cancel, returns the quota.
+ */
+export const WRITE_PREPARE_RATE_LIMIT = 10
+export const WRITE_PREPARE_RATE_WINDOW_MS = 60_000
+/** Largest body the edit dialog may load/apply; the server accepts more but a
+ * human review of a larger blob is not meaningful and the route stays cheap. */
+export const WRITE_CONTENT_MAX_CHARS = 64 * 1024
+/** Upper bound of the JSON body the mutation routes accept. */
+export const WRITE_BODY_MAX_BYTES = 64 * 1024
+/** Bounded task list page. */
+export const ACTIVITY_TASKS_DEFAULT_LIMIT = 20
+export const ACTIVITY_TASKS_MAX_LIMIT = 50
+/** Bounded audit tail. */
+export const AUDIT_DEFAULT_LIMIT = 20
+export const AUDIT_MAX_LIMIT = 100
+
+/** The stable error codes the design names; the client localizes known ones. */
+export const WRITE_ERROR_CODES = [
+  'writes-disabled',
+  'transport-unavailable',
+  'snapshot-unavailable',
+  'profile-unhealthy',
+  'identity-ambiguous',
+  'target-not-curatable',
+  'revision-mismatch',
+  'token-expired',
+  'token-used',
+  'token-mismatch',
+  'identity-changed',
+  'rate-limited',
+  'too-many-pending',
+  'write-in-flight',
+  'content-too-large',
+  'invalid-tags',
+  'invalid-request',
+  'typed-confirmation-required',
+  'typed-confirmation-mismatch',
+  'extra-changes',
+  'undo-unavailable',
+  'not-found',
+  'not-supported',
+  'rejected-by-server',
+  'verification-pending',
+  'settings-unavailable',
+  'invalid-body',
+  'method-not-allowed',
+  'forbidden',
+] as const
+export type WriteErrorCode = (typeof WRITE_ERROR_CODES)[number]

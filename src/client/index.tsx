@@ -55,6 +55,13 @@ export { PreviewPanel, previewUriParam } from './preview-panel.tsx'
 export { ExplorePanel } from './explore-panel.tsx'
 export { VikingUriLink } from './viking-uri-link.tsx'
 export { getPreviewTarget, openPreview, resetPreviewStore, setPreviewTarget } from './preview-store.ts'
+export { ScopeChip } from './scope-chip.tsx'
+export { ActivityPanel } from './activity-panel.tsx'
+export { WriteDialog } from './write-dialog.tsx'
+export { WriteToast } from './write-toast.tsx'
+export { VikingCommandCard, parseEnvelope } from './viking-command-card.tsx'
+export { getScopeState, __setScopeStateForTests } from './scope-store.ts'
+export { getWriteState, __setWriteStateForTests } from './write-store.ts'
 import { RecallPanel } from './recall-panel.tsx'
 import { RecallExplainTail } from './recall-explain.tsx'
 import { HealthPanel } from './health-panel.tsx'
@@ -63,6 +70,12 @@ import { PreviewPanel } from './preview-panel.tsx'
 import { ExplorePanel } from './explore-panel.tsx'
 import { setPreviewOpener } from './preview-store.ts'
 import { ConfigPage } from './config-page.tsx'
+import { ScopeChip } from './scope-chip.tsx'
+import { ActivityPanel } from './activity-panel.tsx'
+import { WriteDialog } from './write-dialog.tsx'
+import { WriteToast } from './write-toast.tsx'
+import { VikingCommandCard, type VikingCommandNodeLike } from './viking-command-card.tsx'
+import { refreshScope, registerProfileSwitcher, setScopeBannerEnabled } from './scope-store.ts'
 import { attachLocale, t } from './locale.ts'
 import {
   DEFAULT_FEATURE_FLAGS,
@@ -120,6 +133,16 @@ const PREVIEW_TAB_KIND = 'openviking-preview'
 /** The v0.4 Explore page: search, rules, skills and Experience in one tab. */
 const EXPLORE_TAB_ID = 'dsh-openviking-enhance:explore'
 const EXPLORE_TAB_KIND = 'openviking-explore'
+
+/**
+ * The v0.5 Activity page (F10/F11): task centre + metrics + capture state +
+ * recent actions. The fifth right-Sidebar tab, behind `enableActivity`.
+ */
+const ACTIVITY_TAB_ID = 'dsh-openviking-enhance:activity'
+const ACTIVITY_TAB_KIND = 'openviking-activity'
+
+/** The keyed command renderer's slot key: every `/viking` row dispatches here. */
+const COMMAND_VIEW_KEY = 'viking'
 
 /**
  * The plugin's own row on the Plugins page.
@@ -643,6 +666,63 @@ export function apply(context: ClientContext): void {
     return () => seat.dispose()
   }
 
+  /**
+   * The persistent scope chip (F12), beside the commit pill in the composer
+   * dock. It is its own entry so hiding it never touches the pill, and it is
+   * gated by `showScopeBanner` (dialogs repeat the scope regardless).
+   */
+  function mountScopeChip(): () => void {
+    return slots.inject('conversation.composer.dock', () =>
+      slots.register(
+        { name: 'conversation.composer.dock', id: 'openviking-scope', order: 2, inject: (sessionId: string) => ({ sessionId }) },
+        // The chip is global; the dock is session-scoped, so the session id is
+        // passed but not used.
+        () => <ScopeChip compact />,
+      ),
+    )
+  }
+
+  /** The Activity tab, registered exactly like the v0.4 page types. */
+  function mountActivityPanel(): () => void {
+    const seat = context.inject(['sidebarRightTabs'], (scope) => {
+      const tabs = scope.get('sidebarRightTabs') as SidebarRightTabRegistry | undefined
+      if (tabs === undefined) return
+      const disposeType = tabs.register({
+        id: ACTIVITY_TAB_ID,
+        kind: ACTIVITY_TAB_KIND,
+        title: () => t('activity.tabTitle'),
+        guide: [
+          {
+            id: 'activity',
+            order: 44,
+            title: () => t('activity.tabTitle'),
+            description: () => t('activity.tabDescription'),
+          },
+        ],
+      })
+      try {
+        const disposeBody = slots.inject('sidebar.right.pane.tab', () =>
+          slots.register(
+            {
+              name: 'sidebar.right.pane.tab',
+              key: ACTIVITY_TAB_ID,
+              inject: (sessionId: string) => ({ sessionId }),
+            },
+            ActivityPanel,
+          ),
+        )
+        return () => {
+          disposeBody()
+          disposeType()
+        }
+      } catch (error) {
+        disposeType()
+        throw error
+      }
+    })
+    return () => seat.dispose()
+  }
+
   const mounts: Record<MountedFeature, () => () => void> = {
     sidebarEntry: mountSidebarEntry,
     commitStatus: mountCommitStatus,
@@ -651,6 +731,8 @@ export function apply(context: ClientContext): void {
     healthPanel: mountHealthPanel,
     previewPanel: mountPreviewPanel,
     explorePanel: mountExplorePanel,
+    activityPanel: mountActivityPanel,
+    scopeBanner: mountScopeChip,
   }
 
   /** The right-Sidebar page a feature owns, when it owns one. */
@@ -659,6 +741,7 @@ export function apply(context: ClientContext): void {
     if (feature === 'healthPanel') return HEALTH_TAB_KIND
     if (feature === 'previewPanel') return PREVIEW_TAB_KIND
     if (feature === 'explorePanel') return EXPLORE_TAB_KIND
+    if (feature === 'activityPanel') return ACTIVITY_TAB_KIND
     return null
   }
 
@@ -717,9 +800,23 @@ export function apply(context: ClientContext): void {
     }
   }
 
+  /**
+   * The last (writes switch, active profile) answer. Changing either one changes
+   * what the scope route reports — the write gates live there, and the switch
+   * flow re-reads the identity — so the shared scope store is refreshed once per
+   * distinct answer instead of on every save.
+   */
+  let lastScopeKey: string | null = null
+
   /** Apply one settings answer to every surface. */
-  function applyFlags(flags: FeatureFlags): void {
+  function applyFlags(flags: FeatureFlags, value: Record<string, unknown> = {}): void {
     for (const feature of FEATURE_ORDER) applyFeature(feature, flags[feature])
+    // The banner switch hides the chip everywhere; the dialogs repeat the scope.
+    setScopeBannerEnabled(flags.scopeBanner)
+    const profile = typeof value.activeProfile === 'string' ? value.activeProfile : ''
+    const key = `${flags.writes}|${profile}`
+    if (lastScopeKey !== null && lastScopeKey !== key) void refreshScope()
+    lastScopeKey = key
   }
 
   // Start from the pre-switch behaviour: everything on. A settings answer that
@@ -732,6 +829,69 @@ export function apply(context: ClientContext): void {
   let stopWatching = (): void => {}
   try {
     stopWatching = watchFeatureFlags(context, SETTINGS_NAMESPACE, applyFlags)
+  } catch (error) {
+    report(context, error)
+  }
+
+  /**
+   * The two frame-wide write surfaces (F9/F10) and the rich command row (F6).
+   *
+   * All three are additive registrations: `shell.overlay` is a list seat (a
+   * fresh id sits beside the shipped entries), and the keyed command renderer
+   * only takes the `viking` key. They render nothing until a write dialog/toast
+   * is raised, so mounting them unconditionally is safe — but they are still
+   * registered through `slots.inject`, i.e. only when the layout/chat packages
+   * declare their seats, exactly like every other surface here.
+   */
+  try {
+    disposers.push(
+      slots.inject('shell.overlay', () =>
+        slots.register({ name: 'shell.overlay', id: 'openviking-write-dialog' }, () => <WriteDialog />),
+      ),
+    )
+    disposers.push(
+      slots.inject('shell.overlay', () =>
+        slots.register({ name: 'shell.overlay', id: 'openviking-write-toast' }, () => <WriteToast />),
+      ),
+    )
+    disposers.push(
+      slots.inject('conversation.chat.commandview', () =>
+        slots.register(
+          { name: 'conversation.chat.commandview', key: COMMAND_VIEW_KEY, inject: (sessionId: string) => ({ sessionId }) },
+          (props: { node?: VikingCommandNodeLike; sessionId?: string }) => (
+            <VikingCommandCard node={props.node} sessionId={props.sessionId} />
+          ),
+        ),
+      ),
+    )
+  } catch (error) {
+    report(context, error)
+  }
+
+  /**
+   * F12 switch flow: the scope chip writes `activeProfile` through the same
+   * settings form the Plugins page owns (`ConfigForm.set`), never a raw API
+   * call. The store guards against switching while a confirmation is pending.
+   */
+  try {
+    const watch = context.inject(['configForms'], (scope) => {
+      const forms = scope.get('configForms') as
+        | { get<T>(entryId: string): { set(field: string, value: unknown): unknown } }
+        | undefined
+      if (forms === undefined) return
+      try {
+        const form = forms.get(SETTINGS_NAMESPACE)
+        registerProfileSwitcher(async (id: string) => {
+          const result = await form.set('activeProfile', id)
+          return result !== false
+        })
+      } catch (error) {
+        report(context, error)
+        return
+      }
+      return () => registerProfileSwitcher(null)
+    })
+    disposers.push(() => watch.dispose())
   } catch (error) {
     report(context, error)
   }

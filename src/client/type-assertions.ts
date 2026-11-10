@@ -18,6 +18,11 @@ import { RecallExplainTail } from './recall-explain.tsx'
 import { HealthPanel } from './health-panel.tsx'
 import { PluginHealthSection } from './plugin-health.tsx'
 import { ConfigPage } from './config-page.tsx'
+import { ActivityPanel } from './activity-panel.tsx'
+import { WriteDialog } from './write-dialog.tsx'
+import { WriteToast } from './write-toast.tsx'
+import { VikingCommandCard, type VikingCommandNodeLike } from './viking-command-card.tsx'
+import { ScopeChip } from './scope-chip.tsx'
 
 declare const slots: SlotService
 
@@ -48,6 +53,22 @@ slots.register(
 )
 slots.register({ name: 'plugins.detail.section', id: 'openviking-health', order: 40 }, PluginHealthSection)
 slots.register({ name: 'plugins.row.config', key: 'dsh-openviking-enhance#openviking-enhance' }, ConfigPage)
+slots.register(
+  { name: 'conversation.composer.dock', id: 'openviking-scope', order: 2, inject: (sessionId: string) => ({ sessionId }) },
+  ScopeChip,
+)
+slots.register(
+  { name: 'sidebar.right.pane.tab', key: 'dsh-openviking-enhance:activity', inject: (sessionId: string) => ({ sessionId }) },
+  ActivityPanel,
+)
+// The overlay is root scope: wrap the component so the slot's runtime props do
+// not have to appear in its props interface.
+slots.register({ name: 'shell.overlay', id: 'openviking-write-dialog' }, () => WriteDialog({}))
+slots.register({ name: 'shell.overlay', id: 'openviking-write-toast' }, () => WriteToast({}))
+slots.register(
+  { name: 'conversation.chat.commandview', key: 'viking', inject: (sessionId: string) => ({ sessionId }) },
+  (props: { node?: VikingCommandNodeLike; sessionId?: string }) => VikingCommandCard(props),
+)
 
 // --- and the mistakes each rule exists to catch ------------------------------
 
@@ -69,3 +90,9 @@ slots.register({ name: 'plugins.row.config', key: 'x', inject: (sessionId: strin
 slots.register({ name: 'conversation.chat.turnTail', id: 'x', order: 1 }, RecallExplainTail)
 // @ts-expect-error the component must accept the props its slot hands it
 slots.register({ name: 'sidebar.panellist', id: 'x' }, (props: { nope: number }) => null)
+// @ts-expect-error a list slot (the overlay) is addressed by `id`, not `key`
+slots.register({ name: 'shell.overlay', key: 'openviking-write-dialog' }, () => WriteDialog({}))
+// @ts-expect-error the command renderer is keyed by the command name, not by an id
+slots.register({ name: 'conversation.chat.commandview', id: 'viking' }, () => null)
+// @ts-expect-error a root slot must not declare an inject factory (the overlay)
+slots.register({ name: 'shell.overlay', id: 'x', inject: (sessionId: string) => ({ sessionId }) }, () => WriteDialog({}))

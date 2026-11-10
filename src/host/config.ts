@@ -15,9 +15,12 @@
  * deliberately omits it.
  */
 import { readFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { ConnectionFieldOrigin, ConnectionSource } from '../shared/protocol.ts'
+import type { Profile } from './profiles.ts'
+import { fingerprintInput, normalizeProfileEndpoint } from './profiles.ts'
 
 export interface OvConnection {
   /** Base URL without a trailing slash. */
@@ -25,6 +28,15 @@ export interface OvConnection {
   apiKey: string
   account: string
   user: string
+  /**
+   * The server's probed auth mode, when known.
+   *
+   * In `api_key` mode the server derives the identity from the key and ignores
+   * `X-OpenViking-Account`/`-User`; sending them is harmless but misleading, so
+   * `openviking-api.ts` omits them there. `null`/absent = not probed yet, where
+   * the v0.4 behaviour (send them) is kept.
+   */
+  authMode?: string | null
 }
 
 /** The connection plus a secret-free record of where each field came from. */
@@ -172,3 +184,130 @@ export function describeConnection(connection: OvConnection): Record<string, str
     auth: connection.apiKey ? 'bearer' : 'none',
   }
 }
+
+/* ========================================================================
+ * v0.5 — profile resolution (Lead sign-off decision A)
+ * ===================================================================== */
+
+/**
+ * The resolved identity a write runs under.
+ *
+ * `connection` is the same mutable object the v0.4 services hold, so an
+ * identity switch updates every reader at once; `origins` is likewise the exact
+ * array `DoctorService` renders. See `index.ts`'s `applyIdentity`.
+ */
+export interface ResolvedIdentity {
+  connection: OvConnection
+  origins: ConnectionFieldOrigin[]
+  /** Profile id, or null in legacy resolution (env/ovcli/defaults). */
+  profileId: string | null
+  profileLabel: string | null
+  /** Actor-peer scope configured on the profile; empty when none. */
+  peerId: string | null
+  /** The auth mode the profile owner expects; the probe confirms or corrects it. */
+  authModeHint: string | null
+  /** Stable, secret-free hash input for the identity fingerprint. */
+  fingerprintInput: string
+}
+
+/** Profile provenance for the Doctor: which layer won each field. */
+function profileOrigins(profile: Profile): ConnectionFieldOrigin[] {
+  const detail = `profile:${profile.id}`
+  return [
+    { field: 'endpoint', source: 'profile', detail, configured: true },
+    { field: 'apiKey', source: 'profile', detail, configured: profile.apiKey.length > 0 },
+    { field: 'account', source: 'profile', detail, configured: profile.account.length > 0 },
+    { field: 'user', source: 'profile', detail, configured: profile.user.length > 0 },
+  ]
+}
+
+/**
+ * Resolve the connection for the active profile, or fall back to v0.4 rules.
+ *
+ * **Precedence (decision A):** while a profile is active it wins over the
+ * plugin-config overrides, the environment and `ovcli.conf`. Without one, the
+ * v0.4 precedence is untouched — this function then returns exactly what
+ * `resolveConnectionWithOrigins` has always returned.
+ */
+export function resolveConnectionForProfile(
+  profiles: readonly Profile[],
+  activeProfileId: string,
+  overrides: ConnectionOverrides = {},
+  env: NodeJS.ProcessEnv = process.env,
+): ResolvedIdentity {
+  const id = activeProfileId.trim()
+  const profile = id.length > 0 ? profiles.find((candidate) => candidate.id === id) : undefined
+  if (profile !== undefined) {
+    const connection: OvConnection = {
+      endpoint: normalizeEndpoint(normalizeProfileEndpoint(profile.endpoint)),
+      apiKey: profile.apiKey,
+      account: profile.account.length > 0 ? profile.account : 'default',
+      user: profile.user.length > 0 ? profile.user : 'default',
+      authMode: profile.authMode === 'unknown' ? null : profile.authMode,
+    }
+    const peerId = profile.peerId.length > 0 ? profile.peerId : null
+    return {
+      connection,
+      origins: profileOrigins(profile),
+      profileId: profile.id,
+      profileLabel: profile.label,
+      peerId,
+      authModeHint: profile.authMode === 'unknown' ? null : profile.authMode,
+      // The probed auth mode is appended by `identityFingerprint`; the stored
+      // input here is only the secret-free shape both halves agree on.
+      fingerprintInput: fingerprintInput({
+        profileId: profile.id,
+        endpoint: connection.endpoint,
+        authMode: null,
+        account: connection.account,
+        user: connection.user,
+        peer: peerId,
+      }),
+    }
+  }
+  const legacy = resolveConnectionWithOrigins(overrides, env)
+  return {
+    connection: legacy.connection,
+    origins: legacy.origins,
+    profileId: null,
+    profileLabel: null,
+    peerId: null,
+    authModeHint: null,
+    fingerprintInput: fingerprintInput({
+      profileId: null,
+      endpoint: legacy.connection.endpoint,
+      authMode: null,
+      account: legacy.connection.account,
+      user: legacy.connection.user,
+      peer: null,
+    }),
+  }
+}
+
+/**
+ * `sha256:` + the digest of `{profileId, endpoint, authMode, account, user, peer}`.
+ *
+ * The probed auth mode is part of the identity on purpose: a profile that is
+ * switched from `dev` to `api_key` (a new key stored) has a different identity,
+ * and an undo prepared under the old one must be refused. `null` means "not
+ * probed yet" and is hashed as `null` rather than guessed at — a later probe
+ * that changes the answer changes the fingerprint, and the mismatch is visible
+ * instead of silent.
+ */
+export function identityFingerprint(
+  identity: Pick<ResolvedIdentity, 'profileId' | 'connection' | 'peerId'>,
+  probedAuthMode: string | null,
+  configuredAuthMode: string | null,
+): string {
+  const authMode = probedAuthMode ?? configuredAuthMode
+  const input = fingerprintInput({
+    profileId: identity.profileId,
+    endpoint: identity.connection.endpoint,
+    authMode,
+    account: identity.connection.account,
+    user: identity.connection.user,
+    peer: identity.peerId,
+  })
+  return `sha256:${createHash('sha256').update(input).digest('hex')}`
+}
+

@@ -106,6 +106,9 @@ const PREVIEW_TAB_KIND = 'openviking-preview'
 /** The v0.4 Explore tab type and its kind. */
 const EXPLORE_TAB_ID = 'dsh-openviking-enhance:explore'
 const EXPLORE_TAB_KIND = 'openviking-explore'
+/** The v0.5 Activity tab type and kind. */
+const ACTIVITY_TAB_ID = 'dsh-openviking-enhance:activity'
+const ACTIVITY_TAB_KIND = 'openviking-activity'
 /** The address a page tab is recorded under, as the container addresses it. */
 const RECALL_PAGE_ADDRESS = `sidebar://${RECALL_TAB_KIND}`
 /** The config seat's key on the Plugins page. */
@@ -122,6 +125,9 @@ const ALL_ON = {
   showPreview: true,
   showExplore: true,
   enableCommands: true,
+  enableActivity: true,
+  showScopeBanner: true,
+  enableWrites: true,
 }
 const ALL_OFF = {
   showSidebarEntry: false,
@@ -132,14 +138,34 @@ const ALL_OFF = {
   showPreview: false,
   showExplore: false,
   enableCommands: false,
+  enableActivity: false,
+  showScopeBanner: false,
+  enableWrites: false,
 }
+/**
+ * The three additive seats that are registered regardless of any switch: the
+ * write confirmation dialog and undo toast (`shell.overlay`) and the keyed
+ * `/viking` command renderer. They render nothing until raised, so a hidden
+ * write surface still pays only a null render.
+ */
+const ADDITIVE_SEAT_NAMES = ['shell.overlay', 'shell.overlay', 'conversation.chat.commandview'].sort()
+const ADDITIVE_SEATS = ADDITIVE_SEAT_NAMES.length
+const CONFIG_SEATS = 1
+/** Every live seat when all switches are on: mounts + additive seats + the form. */
+const ALL_SEATS_COUNT = 11 + ADDITIVE_SEATS + CONFIG_SEATS
+const ALL_TAB_TYPES = 5
 const BOOT_SEATS = [
+  'conversation.chat.commandview',
   'conversation.chat.turnTail',
+  'conversation.composer.dock',
   'conversation.composer.dock',
   'main',
   'plugins.detail.section',
   'plugins.row.config',
+  'shell.overlay',
+  'shell.overlay',
   'sidebar.panellist',
+  'sidebar.right.pane.tab',
   'sidebar.right.pane.tab',
   'sidebar.right.pane.tab',
   'sidebar.right.pane.tab',
@@ -471,6 +497,13 @@ function mountShell(options) {
 }
 
 const liveOf = (state, name) => state.registrations.filter((held) => held.options.name === name)
+/** The additive seats still live in a state (dialog, toast, command card). */
+const liveAdditive = (state) => state.registrations.filter((held) => held.options.name === 'shell.overlay' || held.options.name === 'conversation.chat.commandview')
+/** True when only the additive seats + the configuration row remain. */
+const onlyAdditiveAndConfig = (state) => {
+  const names = [...state.registrations.map((held) => held.options.name)].sort()
+  return names.length === ADDITIVE_SEATS + CONFIG_SEATS && liveOf(state, 'plugins.row.config').length === 1
+}
 const liveNames = (state) => state.registrations.map((held) => held.options.name)
 const isLive = (state, name) => liveOf(state, name).length > 0
 const optionsByName = (state, name) => liveOf(state, name)[0]?.options
@@ -528,15 +561,14 @@ check(
   'the main panel is registered before the sidebar row that opens it',
 )
 
-// One dock entry. It renders two elements (an invisible mirror + the pill)
-// whose auto margins and equal widths are what keep the default pills centred
-// while the pill sits at the right edge — the CSS owns that, so here we only
-// assert the single registration and its session inject face.
-check(dock.length === 1, `registers one dock entry (saw ${dock.length})`)
-const pill = dock[0]
-check(pill?.id === 'openviking-commit', 'dock entry is the commit pill')
+// Two dock entries: the status pill and the v0.5 scope chip. Each renders an
+// invisible mirror + its own surface so the default pills stay centred.
+check(dock.length === 2, `registers two dock entries (saw ${dock.length})`)
+const pill = dock.find((options) => options.id === 'openviking-commit')
+check(pill !== undefined, 'one dock entry is the commit pill')
+check(dock.some((options) => options.id === 'openviking-scope'), 'the other is the scope chip')
 check(typeof pill?.inject === 'function', 'status pill declares a session inject face')
-check(onState.injectedKeys.length === 10, `all ten slots are injected (saw ${onState.injectedKeys.join(', ')})`)
+check(onState.injectedKeys.length === ALL_SEATS_COUNT, `all ${ALL_SEATS_COUNT} slots are injected (saw ${onState.injectedKeys.length})`)
 check(onState.awaited.includes('locale'), 'the app locale is reached through a scoped injection, not the browser')
 
 // The configuration form. DSH renders no form for a plugin's Config on its own:
@@ -564,7 +596,7 @@ check(onState.awaited.includes('sidebarRight'), 'the tab-closing navigation face
 // registry keys the body seat by the type's `id`, so a body registered under
 // anything else renders the framework's "nothing can view this" notice.
 check(onState.awaited.includes('sidebarRightTabs'), 'waits for the tab registry (a service), not the slot declaration')
-check(onState.tabTypes.length === 4, `registers all four right-Sidebar tab types (saw ${onState.tabTypes.length})`)
+check(onState.tabTypes.length === ALL_TAB_TYPES, `registers all ${ALL_TAB_TYPES} right-Sidebar tab types (saw ${onState.tabTypes.length})`)
 const tabType = onState.tabTypes[0]?.definition
 check(
   typeof tabType?.id === 'string' && tabType.id.includes(':'),
@@ -583,8 +615,13 @@ const exploreType = onState.tabTypes[3]?.definition
 check(exploreType?.id === EXPLORE_TAB_ID, `explore tab id is namespaced (${exploreType?.id})`)
 check(exploreType?.kind === EXPLORE_TAB_KIND, `explore tab kind is namespaced (${exploreType?.kind})`)
 check(Array.isArray(exploreType?.guide) && exploreType.guide.length === 1, 'the Explore tab carries a guide entry')
-// The four tab bodies: keys are the type ids, and each is a session slot.
-for (const id of [RECALL_TAB_ID, HEALTH_TAB_ID, PREVIEW_TAB_ID, EXPLORE_TAB_ID]) {
+const activityType = onState.tabTypes[4]?.definition
+check(activityType?.id === ACTIVITY_TAB_ID, `activity tab id is namespaced (${activityType?.id})`)
+check(activityType?.kind === ACTIVITY_TAB_KIND, `activity tab kind is namespaced (${activityType?.kind})`)
+check(Array.isArray(activityType?.guide) && activityType.guide.length === 1, 'the Activity tab carries a guide entry')
+check(activityType?.guide?.[0]?.order === 44, 'the Activity guide entry sits after the v0.4 pages')
+// The tab bodies: keys are the type ids, and each is a session slot.
+for (const id of [RECALL_TAB_ID, HEALTH_TAB_ID, PREVIEW_TAB_ID, EXPLORE_TAB_ID, ACTIVITY_TAB_ID]) {
   const body = onState.registrations.find(
     (held) => held.options.name === 'sidebar.right.pane.tab' && held.options.key === id,
   )?.options
@@ -608,6 +645,21 @@ check(
 )
 check(code.includes('/recall'), 'the panel requests the host recall route')
 check(code.includes('/preview'), 'the preview panel requests the host preview route')
+// v0.5 read + write routes: the client only ever calls document-relative paths.
+for (const route of ['/scope', '/profiles', '/tasks', '/metrics', '/audit', '/session-control', '/write/prepare', '/write/execute', '/write/undo', '/write/cancel', '/task/cancel', '/profiles/save']) {
+  check(code.includes(route), `the browser half knows ${route}`)
+}
+// The additive frame-wide seats and the keyed command renderer.
+const overlaySeats = liveOf(onState, 'shell.overlay').map((held) => held.options.id)
+check(overlaySeats.length === 2 && overlaySeats.includes('openviking-write-dialog') && overlaySeats.includes('openviking-write-toast'), `the two overlay entries are registered (${overlaySeats.join(', ')})`)
+const commandSeat = liveOf(onState, 'conversation.chat.commandview')[0]?.options
+check(commandSeat?.key === 'viking', `the command view is keyed by the command name (${commandSeat?.key})`)
+check(typeof commandSeat?.inject === 'function', 'the command view declares a session inject face')
+check(typeof exports.VikingCommandCard === 'function', 'the rich /viking card ships for the server-render harness')
+check(exports.parseEnvelope('x\n' + JSON.stringify({ ov: '1', kind: 'open-editor', uri: 'viking://user/default/memories/preferences/tools.md' }))?.kind === 'open-editor', 'the command card parser reads the host envelope')
+check(typeof exports.ActivityPanel === 'function', 'the Activity panel ships')
+check(typeof exports.ScopeChip === 'function', 'the scope chip ships')
+check(typeof exports.WriteDialog === 'function' && typeof exports.WriteToast === 'function', 'the write dialog and undo toast ship')
 // The shared URI link and the preview store are the v0.4 deep-link seam. The
 // shell only reads apply/inject; the extra exports exist for these harnesses.
 check(typeof exports.openPreview === 'function', 'the bundle exports the deep-link opener for the harness')
@@ -667,6 +719,12 @@ check(injectedCss?.includes('.ove-uri-link'), 'installs the shared viking:// lin
 check(injectedCss?.includes('.ove-explain-card'), 'installs the recall explanation stylesheet')
 check(injectedCss?.includes('.ove-health'), 'installs the memory health stylesheet')
 check(injectedCss?.includes('.ove-diff-line-add') && injectedCss?.includes('.ove-diff-line-remove'), 'installs the diff line styles')
+// v0.5 styles: the scope chip, the write dialog/toast, the Activity tab, the
+// command card and the settings profile editor all ship their own CSS.
+for (const className of ['.ove-scope-chip', '.ove-write-dialog', '.ove-write-editor', '.ove-toast', '.ove-act-task', '.ove-cmd', '.ove-config-profile-row']) {
+  check(injectedCss?.includes(className), `installs the ${className} styles`)
+}
+check(injectedCss?.includes('pointer-events: auto'), 'the click-through overlay entries opt back into pointer events')
 
 // ---------------------------------------------------------------------------
 // Scenario 2 — a saved all-off answer: nothing surface-mounted, form still there
@@ -675,8 +733,12 @@ const off = mountShell({ status: 'ready', value: { ...ALL_OFF }, activeTab: open
 check(off.threw === null, `apply() does not throw with every switch off${throwReason(off.threw)}`)
 const offState = off.state
 check(
-  liveNames(offState).length === 1 && liveNames(offState)[0] === 'plugins.row.config',
-  `an entry saved off mounts none of the client surfaces (saw ${liveNames(offState).join(', ') || 'nothing'})`,
+  onlyAdditiveAndConfig(offState),
+  `an entry saved off mounts none of the client surfaces; only the additive seats and the form remain (saw ${liveNames(offState).join(', ') || 'nothing'})`,
+)
+check(
+  liveAdditive(offState).length === ADDITIVE_SEATS,
+  'the write dialog/toast/command card stay registered because they render nothing until raised',
 )
 check(!isLive(offState, 'sidebar.panellist'), 'the left-sidebar row stays unmounted')
 check(!isLive(offState, 'main'), 'the Studio main panel stays unmounted')
@@ -697,14 +759,11 @@ check(offState.reports.length === 0, `hiding everything reports no failure (saw 
 const boot = mountShell({ status: 'loading', activeTab: openRecallTab() })
 check(boot.threw === null, `apply() does not throw while the form is loading${throwReason(boot.threw)}`)
 check(
-  liveNames(boot.state).length === 10 && boot.state.tabTypes.length === 4,
+  liveNames(boot.state).length === ALL_SEATS_COUNT && boot.state.tabTypes.length === ALL_TAB_TYPES,
   `the initial mount is the pre-switch behaviour: every surface on (saw ${liveNames(boot.state).join(', ') || 'nothing'})`,
 )
 boot.controller.setSnapshot({ status: 'ready', value: { ...ALL_OFF } })
-check(
-  liveNames(boot.state).length === 1 && liveNames(boot.state)[0] === 'plugins.row.config',
-  'a later answer with false hides the surfaces then',
-)
+check(onlyAdditiveAndConfig(boot.state), 'a later answer with false hides the surfaces then')
 check(boot.state.tabTypes.length === 0, 'and every tab type is disposed then')
 
 // ---------------------------------------------------------------------------
@@ -719,23 +778,23 @@ const live = mountShell({
   activeTab: openRecallTab(),
 })
 check(live.threw === null, `apply() does not throw when all switches are on${throwReason(live.threw)}`)
-check(liveNames(live.state).length === 10, `a saved all-on answer leaves every surface mounted (saw ${liveNames(live.state).length})`)
+check(liveNames(live.state).length === ALL_SEATS_COUNT, `a saved all-on answer leaves every surface mounted (saw ${liveNames(live.state).length})`)
 
 // (b) turn everything off through the form listener.
 const hideCursor = live.state.events.length
 live.controller.setFlags({ ...ALL_OFF })
 const hidden = live.state
 check(
-  liveNames(hidden).length === 1 && liveNames(hidden)[0] === 'plugins.row.config',
-  `hiding every surface leaves only the configuration row (saw ${liveNames(hidden).join(', ') || 'nothing'})`,
+  onlyAdditiveAndConfig(hidden),
+  `hiding every surface leaves only the additive seats and the configuration row (saw ${liveNames(hidden).join(', ') || 'nothing'})`,
 )
 check(!isLive(hidden, 'sidebar.panellist'), 'the sidebar row is unmounted live')
 check(!isLive(hidden, 'main'), 'the Studio page is unmounted live')
-check(!isLive(hidden, 'conversation.composer.dock'), 'the commit pill is unmounted live')
-check(!isLive(hidden, 'sidebar.right.pane.tab'), 'all four tab bodies are unmounted live')
+check(!isLive(hidden, 'conversation.composer.dock'), 'the commit pill and scope chip are unmounted live')
+check(!isLive(hidden, 'sidebar.right.pane.tab'), 'all five tab bodies are unmounted live')
 check(!isLive(hidden, 'conversation.chat.turnTail'), 'the recall explanation tail is unmounted live')
 check(!isLive(hidden, 'plugins.detail.section'), 'the plugin-page health summary is unmounted live')
-check(hidden.tabTypes.length === 0, 'all four tab types are unregistered live')
+check(hidden.tabTypes.length === 0, 'all five tab types are unregistered live')
 const hiddenRow = disposeIndex(hidden, hideCursor, 'sidebar.panellist')
 const hiddenMain = disposeIndex(hidden, hideCursor, 'main')
 check(
@@ -796,7 +855,7 @@ live.controller.notify()
 check(hidden.events.length === settledCursor, 'a repeated notification with unchanged flags emits nothing')
 live.controller.setSnapshot({ status: 'loading' })
 check(
-  hidden.events.length === settledCursor && liveNames(hidden).length === 1,
+  hidden.events.length === settledCursor && onlyAdditiveAndConfig(hidden),
   'a non-ready snapshot is not permission to show hidden surfaces',
 )
 live.controller.setSnapshot({ status: 'ready', value: { ...ALL_OFF } })
@@ -810,7 +869,7 @@ const showCursor = hidden.events.length
 live.controller.setFlags({ ...ALL_ON })
 const shown = live.state
 check(
-  liveNames(shown).length === 10 && [...liveNames(shown)].sort().join(',') === BOOT_SEATS.join(','),
+  liveNames(shown).length === ALL_SEATS_COUNT && [...liveNames(shown)].sort().join(',') === BOOT_SEATS.join(','),
   `switching back on re-registers every seat (saw ${liveNames(shown).join(', ') || 'nothing'})`,
 )
 const shownMain = registerIndex(shown, showCursor, 'main')
@@ -821,11 +880,11 @@ check(
 )
 check(optionsByName(shown, 'conversation.composer.dock')?.id === 'openviking-commit', 'the commit pill comes back')
 check(
-  shown.tabTypes.length === 4 &&
-    [RECALL_TAB_ID, HEALTH_TAB_ID, PREVIEW_TAB_ID, EXPLORE_TAB_ID].every((id) =>
+  shown.tabTypes.length === ALL_TAB_TYPES &&
+    [RECALL_TAB_ID, HEALTH_TAB_ID, PREVIEW_TAB_ID, EXPLORE_TAB_ID, ACTIVITY_TAB_ID].every((id) =>
       shown.tabTypes.some((held) => held.definition.id === id),
     ),
-  'all four tab types come back',
+  'all five tab types come back',
 )
 check(
   optionsByName(shown, 'sidebar.right.pane.tab')?.key === RECALL_TAB_ID,
@@ -858,10 +917,14 @@ check(
   'only the commit switch off leaves the sidebar entry mounted',
 )
 check(
-  noCommit.state.tabTypes.length === 4 && liveOf(noCommit.state, 'sidebar.right.pane.tab').length === 4,
+  noCommit.state.tabTypes.length === ALL_TAB_TYPES && liveOf(noCommit.state, 'sidebar.right.pane.tab').length === ALL_TAB_TYPES,
   'only the commit switch off leaves every right-Sidebar surface mounted',
 )
-check(!isLive(noCommit.state, 'conversation.composer.dock'), 'the commit pill is the only surface removed')
+check(
+  !liveOf(noCommit.state, 'conversation.composer.dock').some((held) => held.options.id === 'openviking-commit') &&
+    liveOf(noCommit.state, 'conversation.composer.dock').some((held) => held.options.id === 'openviking-scope'),
+  'only the commit pill is removed; the scope chip stays',
+)
 
 const noSidebar = mountShell({
   status: 'ready',
@@ -875,7 +938,7 @@ check(
 )
 check(
   optionsByName(noSidebar.state, 'conversation.composer.dock')?.id === 'openviking-commit' &&
-    noSidebar.state.tabTypes.length === 4,
+    noSidebar.state.tabTypes.length === ALL_TAB_TYPES,
   'only the sidebar switch off keeps the pill and the right-Sidebar tabs',
 )
 
@@ -891,7 +954,7 @@ const tolerant = mountShell({
 })
 check(tolerant.threw === null, `apply() does not throw on malformed switch values${throwReason(tolerant.threw)}`)
 check(
-  liveNames(tolerant.state).length === 10,
+  liveNames(tolerant.state).length === ALL_SEATS_COUNT,
   `only a literal boolean false hides a surface (saw ${liveNames(tolerant.state).join(', ') || 'nothing'})`,
 )
 const absentFlags = mountShell({
@@ -900,7 +963,7 @@ const absentFlags = mountShell({
   activeTab: openRecallTab(),
 })
 check(
-  liveNames(absentFlags.state).length === 10,
+  liveNames(absentFlags.state).length === ALL_SEATS_COUNT,
   'a settings value that does not carry the switches keeps every surface mounted',
 )
 // A composition without the settings service (a remote Web deployment, or a
@@ -914,7 +977,7 @@ const noSettings = mountShell({
 })
 check(noSettings.threw === null, `apply() does not throw without the settings service${throwReason(noSettings.threw)}`)
 check(
-  liveNames(noSettings.state).length === 10,
+  liveNames(noSettings.state).length === ALL_SEATS_COUNT,
   'a composition without the settings service keeps every surface mounted',
 )
 check(noSettings.state.entryIds.length === 0, 'and it never asks a missing service for a form')
@@ -994,7 +1057,7 @@ check(cancelled.state.closes.length === 0, 'nothing is closed by the cancel itse
 cancelled.controller.setMounted('session-1')
 check(cancelled.state.closes.length === 0, 'mounting the column afterwards does not run a cancelled close')
 check(
-  liveOf(cancelled.state, 'sidebar.right.pane.tab').length === 4 && cancelled.state.tabTypes.length === 4,
+  liveOf(cancelled.state, 'sidebar.right.pane.tab').length === ALL_TAB_TYPES && cancelled.state.tabTypes.length === ALL_TAB_TYPES,
   'the right-Sidebar surfaces are mounted again, not closed',
 )
 check(cancelled.state.reports.length === 0, 'the cancel reports no failure')
@@ -1106,7 +1169,7 @@ const v04 = mountShell({
 })
 check(v04.threw === null, `apply() does not throw with the v0.4 switches on${throwReason(v04.threw)}`)
 check(
-  liveOf(v04.state, 'sidebar.right.pane.tab').length === 4 && v04.state.tabTypes.length === 4,
+  liveOf(v04.state, 'sidebar.right.pane.tab').length === ALL_TAB_TYPES && v04.state.tabTypes.length === ALL_TAB_TYPES,
   'both v0.4 tabs mount with the shipped surfaces',
 )
 // Guide entries are how a person opens a page; assert their order is after the
@@ -1146,7 +1209,7 @@ check(
 const v04ShowCursor = v04.state.events.length
 v04.controller.setFlags({ ...ALL_ON })
 check(
-  v04.state.tabTypes.length === 4 &&
+  v04.state.tabTypes.length === ALL_TAB_TYPES &&
     v04.state.tabTypes.some((held) => held.definition.id === PREVIEW_TAB_ID) &&
     v04.state.tabTypes.some((held) => held.definition.id === EXPLORE_TAB_ID),
   'both v0.4 tab types come back live',

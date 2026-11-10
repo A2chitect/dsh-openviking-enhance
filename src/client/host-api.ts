@@ -25,6 +25,24 @@ import {
   type RecallPayload,
   type RecallQuerySource,
   type SessionMemoryLog,
+  type ActivityTask,
+  type ActivityTaskDetail,
+  type AuditEntry,
+  type CaptureState,
+  type FailedArchiveDiagnosis,
+  type ForceCommitFacts,
+  type MetricsPayload,
+  type OveResult,
+  type PluginNotice,
+  type ProfileSummary,
+  type ProfilesPayload,
+  type ScopePayload,
+  type WriteAction,
+  type WriteCancelPayload,
+  type WriteExecutePayload,
+  type WritePreparePayload,
+  type WriteUndoPayload,
+  type WriteUndoPlan,
   type ExperienceKind,
   type ExperiencePayload,
   type PreviewPayload,
@@ -308,4 +326,244 @@ export function fetchExperience(
     `${BASE}/experience?${params.toString()}`,
     options.signal === undefined ? undefined : { signal: options.signal },
   )
+}
+
+/* ========================================================================
+ * v0.5 routes: identity/scope, activity, audit and the authenticated
+ * mutation transport
+ *
+ * The mutation calls are POSTs to the SAME document-relative API prefix: in the
+ * 0.2.2-rc.1 composition those paths are served by `ctx.connection.fetch`, which
+ * authenticates the request before our handler sees it. There is no secret in
+ * these bodies except the confirmation token, which is single-use and short-TTL.
+ * ===================================================================== */
+
+/** Parse a v0.5 envelope (`{ok:true, …}` or `{ok:false, error:{code,message}}`). */
+async function readOve<T>(url: string, init?: RequestInit): Promise<OveResult<T>> {
+  try {
+    const response = await fetch(url, init)
+    const body = (await response.json()) as OveResult<T>
+    if (body === null || typeof body !== 'object' || !('ok' in body)) {
+      return { ok: false, error: { code: 'unexpected-response', message: `unexpected response from ${url}` } }
+    }
+    return body
+  } catch (error) {
+    return {
+      ok: false,
+      error: { code: 'transport-error', message: error instanceof Error ? error.message : String(error) },
+    }
+  }
+}
+
+/** POST one JSON body to a mutation route. */
+function postOve<T>(url: string, body: unknown, signal?: AbortSignal): Promise<OveResult<T>> {
+  return readOve<T>(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+    ...(signal === undefined ? {} : { signal }),
+  })
+}
+
+export interface ScopeResponse {
+  scope: ScopePayload
+}
+
+/** The active identity, health, capability map and the write gates. */
+export function fetchScope(fresh = false): Promise<OveResult<ScopeResponse>> {
+  return readOve<ScopeResponse>(`${BASE}/scope${fresh ? '?fresh=1' : ''}`)
+}
+
+export interface ProfilesResponse {
+  profiles: ProfilesPayload
+}
+
+/** The redacted profile list (never an API key). */
+export function fetchProfiles(): Promise<OveResult<ProfilesResponse>> {
+  return readOve<ProfilesResponse>(`${BASE}/profiles`)
+}
+
+export interface TasksResponse {
+  tasks: ActivityTask[]
+  hasMore: boolean
+  nextCursor: string | null
+  available: boolean
+  note: string | null
+  warnings: PluginNotice[]
+  observedAt: string
+}
+
+export function fetchTasks(
+  filters: { taskType?: string; status?: string; limit?: number; cursor?: string } = {},
+  signal?: AbortSignal,
+): Promise<OveResult<TasksResponse>> {
+  const params = new URLSearchParams()
+  if (filters.taskType !== undefined && filters.taskType.length > 0) params.set('taskType', filters.taskType)
+  if (filters.status !== undefined && filters.status.length > 0) params.set('status', filters.status)
+  if (filters.cursor !== undefined && filters.cursor.length > 0) params.set('cursor', filters.cursor)
+  if (filters.limit !== undefined) params.set('limit', String(filters.limit))
+  const suffix = params.toString()
+  return readOve<TasksResponse>(
+    `${BASE}/tasks${suffix.length > 0 ? `?${suffix}` : ''}`,
+    signal === undefined ? undefined : { signal },
+  )
+}
+
+export interface TaskDetailResponse {
+  task: ActivityTaskDetail
+}
+
+export function fetchTaskDetail(
+  taskId: string,
+  events = true,
+  signal?: AbortSignal,
+): Promise<OveResult<TaskDetailResponse>> {
+  const params = new URLSearchParams({ taskId })
+  if (events) params.set('events', '1')
+  return readOve<TaskDetailResponse>(
+    `${BASE}/task?${params.toString()}`,
+    signal === undefined ? undefined : { signal },
+  )
+}
+
+/** The attachment URL for one task export; put it on an `<a download>` element. */
+export function taskExportUrl(taskId: string): string {
+  return `${BASE}/task/export?taskId=${encodeURIComponent(taskId)}`
+}
+
+export interface MetricsResponse {
+  metrics: MetricsPayload
+}
+
+export function fetchMetrics(
+  sessionId?: string,
+  options: { fresh?: boolean; signal?: AbortSignal } = {},
+): Promise<OveResult<MetricsResponse>> {
+  const params = new URLSearchParams()
+  if (sessionId !== undefined && sessionId.length > 0) params.set('sessionId', sessionId)
+  if (options.fresh === true) params.set('fresh', '1')
+  const suffix = params.toString()
+  return readOve<MetricsResponse>(
+    `${BASE}/metrics${suffix.length > 0 ? `?${suffix}` : ''}`,
+    options.signal === undefined ? undefined : { signal: options.signal },
+  )
+}
+
+export interface AuditResponse {
+  entries: AuditEntry[]
+  path: string
+  unavailable: boolean
+  warnings: PluginNotice[]
+  observedAt: string
+}
+
+export function fetchAudit(limit = 20, signal?: AbortSignal): Promise<OveResult<AuditResponse>> {
+  return readOve<AuditResponse>(
+    `${BASE}/audit?limit=${encodeURIComponent(String(limit))}`,
+    signal === undefined ? undefined : { signal },
+  )
+}
+
+export interface SessionControlResponse {
+  sessionId: string
+  ovSessionId: string
+  capture: CaptureState
+  session: ForceCommitFacts | null
+  failedArchive: FailedArchiveDiagnosis | null
+  warnings: PluginNotice[]
+  observedAt: string
+}
+
+export function fetchSessionControl(
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<OveResult<SessionControlResponse>> {
+  return readOve<SessionControlResponse>(
+    `${BASE}/session-control?sessionId=${encodeURIComponent(sessionId)}`,
+    signal === undefined ? undefined : { signal },
+  )
+}
+
+/* ---- mutations (authenticated `ctx.connection.fetch` routes) -------------- */
+
+export interface PrepareWriteRequest {
+  action: WriteAction
+  target: string
+  sessionId?: string
+  tags?: string[]
+  tagMode?: 'replace' | 'append' | 'clear'
+}
+
+/** Step 1: snapshot + single-use token + everything the dialog renders. */
+export function prepareWrite(request: PrepareWriteRequest): Promise<OveResult<WritePreparePayload>> {
+  return postOve<WritePreparePayload>(`${BASE}/write/prepare`, request)
+}
+
+export interface ExecuteWriteRequest {
+  token: string
+  content?: string
+  tags?: string[]
+  tagMode?: 'replace' | 'append' | 'clear'
+  typed?: string
+}
+
+/** Step 2: perform the confirmed write, verify, post-commit and audit. */
+export function executeWrite(request: ExecuteWriteRequest): Promise<OveResult<WriteExecutePayload>> {
+  return postOve<WriteExecutePayload>(`${BASE}/write/execute`, request)
+}
+
+/**
+ * Release a confirmation the user dismissed (dialog closed/Escape/Cancel).
+ *
+ * The host only frees a still-pending token; a settled one is an idempotent
+ * no-op, so callers can send this without checking the outcome.
+ */
+export function cancelWrite(token: string): Promise<OveResult<WriteCancelPayload>> {
+  return postOve<WriteCancelPayload>(`${BASE}/write/cancel`, { token })
+}
+
+/** The undo dry-run plan (no mutation). */
+export function planUndo(undoId: string): Promise<OveResult<{ plan: WriteUndoPlan }>> {
+  return postOve<{ plan: WriteUndoPlan }>(`${BASE}/write/plan`, { undoId })
+}
+
+/** Apply the undo; `confirmExtra` after the user approves an extra-changes plan. */
+export function applyUndo(undoId: string, confirmExtra = false): Promise<OveResult<WriteUndoPayload>> {
+  return postOve<WriteUndoPayload>(`${BASE}/write/undo`, { undoId, confirmExtra })
+}
+
+export function cancelTask(taskId: string): Promise<OveResult<{ task: ActivityTask }>> {
+  return postOve<{ task: ActivityTask }>(`${BASE}/task/cancel`, { taskId })
+}
+
+export interface SaveProfileRequest {
+  id: string
+  label: string
+  endpoint: string
+  authMode: string
+  /** Absent keeps the stored key; an empty string clears it. */
+  apiKey?: string
+  account: string
+  user: string
+  peerId: string
+}
+
+export function saveProfile(request: SaveProfileRequest): Promise<OveResult<{ profiles: ProfileSummary[] }>> {
+  return postOve<{ profiles: ProfileSummary[] }>(`${BASE}/profiles/save`, request)
+}
+
+export function deleteProfileRequest(id: string): Promise<OveResult<{ profiles: ProfileSummary[] }>> {
+  return postOve<{ profiles: ProfileSummary[] }>(`${BASE}/profiles/delete`, { id })
+}
+
+export interface ProfileTestResponse {
+  reachable: boolean
+  version: string | null
+  authMode: string | null
+  error: string | null
+}
+
+/** Reachability test for a candidate endpoint; never sends a stored key. */
+export function testProfileEndpoint(endpoint: string): Promise<OveResult<ProfileTestResponse>> {
+  return postOve<ProfileTestResponse>(`${BASE}/profiles/test`, { endpoint })
 }
