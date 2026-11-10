@@ -194,6 +194,8 @@ export const SNAPSHOT_MESSAGE_MAX_CHARS = 200
 export const PACK_BODY_INACTIVITY_TIMEOUT_MS = 30_000
 /** Overall deadline for one task-evidence server-request-log fan-out. */
 export const EVIDENCE_LOOKUP_DEADLINE_MS = 15_000
+
+/* ========================================================================
  * v0.9 "Native II — multi-scope" — scope persistence, probes and read-only
  * ACL budgets
  *
