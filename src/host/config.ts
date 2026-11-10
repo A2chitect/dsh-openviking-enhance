@@ -1,9 +1,11 @@
 /**
  * OpenViking connection resolution for the host half.
  *
- * The plugin never invents credentials: it reads the same files the OpenViking
- * CLI and `@openviking/dsh-memory-plugin` read, in the same precedence order,
- * so the panel always shows the memory space the sessions actually write to.
+ * The plugin never invents credentials: it resolves them from the documented
+ * OpenViking layers below, so the panel always shows the memory space the
+ * sessions actually write to. This is the plugin's own resolver — it deliberately
+ * does not reproduce the official plugin's full credential chain; the differences
+ * are listed in both READMEs' host-contract chapter and in `PROVENANCE.md`.
  *
  *   1. explicit plugin config (the loader row in cordis.patch.yml)
  *   2. process environment (`OPENVIKING_*`)
@@ -18,7 +20,12 @@ import { readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import type { ConnectionFieldOrigin, ConnectionSource } from '../shared/protocol.ts'
+import type {
+  ConfigSourceHealth,
+  ConfigSourceState,
+  ConnectionFieldOrigin,
+  ConnectionSource,
+} from '../shared/protocol.ts'
 import type { Profile } from './profiles.ts'
 import { fingerprintInput, normalizeProfileEndpoint } from './profiles.ts'
 
@@ -43,6 +50,8 @@ export interface OvConnection {
 export interface ConnectionResolution {
   connection: OvConnection
   origins: ConnectionFieldOrigin[]
+  /** Per-file read health for the two OpenViking config layers (P1-4). */
+  configSources: ConfigSourceHealth[]
 }
 
 export interface ConnectionOverrides {
@@ -61,14 +70,42 @@ export function openVikingHome(): string {
   return process.env.OPENVIKING_HOME?.trim() || join(homedir(), '.openviking')
 }
 
-/** Read a JSON config file, returning {} for anything unreadable or malformed. */
-function readJsonFile(path: string): Record<string, unknown> {
+/**
+ * Read one JSON config file, reporting *why* it produced nothing.
+ *
+ * A missing file is the normal case (a fresh machine); a malformed or unreadable
+ * one is not, and the Doctor must be able to say which happened without echoing
+ * contents. Values only; the secret paths never leave this module.
+ */
+export function readJsonSource(path: string): {
+  value: Record<string, unknown>
+  state: ConfigSourceState
+  errorCode: string | null
+} {
+  let raw: string
   try {
-    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'))
-    return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {}
-  } catch {
-    return {}
+    raw = readFileSync(path, 'utf8')
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code ?? null
+    return { value: {}, state: code === 'ENOENT' ? 'missing' : code === null ? 'unknown' : 'unreadable', errorCode: code }
   }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch (error) {
+    const code = error instanceof SyntaxError ? 'InvalidJSON' : ((error as NodeJS.ErrnoException).code ?? null)
+    return { value: {}, state: 'malformed', errorCode: code }
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { value: {}, state: 'wrong-shape', errorCode: 'not-an-object' }
+  }
+  return { value: parsed as Record<string, unknown>, state: 'ok', errorCode: null }
+}
+
+/** A config path in a form safe to show: `~/.openviking/...` or `$VAR/...`. */
+function symbolicOpenVikingPath(file: string, env: NodeJS.ProcessEnv): string {
+  const override = env.OPENVIKING_HOME?.trim()
+  return override ? `$OPENVIKING_HOME/${file}` : `~/.openviking/${file}`
 }
 
 function str(value: unknown): string {
@@ -112,13 +149,46 @@ function pick(
  * walk therefore also reports which layer won each field. Values themselves are
  * never echoed for `apiKey` — only whether one is configured and from where.
  */
+/** Read both OpenViking config layers once, with their health records. */
+function readOpenVikingSources(env: NodeJS.ProcessEnv): {
+  cli: Record<string, unknown>
+  cliLocal: Record<string, unknown>
+  configSources: ConfigSourceHealth[]
+} {
+  const home = env.OPENVIKING_HOME?.trim() || openVikingHome()
+  const cliSource = readJsonSource(join(home, 'ovcli.conf'))
+  const cliLocalSource = readJsonSource(join(home, 'ovcli.conf.local'))
+  return {
+    cli: cliSource.value,
+    cliLocal: cliLocalSource.value,
+    configSources: [
+      { source: 'ovcli.conf', path: symbolicOpenVikingPath('ovcli.conf', env), state: cliSource.state, errorCode: cliSource.errorCode },
+      {
+        source: 'ovcli.conf.local',
+        path: symbolicOpenVikingPath('ovcli.conf.local', env),
+        state: cliLocalSource.state,
+        errorCode: cliLocalSource.errorCode,
+      },
+    ],
+  }
+}
+
+/**
+ * Config-source health for the Doctor (P1-4).
+ *
+ * Missing is normal and silent; malformed/unreadable/wrong-shape are the states a
+ * person needs told about, because the plugin silently falls back to defaults in
+ * all of them. Never returns contents.
+ */
+export function configSourceHealth(env: NodeJS.ProcessEnv = process.env): ConfigSourceHealth[] {
+  return readOpenVikingSources(env).configSources
+}
+
 export function resolveConnectionWithOrigins(
   overrides: ConnectionOverrides = {},
   env: NodeJS.ProcessEnv = process.env,
 ): ConnectionResolution {
-  const home = env.OPENVIKING_HOME?.trim() || openVikingHome()
-  const cli = readJsonFile(join(home, 'ovcli.conf'))
-  const cliLocal = readJsonFile(join(home, 'ovcli.conf.local'))
+  const { cli, cliLocal, configSources } = readOpenVikingSources(env)
 
   const endpoint = pick(
     [
@@ -164,6 +234,7 @@ export function resolveConnectionWithOrigins(
       account: account.value,
       user: user.value,
     },
+    configSources,
     origins: [
       { field: 'endpoint', source: endpoint.source, detail: endpoint.detail, configured: endpoint.value.length > 0 },
       // The value of an API key never leaves this module; the origin record says

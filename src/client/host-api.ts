@@ -249,13 +249,20 @@ export interface PreviewResponse {
 }
 
 /**
- * One entry's metadata and L0/L1/L2.
+ * One entry's metadata and L0/L1, plus one bounded L2 page.
  *
  * The host reads all three tiers in this one request, so switching tiers in the
- * panel is free and there is no per-tier loading state to race.
+ * panel is free; L2 is paged by line offset so a large file is never downloaded
+ * whole on the first open.
  */
-export function fetchPreview(uri: string): Promise<ApiResult<PreviewResponse>> {
-  return readJson<PreviewResponse>(`${BASE}/preview?uri=${encodeURIComponent(uri)}`)
+export function fetchPreview(
+  uri: string,
+  options: { offset?: number; limit?: number } = {},
+): Promise<ApiResult<PreviewResponse>> {
+  const params = new URLSearchParams({ uri })
+  if (options.offset !== undefined) params.set('offset', String(options.offset))
+  if (options.limit !== undefined) params.set('limit', String(options.limit))
+  return readJson<PreviewResponse>(`${BASE}/preview?${params.toString()}`)
 }
 
 export interface SearchResponse {

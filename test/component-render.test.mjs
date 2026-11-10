@@ -263,6 +263,12 @@ test('the bundle registers every seat, and all of them render', () => {
   for (const label of ['Search', 'Rules', 'Skills', 'Experience']) {
     assert.ok(explore.includes(label), `the Explore tab offers the ${label} segment`)
   }
+  // S2: rules are an explicit opt-in with a visible cost line, so the default
+  // Search view can be checked without a browser.
+  assert.ok(explore.includes('Include rules (server cost)'), 'the Search view offers the explicit rules opt-in')
+  assert.ok(explore.includes('Memories, resources and skills only by default'), 'and states the default and the cost')
+  assert.ok(explore.includes('type="checkbox"'), 'the opt-in is a real checkbox, off by default')
+  assert.ok(!explore.includes('checked=""'), 'rules are not searched by default')
 
   // The shared viking:// link is a real button whose tooltip is the URI, and the
   // preview store is the seam every surface reaches it through.

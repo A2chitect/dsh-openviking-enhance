@@ -1,8 +1,10 @@
 /**
  * Thin, dependency-free client for the OpenViking HTTP API.
  *
- * Only the routes this feature needs are implemented, and every one of them was
- * verified against a live OpenViking 0.4.22 server:
+ * Only the routes this feature needs are implemented. The contract they follow
+ * is the OpenViking 0.5.1.1–0.5.3 request/response schema this release is tested
+ * against (0.5.2 unverified, 0.5.4 unprobed); the compatibility matrix in both
+ * READMEs records that range.
  *
  *   GET /health                                     liveness + version
  *   GET /api/v1/sessions/{id}                       commit state for a session
@@ -19,7 +21,20 @@
  *    (`{status, result, error}`) — `unwrap` handles both.
  */
 import type { CommitTask } from '../shared/protocol.ts'
+import {
+  CONTEXT_SEARCH_TIMEOUT_MS,
+  DEFAULT_REQUEST_TIMEOUT_MS,
+  FS_TIMEOUT_MS,
+  HEALTH_TIMEOUT_MS,
+  LIST_SEARCH_TIMEOUT_MS,
+  RECALL_CONTENT_TIMEOUT_MS,
+  SET_TAGS_TIMEOUT_MS,
+  SNAPSHOT_TIMEOUT_MS,
+  STATUS_TIMEOUT_MS,
+  WRITE_TIMEOUT_MS,
+} from '../shared/limits.ts'
 import type { OvConnection } from './config.ts'
+import { buildUserAgent } from '../shared/build-info.ts'
 
 export interface OvResult<T> {
   ok: boolean
@@ -93,18 +108,29 @@ export interface RequestOptions {
   signal?: AbortSignal | undefined
 }
 
-const DEFAULT_TIMEOUT_MS = 8000
+/** Lazy facts about the running host, used for the outbound User-Agent. */
+export interface ClientInfo {
+  /** The DSH release, when the host has published one. */
+  dshVersion?: () => string | null
+}
 
 export class OpenVikingApi {
   private readonly connection: OvConnection
+  private readonly clientInfo: ClientInfo
 
   /** Plain field assignment: parameter properties cannot be type-stripped. */
-  constructor(connection: OvConnection) {
+  constructor(connection: OvConnection, clientInfo: ClientInfo = {}) {
     this.connection = connection
+    this.clientInfo = clientInfo
   }
 
   private headers(options: RequestOptions): Record<string, string> {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      // Self-reported identity for the server's own log: version facts only,
+      // never a key/account/user. Lazy so early health calls still send it.
+      'User-Agent': buildUserAgent(this.clientInfo.dshVersion?.() ?? null),
+    }
     if (this.connection.apiKey) headers.Authorization = `Bearer ${this.connection.apiKey}`
     // Auth-mode correction (docs/api-v05.md §5.1): in api_key mode the server
     // derives the identity from the key and ignores identity headers, so they are
@@ -125,7 +151,7 @@ export class OpenVikingApi {
     init: { method?: string; body?: unknown } = {},
   ): Promise<OvResult<T>> {
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_TIMEOUT_MS)
+    const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS)
     // Fold the caller's cancellation into the timeout controller: whichever
     // fires first aborts the fetch, and the listener is always removed.
     const external = options.signal
@@ -188,8 +214,10 @@ export class OpenVikingApi {
     accountId: string | null
     userId: string | null
     error: string | null
+    /** `x-request-id` when the server answered, for Doctor diagnostics only. */
+    requestId: string | null
   }> {
-    const response = await this.request<Record<string, unknown>>('/health', { timeoutMs: 4000, ...options })
+    const response = await this.request<Record<string, unknown>>('/health', { timeoutMs: HEALTH_TIMEOUT_MS, ...options })
     if (!response.ok) {
       return {
         ok: false,
@@ -199,6 +227,7 @@ export class OpenVikingApi {
         accountId: null,
         userId: null,
         error: response.error,
+        requestId: response.requestId ?? null,
       }
     }
     const body = response.result
@@ -210,12 +239,13 @@ export class OpenVikingApi {
       accountId: typeof body?.account_id === 'string' ? body.account_id : null,
       userId: typeof body?.user_id === 'string' ? body.user_id : null,
       error: null,
+      requestId: response.requestId ?? null,
     }
   }
 
   async getSession(ovSessionId: string, options: RequestOptions = {}): Promise<OvResult<OvSessionMeta>> {
     return this.request<OvSessionMeta>(`/api/v1/sessions/${encodeURIComponent(ovSessionId)}`, {
-      timeoutMs: 5000,
+      timeoutMs: STATUS_TIMEOUT_MS,
       ...options,
     })
   }
@@ -235,7 +265,7 @@ export class OpenVikingApi {
   async listHistory(sessionUri: string, options: RequestOptions = {}): Promise<OvResult<OvFsEntry[]>> {
     const uri = `${sessionUri.replace(/\/+$/, '')}/history`
     return this.request<OvFsEntry[]>(`/api/v1/fs/ls?uri=${encodeURIComponent(uri)}`, {
-      timeoutMs: 5000,
+      timeoutMs: STATUS_TIMEOUT_MS,
       ...options,
     })
   }
@@ -245,7 +275,7 @@ export class OpenVikingApi {
     const query = `task_type=session_commit&resource_id=${encodeURIComponent(ovSessionId)}`
     const response = await this.request<OvCommitTask[] | { items?: OvCommitTask[] }>(
       `/api/v1/tasks?${query}`,
-      { timeoutMs: 5000, ...options },
+      { timeoutMs: STATUS_TIMEOUT_MS, ...options },
     )
     if (!response.ok) return response as OvResult<OvCommitTask[]>
     const raw = response.result
@@ -263,7 +293,30 @@ export class OpenVikingApi {
   async readText(uri: string, options: RequestOptions = {}): Promise<OvResult<string>> {
     const response = await this.request<unknown>(
       `/api/v1/content/read?uri=${encodeURIComponent(uri)}`,
-      { timeoutMs: 8000, ...options },
+      { timeoutMs: FS_TIMEOUT_MS, ...options },
+    )
+    if (!response.ok) return response as OvResult<string>
+    return { ...response, result: typeof response.result === 'string' ? response.result : null }
+  }
+
+  /**
+   * One page of a `viking://` text file.
+   *
+   * `content/read` takes `offset` (0-based starting line) and `limit` (line
+   * count, -1 = to end), which is what lets the preview show a bounded page and
+   * page the rest on demand instead of downloading the whole file into memory.
+   */
+  async readTextPage(
+    uri: string,
+    page: { offset?: number; limit?: number } = {},
+    options: RequestOptions = {},
+  ): Promise<OvResult<string>> {
+    const params = new URLSearchParams({ uri })
+    if (page.offset !== undefined && Number.isFinite(page.offset)) params.set('offset', String(Math.max(0, Math.trunc(page.offset))))
+    if (page.limit !== undefined && Number.isFinite(page.limit)) params.set('limit', String(Math.max(1, Math.trunc(page.limit))))
+    const response = await this.request<unknown>(
+      `/api/v1/content/read?${params.toString()}`,
+      { timeoutMs: FS_TIMEOUT_MS, ...options },
     )
     if (!response.ok) return response as OvResult<string>
     return { ...response, result: typeof response.result === 'string' ? response.result : null }
@@ -285,7 +338,7 @@ export class OpenVikingApi {
    * carries every bucket at once plus the server's `query_plan`.
    */
   async search(body: OvSearchRequest, options: RequestOptions = {}): Promise<OvResult<OvSearchResponse>> {
-    return this.request<OvSearchResponse>('/api/v1/search/search', { timeoutMs: 12000, ...options }, {
+    return this.request<OvSearchResponse>('/api/v1/search/search', { timeoutMs: LIST_SEARCH_TIMEOUT_MS, ...options }, {
       method: 'POST',
       body,
     })
@@ -301,7 +354,7 @@ export class OpenVikingApi {
    * the extra fields; callers fall back to `search()`.
    */
   async searchContext(body: OvContextRequest, options: RequestOptions = {}): Promise<OvResult<OvContextResponse>> {
-    return this.request<OvContextResponse>('/api/v1/search/search', { timeoutMs: 20000, ...options }, {
+    return this.request<OvContextResponse>('/api/v1/search/search', { timeoutMs: CONTEXT_SEARCH_TIMEOUT_MS, ...options }, {
       method: 'POST',
       body,
     })
@@ -309,7 +362,7 @@ export class OpenVikingApi {
 
   /** Server status. `result.user` is the authenticated request's own user. */
   async systemStatus(options: RequestOptions = {}): Promise<OvResult<OvSystemStatus>> {
-    return this.request<OvSystemStatus>('/api/v1/system/status', { timeoutMs: 5000, ...options })
+    return this.request<OvSystemStatus>('/api/v1/system/status', { timeoutMs: STATUS_TIMEOUT_MS, ...options })
   }
 
   /**
@@ -324,29 +377,50 @@ export class OpenVikingApi {
     const { nodeLimit, ...request } = options
     const limit = Math.min(Math.max(Math.trunc(nodeLimit ?? 1), 1), 1000)
     return this.request<OvSkillList>(`/api/v1/skills?node_limit=${limit}`, {
-      timeoutMs: 5000,
+      timeoutMs: STATUS_TIMEOUT_MS,
       ...request,
     })
   }
 
   /** Retrieval quality metrics — query count and latency, no memory bodies. */
   async observerRetrieval(options: RequestOptions = {}): Promise<OvResult<OvObserverRetrieval>> {
-    return this.request<OvObserverRetrieval>('/api/v1/observer/retrieval?format=json', { timeoutMs: 5000, ...options })
+    return this.request<OvObserverRetrieval>('/api/v1/observer/retrieval?format=json', { timeoutMs: STATUS_TIMEOUT_MS, ...options })
   }
 
   /** Rules capability probe. The server requires `task_context`; one short one. */
   async rulesSearch(taskContext: string, options: RequestOptions = {}): Promise<OvResult<OvRuleSearch>> {
     return this.request<OvRuleSearch>(
       '/api/v1/rules/search',
-      { timeoutMs: 8000, ...options },
+      { timeoutMs: FS_TIMEOUT_MS, ...options },
       { method: 'POST', body: { task_context: taskContext.slice(0, 2000) } },
     )
+  }
+
+  /**
+   * The cheap capability probe for the rule-search route.
+   *
+   * `POST /api/v1/rules/search` is not a pure read: the server runs scenario
+   * vector recall and, when a Rule judge model is configured, an LLM judgment per
+   * candidate. But the HTTP layer validates the body *before* the service runs,
+   * so an empty JSON object is rejected as invalid input (400/422) without any
+   * embedding or model work. That rejection is the answer this probe needs: a
+   * validation reply means the route exists, a bare 404 means this server build
+   * does not have it. The result body is always null; the classification lives
+   * in `catalog-service.ts` so one place owns it.
+   */
+  async probeRuleSearchRoute(options: RequestOptions = {}): Promise<OvResult<null>> {
+    const reply = await this.request<unknown>(
+      '/api/v1/rules/search',
+      { timeoutMs: FS_TIMEOUT_MS, ...options },
+      { method: 'POST', body: {} },
+    )
+    return { ...reply, result: null }
   }
 
   /** `fs/stat` for one `viking://` URI; the capability probe and count read. */
   async fsStat(uri: string, options: RequestOptions = {}): Promise<OvResult<OvFsStat>> {
     return this.request<OvFsStat>(`/api/v1/fs/stat?uri=${encodeURIComponent(uri)}`, {
-      timeoutMs: 5000,
+      timeoutMs: STATUS_TIMEOUT_MS,
       ...options,
     })
   }
@@ -365,7 +439,7 @@ export class OpenVikingApi {
   ): Promise<OvResult<string>> {
     const response = await this.request<unknown>(
       `/api/v1/content/${tier}?uri=${encodeURIComponent(uri)}`,
-      { timeoutMs: 8000, ...options },
+      { timeoutMs: FS_TIMEOUT_MS, ...options },
     )
     if (!response.ok) return response as OvResult<string>
     return { ...response, result: typeof response.result === 'string' ? response.result : null }
@@ -374,7 +448,7 @@ export class OpenVikingApi {
   /** The entry's context face, tags and memory metadata (`fs/attrs`). */
   async fsAttrs(uri: string, options: RequestOptions = {}): Promise<OvResult<OvFsAttrs>> {
     return this.request<OvFsAttrs>(`/api/v1/fs/attrs?uri=${encodeURIComponent(uri)}`, {
-      timeoutMs: 5000,
+      timeoutMs: STATUS_TIMEOUT_MS,
       ...options,
     })
   }
@@ -383,7 +457,7 @@ export class OpenVikingApi {
   async listDirectory(uri: string, options: RequestOptions = {}): Promise<OvResult<OvFsListEntry[]>> {
     const response = await this.request<OvFsListEntry[] | { items?: OvFsListEntry[] }>(
       `/api/v1/fs/ls?uri=${encodeURIComponent(uri)}`,
-      { timeoutMs: 5000, ...options },
+      { timeoutMs: STATUS_TIMEOUT_MS, ...options },
     )
     if (!response.ok) return response as OvResult<OvFsListEntry[]>
     const raw = response.result
@@ -401,7 +475,7 @@ export class OpenVikingApi {
     return this.request<OvExperienceTrajectories>(
       `/api/v1/agent-evolution/experiences/trajectories?experience_uri=${encodeURIComponent(experienceUri)}` +
         `&limit=${limit}&offset=${offset}`,
-      { timeoutMs: 8000, ...options },
+      { timeoutMs: FS_TIMEOUT_MS, ...options },
     )
   }
 
@@ -412,7 +486,7 @@ export class OpenVikingApi {
   ): Promise<OvResult<OvExperienceOutcomes>> {
     return this.request<OvExperienceOutcomes>(
       `/api/v1/agent-evolution/experiences/outcomes?experience_uri=${encodeURIComponent(experienceUri)}`,
-      { timeoutMs: 8000, ...options },
+      { timeoutMs: FS_TIMEOUT_MS, ...options },
     )
   }
 
@@ -432,7 +506,7 @@ export class OpenVikingApi {
     content: string,
     options: RequestOptions & { mode?: 'replace' | 'append' } = {},
   ): Promise<OvResult<OvWriteResult>> {
-    return this.request<OvWriteResult>('/api/v1/content/write', { timeoutMs: 20000, ...options }, {
+    return this.request<OvWriteResult>('/api/v1/content/write', { timeoutMs: WRITE_TIMEOUT_MS, ...options }, {
       method: 'POST',
       body: { uri, content, mode: options.mode ?? 'replace', wait: false },
     })
@@ -442,7 +516,7 @@ export class OpenVikingApi {
   async deletePath(uri: string, options: RequestOptions & { recursive?: boolean } = {}): Promise<OvResult<OvDeleteResult>> {
     const query = new URLSearchParams({ uri, recursive: options.recursive === true ? 'true' : 'false' })
     return this.request<OvDeleteResult>(`/api/v1/fs?${query.toString()}`, {
-      timeoutMs: 20000,
+      timeoutMs: WRITE_TIMEOUT_MS,
       ...options,
     }, { method: 'DELETE' })
   }
@@ -454,7 +528,7 @@ export class OpenVikingApi {
     mode: 'replace' | 'append' | 'clear',
     options: RequestOptions = {},
   ): Promise<OvResult<OvSetTagsResult>> {
-    return this.request<OvSetTagsResult>('/api/v1/content/set_tags', { timeoutMs: 10000, ...options }, {
+    return this.request<OvSetTagsResult>('/api/v1/content/set_tags', { timeoutMs: SET_TAGS_TIMEOUT_MS, ...options }, {
       method: 'POST',
       body: { uri, tags, mode, recursive: false },
     })
@@ -475,7 +549,7 @@ export class OpenVikingApi {
     paths: string[],
     options: RequestOptions = {},
   ): Promise<OvResult<OvSnapshotCommit>> {
-    return this.request<OvSnapshotCommit>('/api/v1/snapshot/commit', { timeoutMs: 30000, ...options }, {
+    return this.request<OvSnapshotCommit>('/api/v1/snapshot/commit', { timeoutMs: SNAPSHOT_TIMEOUT_MS, ...options }, {
       method: 'POST',
       body: { message, paths },
     })
@@ -493,7 +567,7 @@ export class OpenVikingApi {
     sourceCommit: string,
     options: RequestOptions & { dryRun?: boolean; message?: string } = {},
   ): Promise<OvResult<OvSnapshotRestore>> {
-    return this.request<OvSnapshotRestore>('/api/v1/snapshot/restore', { timeoutMs: 30000, ...options }, {
+    return this.request<OvSnapshotRestore>('/api/v1/snapshot/restore', { timeoutMs: SNAPSHOT_TIMEOUT_MS, ...options }, {
       method: 'POST',
       body: {
         project_dir: projectDir,
@@ -514,7 +588,7 @@ export class OpenVikingApi {
     })
     for (const path of options.paths ?? []) params.append('paths', path)
     return this.request<OvSnapshotLogEntry[]>(`/api/v1/snapshot/log?${params.toString()}`, {
-      timeoutMs: 8000,
+      timeoutMs: FS_TIMEOUT_MS,
       ...options,
     })
   }
@@ -529,7 +603,7 @@ export class OpenVikingApi {
   ): Promise<OvResult<OvCommitSessionResult>> {
     return this.request<OvCommitSessionResult>(
       `/api/v1/sessions/${encodeURIComponent(ovSessionId)}/commit`,
-      { timeoutMs: 30000, ...options },
+      { timeoutMs: SNAPSHOT_TIMEOUT_MS, ...options },
       { method: 'POST', body },
     )
   }
@@ -541,7 +615,7 @@ export class OpenVikingApi {
   ): Promise<OvResult<OvTask>> {
     const suffix = options.includeEvents === true ? '?include_events=true' : ''
     return this.request<OvTask>(`/api/v1/tasks/${encodeURIComponent(taskId)}${suffix}`, {
-      timeoutMs: 8000,
+      timeoutMs: FS_TIMEOUT_MS,
       ...options,
     })
   }
@@ -571,7 +645,7 @@ export class OpenVikingApi {
     if (filters.resourceId !== undefined && filters.resourceId.length > 0) params.set('resource_id', filters.resourceId)
     if (filters.cursor !== undefined && filters.cursor.length > 0) params.set('cursor', filters.cursor)
     return this.request<OvTaskList | OvTask[]>(`/api/v1/tasks?${params.toString()}`, {
-      timeoutMs: 8000,
+      timeoutMs: FS_TIMEOUT_MS,
       ...options,
     })
   }
@@ -579,7 +653,7 @@ export class OpenVikingApi {
   /** Cooperative cancel. Never claims rollback; the server may settle later. */
   async cancelTask(taskId: string, options: RequestOptions = {}): Promise<OvResult<OvTask>> {
     return this.request<OvTask>(`/api/v1/tasks/${encodeURIComponent(taskId)}/cancel`, {
-      timeoutMs: 8000,
+      timeoutMs: FS_TIMEOUT_MS,
       ...options,
     }, { method: 'POST' })
   }
@@ -587,21 +661,21 @@ export class OpenVikingApi {
   /* ---- v0.5: cheap metrics (F11) ---------------------------------------- */
 
   async dashboardSummary(options: RequestOptions = {}): Promise<OvResult<OvDashboardSummary>> {
-    return this.request<OvDashboardSummary>('/api/v1/console/dashboard/summary', { timeoutMs: 5000, ...options })
+    return this.request<OvDashboardSummary>('/api/v1/console/dashboard/summary', { timeoutMs: STATUS_TIMEOUT_MS, ...options })
   }
 
   async observerQueue(options: RequestOptions = {}): Promise<OvResult<OvObserverQueue>> {
-    return this.request<OvObserverQueue>('/api/v1/observer/queue?format=json', { timeoutMs: 5000, ...options })
+    return this.request<OvObserverQueue>('/api/v1/observer/queue?format=json', { timeoutMs: STATUS_TIMEOUT_MS, ...options })
   }
 
   async memoryStats(options: RequestOptions = {}): Promise<OvResult<OvMemoryStats>> {
-    return this.request<OvMemoryStats>('/api/v1/stats/memories', { timeoutMs: 5000, ...options })
+    return this.request<OvMemoryStats>('/api/v1/stats/memories', { timeoutMs: STATUS_TIMEOUT_MS, ...options })
   }
 
   async sessionStats(sessionId: string, options: RequestOptions = {}): Promise<OvResult<OvSessionStats>> {
     return this.request<OvSessionStats>(
       `/api/v1/stats/sessions/${encodeURIComponent(sessionId)}`,
-      { timeoutMs: 5000, ...options },
+      { timeoutMs: STATUS_TIMEOUT_MS, ...options },
     )
   }
 
@@ -610,7 +684,7 @@ export class OpenVikingApi {
   /** The ACL report for a resource URI; resources only, and inert by default. */
   async getAcl(uri: string, options: RequestOptions = {}): Promise<OvResult<OvAclReport>> {
     return this.request<OvAclReport>(`/api/v1/acl?uri=${encodeURIComponent(uri)}`, {
-      timeoutMs: 5000,
+      timeoutMs: STATUS_TIMEOUT_MS,
       ...options,
     })
   }
@@ -643,10 +717,11 @@ export interface OvSearchRequest {
 /**
  * The context-face request body.
  *
- * These names mirror the memory plugin's own request builder (see its
- * `buildContextSearchBody`); every optional field is sent only when the mounted
- * plugin's effective configuration says so. The server owns the mechanics —
- * quotas, tier degradation, cross-turn de-duplication.
+ * These are the server's own field names; every optional field is sent only when
+ * the mounted memory plugin's effective configuration asks for it, so the recall
+ * plan replays the request a live turn makes. `recall-contract.ts` owns which
+ * fields the configuration selects and how `quotas` is apportioned; the server
+ * owns the mechanics — tier degradation, cross-turn de-duplication, token fill.
  */
 export interface OvContextRequest {
   query: string

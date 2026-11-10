@@ -57,6 +57,66 @@ import { randomUUID } from 'node:crypto'
 const PORT = Number(process.argv[2] ?? 1999)
 /** Test switch for the Experience tab's empty state (see `.scratch/v04`). */
 const EMPTY_EXPERIENCES = process.env.OV_FIXTURE_EMPTY_EXPERIENCES === '1'
+/**
+ * v0.6 evidence modes. Off by default so every pre-existing response (and the
+ * compat gate) is byte-identical; they are only set for the v0.6 screenshot
+ * pass that exercises L2 paging and the Rules partial/truncated state.
+ */
+const LONG_L2 = process.env.OV_FIXTURE_LONG_L2 === '1'
+const RULES_STALL = process.env.OV_FIXTURE_RULES_STALL === '1'
+/** The long body is paged by the v0.6 preview; 400 lines must fit the host's
+ *  PREVIEW_MAX_CHARS cap, so every line stays short. */
+const longL2Uri = () => `${USER}/memories/entities/project/release-history.md`
+const longL2Body = () => {
+  const lines = [
+    '# Release history (long fixture document)',
+    '',
+    'Invented release log used by the v0.6 visual evidence to exercise the paged',
+    'L2 preview. Every line is short so one 400-line page fits the preview cap.',
+    '',
+  ]
+  for (let index = 1; index <= 920; index += 1) {
+    lines.push(`- build ${String(index).padStart(4, '0')}: promote the changelog.`)
+  }
+  return lines.join('\n')
+}
+
+/** v0.6 Rules evidence: extra rule files so the two-phase listing needs at
+ *  least two different pages of the bounded (concurrency-4) pool. */
+function extraStallRules() {
+  const rules = []
+  for (let index = 1; index <= 40; index += 1) {
+    const slug = `stall-rule-${index}`
+    rules.push({
+      uri: `${SCENARIO_SIDEBAR}/${slug}.md`,
+      text: [
+        '---',
+        'schema: openviking.rule/v1',
+        `atomic_id: ${slug}`,
+        'revision: 1',
+        'status: active',
+        'scenario_id: sidebar-contract',
+        'source_uris: []',
+        'evidence: []',
+        'updated_at: 2026-11-08T09:30:00+00:00',
+        `name: Stall rule ${index}`,
+        'confidence: user',
+        `description: Fixture-only rule ${index} that fills the v0.6 rule-list budget.`,
+        `content: Fixture rule ${index} exists only to make the partial listing deterministic.`,
+        'applies_when: The v0.6 partial rules fixture is exercised.',
+        "exception: ''",
+        'probability: 0.6',
+        '---',
+        '',
+        `# Stall rule ${index}`,
+        '',
+        'This rule exists only in the v0.6 evidence fixture.',
+      ].join('\n'),
+      modTime: '2026-11-08T09:30:00Z',
+    })
+  }
+  return rules
+}
 
 const USER = 'viking://user/demo'
 const SESSION_URI = `${USER}/sessions/2026-10-02/demo-session`
@@ -729,6 +789,43 @@ for (const [uri, entry] of STAT) {
     tags: [...entry.tags],
     memory: { ...entry.memory },
   })
+}
+
+// v0.6 evidence-only entries (behind the env flags above). They are added after
+// the store is copied, so the default (flags-off) responses are byte-identical
+// to the frozen v0.5 fixture.
+if (LONG_L2) {
+  const text = longL2Body()
+  const LONG_L2_URI = longL2Uri()
+  STORE.set(LONG_L2_URI, {
+    uri: LONG_L2_URI,
+    name: 'release-history.md',
+    size: Buffer.byteLength(text),
+    mode: 420,
+    modTime: '2026-11-08T10:00:00Z',
+    isDir: false,
+    contextType: 'memory',
+    tags: ['team=demo', 'kind=history'],
+    memory: { memory_type: 'entity', category: 'release' },
+    text,
+    abstract: 'A long invented release log used to exercise the paged L2 preview.',
+  })
+}
+if (RULES_STALL) {
+  for (const rule of extraStallRules()) {
+    STORE.set(rule.uri, {
+      uri: rule.uri,
+      name: rule.uri.slice(rule.uri.lastIndexOf('/') + 1),
+      size: Buffer.byteLength(rule.text),
+      mode: 420,
+      modTime: rule.modTime,
+      isDir: false,
+      contextType: 'memory',
+      tags: ['rule=stall'],
+      memory: { memory_type: 'rule' },
+      text: rule.text,
+    })
+  }
 }
 
 /** Direct children of a store directory, sorted (recomputed on every read). */
@@ -1785,7 +1882,18 @@ createServer((req, res) => {
       // reports the tier as unavailable in place.
       return json(res, { result: null }, 404)
     }
-    return json(res, { status: 'ok', result: pageText(entry.text, url.searchParams.get('offset'), url.searchParams.get('limit')) })
+    const respondPage = () =>
+      json(res, { status: 'ok', result: pageText(entry.text, url.searchParams.get('offset'), url.searchParams.get('limit')) })
+    // v0.6 Rules partial evidence: the host gives the whole listing 15 s and a
+    // concurrency-4 pool. Only the extra `stall-rule-*` bodies stall (longer
+    // than the host's 8 s read timeout), so the three real rule files arrive
+    // immediately and the pool still has unstarted items when the 15 s deadline
+    // passes — a deterministic partial listing with real rows.
+    if (RULES_STALL && entry.memory?.memory_type === 'rule' && entry.name.startsWith('stall-rule-')) {
+      setTimeout(respondPage, 20_000)
+      return
+    }
+    return respondPage()
   }
   if (path === '/api/v1/agent-evolution/experiences/trajectories') {
     const experienceUri = canonical(url.searchParams.get('experience_uri') ?? '')

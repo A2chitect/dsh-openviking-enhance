@@ -29,6 +29,7 @@ import {
   type PreviewTier,
   type PreviewTierId,
 } from '../shared/protocol.ts'
+import { PREVIEW_BODY_MAX_LINES, PREVIEW_BODY_MAX_LINES_RESPONSE } from '../shared/limits.ts'
 import type { OpenVikingApi, OvFsAttrs, OvFsStat } from './openviking-api.ts'
 
 export interface PreviewServiceOptions {
@@ -75,13 +76,51 @@ export function isPlaceholderTier(text: string): boolean {
   return NOT_READY_PLACEHOLDER.test(text)
 }
 
-/** Every page of a tier, capped, and honest about the cap. */
+/** Every page of a tier, capped, and honest about the cap. L0/L1 are whole. */
 function tierOf(id: PreviewTierId, text: string | null, error: string | null): PreviewTier {
-  if (text === null) return { id, text: '', truncated: false, available: false, placeholder: false, error }
+  if (text === null) {
+    return { id, text: '', truncated: false, offset: 0, nextOffset: null, available: false, placeholder: false, error }
+  }
   return {
     id,
     text: text.slice(0, PREVIEW_MAX_CHARS),
     truncated: text.length > PREVIEW_MAX_CHARS,
+    offset: 0,
+    nextOffset: null,
+    available: true,
+    placeholder: isPlaceholderTier(text),
+    error: null,
+  }
+}
+
+/** Line count of a page, treating one trailing newline as a terminator. */
+function pageLineCount(text: string): number {
+  if (text.length === 0) return 0
+  const lines = text.split('\n')
+  if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
+  return lines.length
+}
+
+/**
+ * The L2 page: bounded by lines on the wire and by characters on the response.
+ *
+ * `nextOffset` is non-null only when the server returned a full page — a short
+ * page is the end of the file — so "Show more" never asks for a page that cannot
+ * exist. A page clipped at {@link PREVIEW_MAX_CHARS} stops paging: the panel's
+ * own display budget is the tighter bound at that point.
+ */
+function l2TierOf(text: string | null, error: string | null, offset: number, limit: number): PreviewTier {
+  if (text === null) {
+    return { id: 'l2', text: '', truncated: false, offset, nextOffset: null, available: false, placeholder: false, error }
+  }
+  const clipped = text.length > PREVIEW_MAX_CHARS
+  const lines = pageLineCount(text)
+  return {
+    id: 'l2',
+    text: text.slice(0, PREVIEW_MAX_CHARS),
+    truncated: clipped,
+    offset,
+    nextOffset: clipped || lines < limit || lines === 0 ? null : offset + lines,
     available: true,
     placeholder: isPlaceholderTier(text),
     error: null,
@@ -129,6 +168,18 @@ export function normalizePreviewStat(
   }
 }
 
+/** A non-negative finite line offset; anything else starts at the top. */
+export function clampOffset(raw: number | undefined): number {
+  if (raw === undefined || !Number.isFinite(raw)) return 0
+  return Math.min(Math.max(Math.trunc(raw), 0), 10_000_000)
+}
+
+/** One page's line count, inside the documented response bound. */
+export function clampPageLines(raw: number | undefined): number {
+  if (raw === undefined || !Number.isFinite(raw)) return PREVIEW_BODY_MAX_LINES
+  return Math.min(Math.max(Math.trunc(raw), 1), PREVIEW_BODY_MAX_LINES_RESPONSE)
+}
+
 export class PreviewService {
   private readonly options: PreviewServiceOptions
 
@@ -137,13 +188,19 @@ export class PreviewService {
   }
 
   /**
-   * Read one entry's metadata and L0/L1/L2.
+   * Read one entry's metadata and L0/L1, plus one bounded L2 page.
    *
+   * @param options.offset the 0-based L2 line the page starts at (default 0)
+   * @param options.limit the page's line count (default `PREVIEW_BODY_MAX_LINES`,
+   * clamped to `PREVIEW_BODY_MAX_LINES_RESPONSE`)
    * @throws {PreviewFailure} `not-a-viking-path` for anything that is not a
    * `viking://` URI, `not-found` when the server knows no such entry, and
    * `unreadable` for any other total failure (transport, auth).
    */
-  async preview(rawUri: string, options: { signal?: AbortSignal } = {}): Promise<PreviewPayload> {
+  async preview(
+    rawUri: string,
+    options: { signal?: AbortSignal; offset?: number; limit?: number } = {},
+  ): Promise<PreviewPayload> {
     const uri = (rawUri ?? '').trim()
     if (!isVikingUri(uri) || uri.length > PREVIEW_URI_MAX) {
       throw new PreviewFailure('not-a-viking-path', 'not-a-viking-path')
@@ -151,12 +208,14 @@ export class PreviewService {
 
     const { api } = this.options
     const request = options.signal === undefined ? {} : { signal: options.signal }
+    const offset = clampOffset(options.offset)
+    const limit = clampPageLines(options.limit)
     const [stat, attrs, abstract, overview, read] = await Promise.all([
       api.fsStat(uri, request),
       api.fsAttrs(uri, request),
       api.contentFace(uri, 'abstract', request),
       api.contentFace(uri, 'overview', request),
-      api.readText(uri, request),
+      api.readTextPage(uri, { offset, limit }, request),
     ])
 
     const warnings: PluginNotice[] = []
@@ -170,7 +229,7 @@ export class PreviewService {
     const tiers: PreviewTier[] = [
       tierOf('l0', abstract.ok ? abstract.result : null, abstract.ok ? null : (abstract.error ?? `HTTP ${abstract.status}`)),
       tierOf('l1', overview.ok ? overview.result : null, overview.ok ? null : (overview.error ?? `HTTP ${overview.status}`)),
-      tierOf('l2', read.ok ? read.result : null, read.ok ? null : (read.error ?? `HTTP ${read.status}`)),
+      l2TierOf(read.ok ? read.result : null, read.ok ? null : (read.error ?? `HTTP ${read.status}`), offset, limit),
     ]
 
     const anyTier = tiers.some((tier) => tier.available)

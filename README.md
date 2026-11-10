@@ -4,9 +4,9 @@ English | [中文](README.zh.md)
 
 **v0.3.0** · [Changelog](CHANGELOG.md) · [Roadmap](ROADMAP.md)
 
-> The v0.4 Act and v0.5 Collaborate feature sets below are under `Unreleased`;
-> the version line and package stay at 0.3.0 until the release script promotes
-> them.
+> The v0.4 Act, v0.5 Collaborate and v0.6 Trust-and-verify changes below are
+> under `Unreleased`; the version line and package stay at 0.3.0 until the
+> release script promotes them.
 
 Brings your local [OpenViking](https://docs.openviking.ai) memory server into the
 DeepSeek Harness (DSH) Web GUI: a Studio panel in the left sidebar, a commit
@@ -249,41 +249,219 @@ snapshot, so they have their own quota of 10 per minute (cancelling does not
 refund it). One write runs at a time; dismissing a dialog releases its pending
 token, and denied attempts are audited.
 
-## Requirements
+## Host contract and compatibility
 
-| | |
-| --- | --- |
-| DSH | 0.2.0-rc.2 or newer (desktop or web profile; verified on 0.2.0-rc.2, 0.2.1-rc.5 and 0.2.2-rc.1) |
-| OpenViking | A local server; 0.5.1.1–0.5.3 tested (0.5.3 with the context face). Preview, search and skills work on 0.5.1.1+; the Experience routes are present in the same releases and verified on 0.5.3; **Rules need 0.5.3+**. Studio is served at `/studio/` on the same port |
-| Memory plugin | `@openviking/dsh-memory-plugin` recommended — it is what commits sessions. Without it the panel still works, but pending-token thresholds are unknown |
-| Writes | Opt-in (`enableWrites`, default off) and need **DSH 0.2.2-rc.1+** for the authenticated `ctx.connection.fetch` transport. Session authentication is enforced by that DSH transport, not by this plugin; the plugin's own HTTP server exposes **no write route** (the smoke harness asserts 404). Older generations keep every read surface and disable writes with a stated reason |
+This is the host contract for the plugin: what it supports, how it installs,
+what runs where, what it reads and writes, its limits, how it degrades, what it
+does **not** do, and the privacy boundary. Dated evidence lives in
+[`VERIFICATION.md`](VERIFICATION.md).
 
-## Install
+### Supported versions
 
-Install it from the Plugins page (Add plugin → package name or tarball), or:
+| Component | Supported | Verified / notes |
+| --- | --- | --- |
+| DSH (reads) | `>=0.2.0-rc.2 <1.0.0-0 || >=0.2.1-rc.2 <0.2.2-0 || >=0.2.2-rc.1 <0.3.0-0` (`engines.dsh`; every pre-release line is upper-bounded below 1.0) | built and type-checked against 0.2.2-rc.1; verified on 0.2.0-rc.2, 0.2.1-rc.3/rc.5, 0.2.2-rc.1 |
+| DSH (writes) | **0.2.2-rc.1+** | authenticated `ctx.connection.fetch`; older generations keep every read surface and disable writes with a stated reason |
+| OpenViking | 0.5.1.1 – 0.5.3 tested | 0.5.2 unverified, 0.5.4 unprobed. Preview/search/skills/Experience on 0.5.1.1+ (Experience verified on 0.5.3); **Rules need 0.5.3+**; the context face is 0.5.3 |
+| Official memory plugin | `@openviking/dsh-memory-plugin` (optional) | 0.5.32 verified on the maintainer's machine; its in-process state is read, not a published stable contract (see Known gaps) |
+| Node | `^22.19.0 || >=24` (`engines.node`) | CI runs Node 22 |
+| OS | Linux CI; macOS 15 verified manually; **Windows unverified** | no macOS/Windows CI automation in this release |
+
+The tested OpenViking range this release claims is **OpenViking 0.5.1.1 – 0.5.3**
+(0.5.2 unverified, 0.5.4 unprobed).
+
+The DSH range is stated per pre-release line (`0.2.0` / `0.2.1` / `0.2.2`, each
+with the upper bound below 1.0): npm-style semver will not admit `0.2.2-rc.1` to
+a single comparator set anchored at `>=0.2.0-rc.2`, while DSH's own compatibility
+check evaluates with pre-releases included. `engines.dsh` and the
+`peerDependencies` range are the same string, so the manifest and the peer check
+agree; each alternative is upper-bounded.
+
+### Install / upgrade / uninstall
+
+**CLI / web profile** (the npm-installed `dsh`):
 
 ```bash
 # from npm
-dsh plugin --profile desktop add dsh-openviking-enhance
+dsh plugin --profile web add dsh-openviking-enhance
 
-# or the prebuilt tarball from the latest release
-dsh plugin --profile desktop add https://github.com/A2chitect/dsh-openviking-enhance/releases/latest/download/dsh-openviking-enhance.tgz
+# or a prebuilt tarball from the latest release / a local pack
+dsh plugin --profile web add https://github.com/A2chitect/dsh-openviking-enhance/releases/latest/download/dsh-openviking-enhance.tgz
+pnpm pack && dsh plugin --profile web add ./dsh-openviking-enhance-<version>.tgz
+
+# remove
+dsh plugin --profile web remove dsh-openviking-enhance
 ```
 
-Installing straight from a Git URL is refused by pnpm — the package asks to run a
-build script and pnpm blocks those until they are allowed — so a source checkout is
-installed as a tarball instead. The client half is a prebuilt bundle: a source
-install would have nothing to load.
+**Desktop app**: install from the Plugins page (**Add plugin** → package name or
+tarball) or with the Desktop app's own bundled launcher. The npm-installed `dsh`
+refuses the reserved `desktop` profile — that is the official DSH behaviour, not
+a limitation of this plugin.
 
-```bash
-pnpm pack && dsh plugin --profile desktop add ./dsh-openviking-enhance-<version>.tgz
-```
+**Upgrade** = install the newer version, then restart the app. The *host* half
+(`lib/index.js`) is loaded at startup, so a host change needs a restart; the
+*client* half (`lib/client.js`) is fetched on page load, so a client-only change
+applies after a window reload. **Uninstall** = remove the package, then restart;
+the row, the routes and the composed client bundle are gone (verified by
+`pnpm run verify:install`).
 
-Then restart the DSH app once: the host half is loaded at startup. To remove it:
+The client half is a prebuilt bundle: installing from a source checkout without
+`pnpm pack` gives the shell nothing to load.
 
-```bash
-dsh plugin --profile desktop remove dsh-openviking-enhance
-```
+### Process model, inputs and outputs
+
+- **In-process host plugin + browser bundle.** No daemons, no worker processes, no
+  background timers beyond polling by a panel that is currently mounted.
+- **No lifecycle hooks, no MCP proxy, no tools, no URI guard, no skill
+  distribution** (those belong to the official memory plugin — see the N/A
+  matrix below). One optional `/viking` command registers through `ctx.commands`.
+- **Routes on the DSH web server**: read-only GETs plus two read-only POSTs
+  (unified search, rule tester). They answer loopback + same-origin requests only,
+  carry a JSON body of at most 64 KiB, and never write.
+- **Mutations only through the authenticated `ctx.connection.fetch` transport**
+  (DSH 0.2.2-rc.1+); there is deliberately no loopback POST write path. Session
+  authentication is enforced by that DSH transport, not by this plugin, and the
+  plugin's own HTTP server exposes no write route: a direct unauthenticated POST
+  to any plugin route is a read-only query or a 404 (the smoke harness asserts
+  404 on every `/write/*` path).
+- **Reads from the official plugin**: per-session runtime config/state, the
+  pending-queue directory (file names/ages only, never payloads), capability
+  memos, and server-produced commit/archive artifacts. It never writes them.
+- **Writes**: only the plugin's own `profiles.json` and `audit.jsonl` under
+  `${DSH_HOME:-~/.dsh}/state/dsh-openviking-enhance/`, plus user-triggered
+  curation requests sent to OpenViking.
+- **Startup is non-blocking and contained**: an activation failure is logged and
+  the entry provides nothing; it cannot take the profile down. OpenViking being
+  down degrades route answers, never the host.
+
+### Timeouts and limits
+
+Every value below is exported from `src/shared/limits.ts`; `test/v06-docs.test.mjs`
+parses this block out of both READMEs, so the documented contract cannot drift
+from the code. Times are milliseconds; sizes are bytes unless marked.
+
+<!-- contract:limits -->
+| constant | value |
+| --- | --- |
+| DEFAULT_REQUEST_TIMEOUT_MS | 8000 |
+| HEALTH_TIMEOUT_MS | 4000 |
+| STATUS_TIMEOUT_MS | 5000 |
+| FS_TIMEOUT_MS | 8000 |
+| LIST_SEARCH_TIMEOUT_MS | 12000 |
+| CONTEXT_SEARCH_TIMEOUT_MS | 20000 |
+| RECALL_CONTENT_TIMEOUT_MS | 10000 |
+| WRITE_TIMEOUT_MS | 20000 |
+| SET_TAGS_TIMEOUT_MS | 10000 |
+| SNAPSHOT_TIMEOUT_MS | 30000 |
+| DOCTOR_CONTEXT_PROBE_TIMEOUT_MS | 10000 |
+| DOCTOR_RULES_PROBE_TIMEOUT_MS | 8000 |
+| DOCTOR_FS_PROBE_TIMEOUT_MS | 5000 |
+| RULES_CAPABILITY_TTL_MS | 600000 |
+| WRITE_TOKEN_TTL_MS | 120000 |
+| WRITE_BODY_MAX_BYTES | 65536 |
+| WRITE_CONTENT_MAX_CHARS | 65536 |
+| RULE_LIST_DEADLINE_MS | 15000 |
+| RULE_LIST_CONCURRENCY | 4 |
+| PREVIEW_BODY_MAX_LINES | 400 |
+| PREVIEW_BODY_MAX_LINES_RESPONSE | 1000 |
+| PREVIEW_MAX_CHARS | 20000 |
+| AUDIT_MAX_BYTES | 1048576 |
+| AUDIT_MAX_LIMIT | 100 |
+| AUDIT_KEEP_ROTATIONS | 2 |
+| ACTIVITY_TASKS_MAX_LIMIT | 50 |
+<!-- /contract:limits -->
+
+The Rules-listing deadline is a **scheduling** deadline: requests already in
+flight still finish under their own per-request timeouts, so a slow server can
+push the wall clock to roughly the deadline plus one in-flight request. The
+`progress` payload reports the actual elapsed time with every partial answer.
+
+Also fixed: 25 entries per recall bucket / search request, 20 000 characters per
+recall explanation and per loaded memory body, the Rules listing caps at 100
+rules and 20 scenarios, and an L2 preview page returns at most 1 000 lines.
+
+### Capability gates and degradation
+
+| Feature | Probe / gate | Available when | Degradation |
+| --- | --- | --- | --- |
+| Read surfaces (preview, search, skills, session log, commits) | per-request HTTP result | OpenViking 0.5.1.1+ | explicit "unavailable" state, never an error pile |
+| Context face (recall explanation) | one `search/search` with `mode:"context"` (Doctor only) | server supports the context face | falls back to per-target search; stats say "legacy path" |
+| Rules list / rule tester | validation-only `POST rules/search {}` (no embedding/judge work) | OpenViking 0.5.3+ | one translated "needs 0.5.3+" line |
+| Experience | `fs/ls` + `agent-evolution` endpoints | verified on 0.5.3 | empty state or "not available on this server" |
+| Snapshot undo | `GET /snapshot/log` classification | route present (fresh accounts report "no history") | edit/delete disabled with the reason |
+| Writes | `enableWrites` **and** authenticated transport **and** healthy probed identity | DSH 0.2.2-rc.1+ | read-only with a stated reason; every mutation fails closed |
+| Activity tasks/metrics | `GET /tasks` and per-card probes | route present | per-card "not available"; `/metrics` is never probed |
+| ACL | not probed | never | explicit "not enabled" row |
+| Studio | iframe load of `endpoint + studioPath` | endpoint serves `/studio/` | open-in-tab / browser fallback; X-Frame-Options/CSP refusals are shown, not hidden |
+
+### Not applicable (owned by the official memory plugin)
+
+| Duty | Owner | This plugin |
+| --- | --- | --- |
+| Automatic recall, capture and commit | `@openviking/dsh-memory-plugin` | explains, diagnoses and (opt-in) forces a commit; it never replaces the pipeline |
+| Lifecycle hooks, MCP proxy/tools, URI guard, skill distribution | official plugin / server | not present; no tools are exposed to the model |
+| Pending-queue writes, retries, recovery | official plugin | read-only diagnosis (file names/ages only) |
+| Capture pause/resume, archive retry | upstream API absent in the tested builds | explicitly not shipped, and said so where the state is shown |
+
+### Data, privacy and the security boundary
+
+- **Local first.** The plugin talks only to the configured OpenViking endpoint
+  (loopback by default) and has **no telemetry** and no other outbound calls.
+  A remote endpoint is allowed but the scope chip warns about it.
+- **The read routes are loopback-only, and loopback is not a user boundary.**
+  The fence checks the socket, the `Host` header, same-origin headers and the
+  request shape, but any local process can still `curl` these reads on a
+  multi-user machine. Mutations never use them: they ride the framework-
+  authenticated `connection.fetch` transport.
+- **Studio is the server's own UI in an iframe.** If the server refuses framing
+  (`X-Frame-Options`/CSP) the plugin offers open-in-tab/browser; it does not proxy
+  or re-render Studio. Native read views are v0.7+.
+- **Credentials, in order of preference:** `~/.openviking/ovcli.conf`, the
+  `OPENVIKING_*` environment variables, or a named profile in the plugin's own
+  `profiles.json`. The legacy `apiKey` config field is declared
+  `role('secret')` to the settings layer but storing it writes the plaintext key
+  into your profile patch — treat it as a last resort. `profiles.json` is the
+  secret store of record (mode 0600) and is not backed up or shipped by the
+  plugin; keys are never logged and never included in Doctor/diagnostics.
+- **No conversation or memory bodies in logs.** The local audit file records
+  action/identity/URI/result, never bodies. The smoke harness is redacted by
+  default (`SMOKE_VERBOSE=1` is the explicit local-only escape hatch).
+- **What the plugin persists:** `profiles.json` (0600) and `audit.jsonl` (0600,
+  rotated at 1 MiB, two rotations kept), both under
+  `${DSH_HOME:-~/.dsh}/state/dsh-openviking-enhance/`.
+
+### What the plugin sends (and what it costs)
+
+"Read-only" does **not** mean "free": some read actions make the server do real
+work. The full-window actions and their cost:
+
+| Action | Server work |
+| --- | --- |
+| Preview, recall list, session log, skills catalogue, Experience lists | cheap `fs`/`content` reads |
+| Memory recall explanation | one context-face search (embedding plus the server's query-expansion/rewrite stages) |
+| Explore search (default) | one `search/search` list call over memories/resources/skills (embedding) |
+| Explore search — **include rules** opt-in | additionally `rules/search`: scenario vector recall; a configured Rule judge model adds a model call per judgment |
+| Rule tester **Run** | the same `rules/search` cost (the button says so) |
+| Activity tab while visible | `tasks`/metrics polling; **no polling when the tab is hidden** |
+| Writes, forced commit | user-triggered only, one confirmed action at a time |
+
+Opening the Rules list does **not** spend a rule search: the capability gate is a
+validation-only `POST rules/search {}` (rejected by the server's body validation
+before any recall/judge work) and the list itself is bounded file reads (15 s
+total deadline, concurrency 4, 100-rule/20-scenario caps, partial results kept
+with a "showing N of up to M" line).
+
+### Known gaps
+
+- The official plugin's in-process config/state object is **not a published
+  stable upstream contract**; a major version of it may change the shape. This
+  plugin degrades to "unknown/skipped" rather than guessing.
+- Compatibility is verified for the listed DSH/OpenViking generations only;
+  0.5.4 is unprobed and Windows is unverified.
+- Writes need DSH 0.2.2-rc.1+; older generations are read-only by design.
+- Repository compatibility is CI (Linux) + manual macOS; the Desktop carrier is
+  installed and exercised manually, not in CI.
+- This plugin is **community-maintained, not an official OpenViking project**.
 
 ## Configuration
 
@@ -294,7 +472,7 @@ button that probes the address before you save, and a *default* button per field
 that clears the override instead of writing an empty value.
 
 The same settings can still be written by hand in your profile's patch file
-(`~/.dsh/profiles/desktop/cordis.patch.yml`), under the row `openviking-enhance`:
+(`~/.dsh/profiles/<profile>/cordis.patch.yml`; `web` for the CLI, `desktop` for the Desktop app), under the row `openviking-enhance`:
 
 ```yaml
 - id: openviking-enhance
@@ -306,7 +484,7 @@ The same settings can still be written by hand in your profile's patch file
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `endpoint` | from `~/.openviking/ovcli.conf`, else `http://127.0.0.1:1933` | OpenViking base URL |
-| `apiKey` | from `ovcli.conf` | Only needed if the server requires authentication |
+| `apiKey` | from `ovcli.conf` | Last resort only if the server requires authentication: saving this field stores the plaintext key in your profile patch. Prefer `ovcli.conf`, the `OPENVIKING_*` environment variables or a named profile |
 | `account` / `user` | `default` / `default` | Identity the panel reads under |
 | `studioPath` | `/studio/` | Where Studio is served on that origin |
 | `cacheTtlMs` | `2500` | How long a status answer is reused |
@@ -494,9 +672,14 @@ pnpm test           # typecheck, packaging contract, unit tests, smoke harnesses
 pnpm run watch      # rebuild on change
 ```
 
-The smoke harness prints the commit timeline without needing the GUI, and skips the
-live-data part when OpenViking is not running (`SMOKE_REQUIRE_SERVER=1` makes that a
-failure instead). The code comments explain how the pieces fit together.
+The smoke harness prints the commit timeline without needing the GUI (redacted by
+default — set `SMOKE_VERBOSE=1` for raw local detail), and skips the live-data part
+when OpenViking is not running (`SMOKE_REQUIRE_SERVER=1` makes that a failure
+instead). `pnpm run verify:install` runs the clean-profile install/boot/reinstall/
+uninstall check; the excerpts the independent recall contract is written from are
+tracked in [CONTRACT.md](CONTRACT.md), the behaviour inventory behind the
+independence claim is in [PROVENANCE.md](PROVENANCE.md), and the code comments
+explain how the pieces fit together.
 
 The version lives in `package.json` and is tagged `vX.Y.Z` in git; while it is `0.x`
 the internals may still change. See [CHANGELOG.md](CHANGELOG.md) for what each

@@ -54,8 +54,10 @@ import {
   type SkillEntry,
 } from '../shared/protocol.ts'
 import type { OpenVikingApi, OvFsListEntry, OvResult } from './openviking-api.ts'
+import { mapPool } from './async-pool.ts'
 import { isVikingUri } from './preview-service.ts'
 import { parseRuleFile, parseScenarioMeta, ruleFactsFromDocument } from './rule-format.ts'
+import { RULE_LIST_CONCURRENCY, RULE_LIST_DEADLINE_MS } from '../shared/limits.ts'
 
 /** The user-scope rules root; `viking://~` is the server's caller-home alias. */
 export const RULES_ROOT_URI = 'viking://~/memories/rules'
@@ -71,6 +73,9 @@ export const RULES_MAX_RULES = 100
 export interface CatalogServiceOptions {
   api: OpenVikingApi
   now?: () => number
+  /** Test seams for the S1 fan-out policy; production uses the shared limits. */
+  ruleListDeadlineMs?: number
+  ruleListConcurrency?: number
 }
 
 /**
@@ -86,6 +91,50 @@ export function isUnsupportedReply(reply: OvResult<unknown>): boolean {
   if (reply.status === 0) return false
   if (reply.errorCode !== null && reply.errorCode !== undefined) return false
   return reply.status === 404 || reply.status === 405
+}
+
+/**
+ * The capability answer from one validation-only `rules/search` probe.
+ *
+ * The probe sends `{}`, which the HTTP layer rejects before the service runs, so
+ * the reply classifies the route without spending an embedding or judge call:
+ *
+ *   400/422  route present (body validation rejected the request)
+ *   404      route absent (bare 404) unless the reply carries a server code
+ *   405      route present under a different method contract
+ *   403      present but not readable for this identity
+ *   200      route present but degraded (should not happen for `{}`)
+ *   0/other  unknown — never a reason to hide the feature on its own
+ *
+ * `available` is the scope/UI answer; `kind` keeps the probe detail for the
+ * Doctor without inventing copy.
+ */
+export interface RuleSearchCapability {
+  available: boolean
+  detail: string | null
+  kind: 'available' | 'route-absent' | 'method-mismatch' | 'denied' | 'degraded' | 'unknown'
+}
+
+export function classifyRuleProbe(reply: OvResult<unknown>): RuleSearchCapability {
+  if (reply.status === 0) {
+    // Deliberate asymmetry: UI gating keeps the surface visible (an unprobed
+    // route is not proof it is absent, so hiding it would be worse), but the
+    // Doctor maps `kind: 'unknown'` to the unknown state — a probe that never
+    // reached the server did not observe an available capability.
+    return { available: true, detail: reply.error ?? 'probe-failed', kind: 'unknown' }
+  }
+  if (reply.status === 400 || reply.status === 422)
+    return { available: true, detail: 'validation', kind: 'available' }
+  if (reply.status === 404) {
+    if (reply.errorCode !== null && reply.errorCode !== undefined) {
+      return { available: true, detail: reply.error ?? 'not-found', kind: 'degraded' }
+    }
+    return { available: false, detail: 'unsupported', kind: 'route-absent' }
+  }
+  if (reply.status === 405) return { available: true, detail: 'method-mismatch', kind: 'method-mismatch' }
+  if (reply.status === 403) return { available: false, detail: 'forbidden', kind: 'denied' }
+  if (reply.ok) return { available: true, detail: 'degraded', kind: 'degraded' }
+  return { available: true, detail: reply.error ?? `HTTP ${reply.status}`, kind: 'unknown' }
 }
 
 /** The last path segment of a URI, without trailing slashes. */
@@ -133,74 +182,186 @@ export function normalizeOutcomes(
 
 export class CatalogService {
   private readonly options: CatalogServiceOptions
+  private readonly ruleListDeadlineMs: number
+  private readonly ruleListConcurrency: number
 
   constructor(options: CatalogServiceOptions) {
     this.options = options
+    this.ruleListDeadlineMs = options.ruleListDeadlineMs ?? RULE_LIST_DEADLINE_MS
+    this.ruleListConcurrency = options.ruleListConcurrency ?? RULE_LIST_CONCURRENCY
   }
 
   /**
    * List the rules tree.
    *
-   * @throws Error('unsupported') when the server has no rules-tree routes;
-   * everything else degrades into `empty` or a warning.
+   * **Cost policy (S2).** Opening the Rules section must not run a rule search:
+   * that endpoint performs scenario vector recall and can run a judge model. The
+   * capability question is answered with the validation-only empty-body probe
+   * (see `probeRuleSearchRoute`) or, preferably, by the cached answer the caller
+   * already holds from the capability service.
+   *
+   * **Fan-out policy (S1).** The listing is one root `fs/ls`, then a bounded pool
+   * over scenario folders (metadata + listing), then a bounded pool over rule
+   * files. Both pools share one total deadline: a slow server yields the rows
+   * that arrived, plus a `ruleListTruncated` notice, instead of an unbounded
+   * spinner. Hitting the scenario/rule caps is reported the same way.
+   *
+   * @param options.rulesAvailable the capability answer to trust. `undefined`
+   * asks this service to run the cheap probe once; `false` refuses immediately.
+   * @throws Error('unsupported') when the server has no rules-tree routes.
    */
-  async listRules(): Promise<RuleListPayload> {
+  async listRules(options: { rulesAvailable?: boolean } = {}): Promise<RuleListPayload> {
+    const started = this.currentTime()
+    const deadline = started + this.ruleListDeadlineMs
     const warnings: PluginNotice[] = []
-    // Capability gate first: Rules exist in 0.5.3+ only, and on an older server
-    // the rules root is ALSO a 404 NOT_FOUND — indistinguishable, from the
-    // filesystem alone, from "Rules exist but nothing is compiled yet". A minimal
-    // `rules/search` probe is the documented capability answer: 200 (even with
-    // the empty-library warning) = the feature exists; a generic 404/405 = the
-    // route is absent on this build.
-    const probe = await this.options.api.rulesSearch('OpenViking rule capability probe')
-    if (!probe.ok) {
-      if (isUnsupportedReply(probe)) throw new Error('unsupported')
-      throw new Error(probe.error ?? `HTTP ${probe.status}`)
+
+    if (options.rulesAvailable === false) throw new Error('unsupported')
+    if (options.rulesAvailable === undefined) {
+      const capability = classifyRuleProbe(await this.options.api.probeRuleSearchRoute())
+      if (!capability.available) throw new Error('unsupported')
+      if (capability.kind === 'unknown') {
+        warnings.push({ code: 'ruleProbeFailed', params: { error: capability.detail ?? 'unknown' } })
+      }
     }
+
     const root = await this.options.api.listDirectory(RULES_ROOT_URI)
     if (!root.ok) {
       // Only the server's OWN NOT_FOUND means "the library is empty". A bare
       // HTTP 404 is a route this version does not have (see `isUnsupportedReply`).
-      if (root.errorCode === 'NOT_FOUND') return this.rulesPayload([], [], true, warnings)
+      if (root.errorCode === 'NOT_FOUND') return this.rulesPayload([], [], true, warnings, started)
       if (isUnsupportedReply(root)) throw new Error('unsupported')
       throw new Error(root.error ?? `HTTP ${root.status}`)
     }
 
     const entries = root.result ?? []
-    const scenarios: RuleScenarioGroup[] = []
-    const rules: RuleSummary[] = []
-    const scenarioDirs = entries.filter((entry) => entry.isDir === true && !isIndexFile(tailOf(entry.uri)))
+    const scenarioDirsAll = entries.filter((entry) => entry.isDir === true && !isIndexFile(tailOf(entry.uri)))
     const looseFiles = entries.filter(
       (entry) => entry.isDir !== true && entry.uri.endsWith('.md') && !isIndexFile(tailOf(entry.uri)),
     )
+    const scenarioCapHit = scenarioDirsAll.length > RULES_MAX_SCENARIOS
+    const scenarioDirs = scenarioDirsAll.slice(0, RULES_MAX_SCENARIOS)
 
-    // Rule files directly under the root: treat them as one unnamed scenario.
-    for (const file of looseFiles.slice(0, RULES_MAX_RULES)) {
-      const rule = await this.readRule(file.uri, null, warnings, '')
-      if (rule !== null) rules.push(rule)
+    // Phase 1: scenario metadata + listing, bounded and pooled. Workers return
+    // their notices instead of pushing them, so the wire payload's warning order
+    // is the input order — not whichever request finished first.
+    const scenarioOutcomes = await mapPool(
+      scenarioDirs,
+      this.ruleListConcurrency,
+      async (scenario) => this.readScenario(scenario.uri),
+      { deadline, now: () => this.currentTime() },
+    )
+    for (let index = 0; index < scenarioOutcomes.results.length; index += 1) {
+      const outcome = scenarioOutcomes.results[index]
+      if (outcome !== undefined) warnings.push(...outcome.warnings)
+      const error = scenarioOutcomes.errors[index]
+      if (error !== undefined) {
+        warnings.push({ code: 'ruleScenarioFailed', params: { error: messageOf(error) } })
+      }
     }
 
-    for (const scenario of scenarioDirs.slice(0, RULES_MAX_SCENARIOS)) {
-      const scenarioId = tailOf(scenario.uri)
-      const meta = await this.readScenarioMeta(scenario.uri, scenarioId, warnings)
-      const listing = await this.options.api.listDirectory(scenario.uri)
-      if (!listing.ok) {
-        warnings.push({ code: 'ruleListFailed', params: { uri: scenario.uri, error: listing.error ?? `HTTP ${listing.status}` } })
-        continue
+    // Phase 2: rule files, bounded and pooled. Loose root files come first, in
+    // the same order the serial version read them, then each scenario's files.
+    interface RuleTask {
+      uri: string
+      scenarioId: string | null
+      scenarioName: string
+    }
+    const tasks: RuleTask[] = looseFiles.map((file) => ({ uri: file.uri, scenarioId: null, scenarioName: '' }))
+    const scenarios: RuleScenarioGroup[] = []
+    for (const outcome of scenarioOutcomes.results) {
+      if (outcome === undefined || outcome.scenario === null) continue
+      scenarios.push(outcome.scenario)
+      for (const file of outcome.files) tasks.push(file)
+    }
+    const ruleCapHit = tasks.length > RULES_MAX_RULES
+    const boundedTasks = tasks.slice(0, RULES_MAX_RULES)
+    const ruleOutcomes = await mapPool(
+      boundedTasks,
+      this.ruleListConcurrency,
+      async (task) => this.readRule(task.uri, task.scenarioId, task.scenarioName),
+      { deadline, now: () => this.currentTime() },
+    )
+    const rules: RuleSummary[] = []
+    for (let index = 0; index < ruleOutcomes.results.length; index += 1) {
+      const outcome = ruleOutcomes.results[index]
+      if (outcome !== undefined) {
+        warnings.push(...outcome.warnings)
+        if (outcome.rule !== null) rules.push(outcome.rule)
       }
-      const files = (listing.result ?? []).filter(
-        (entry) => entry.isDir !== true && entry.uri.endsWith('.md') && !isIndexFile(tailOf(entry.uri)),
-      )
-      for (const file of files) {
-        if (rules.length >= RULES_MAX_RULES) break
-        const rule = await this.readRule(file.uri, scenarioId, warnings, meta.name)
-        if (rule !== null) rules.push(rule)
+      const error = ruleOutcomes.errors[index]
+      if (error !== undefined) {
+        warnings.push({ code: 'ruleReadFailed', params: { error: messageOf(error) } })
       }
-      scenarios.push({ id: meta.id, name: meta.name, ruleCount: rules.filter((rule) => rule.scenario === scenarioId).length })
-      if (rules.length >= RULES_MAX_RULES) break
+    }
+    // Scenario rule counts are only known after the rule phase.
+    for (const scenario of scenarios) {
+      scenario.ruleCount = rules.filter((rule) => rule.scenario === scenario.id).length
     }
 
-    return this.rulesPayload(rules, scenarios, rules.length === 0 && scenarioDirs.length === 0, warnings)
+    const partial = scenarioOutcomes.deadlineHit || ruleOutcomes.deadlineHit || ruleCapHit || scenarioCapHit
+    const limitedBy = scenarioOutcomes.deadlineHit || ruleOutcomes.deadlineHit
+      ? ('deadline' as const)
+      : ruleCapHit
+        ? ('rule-cap' as const)
+        : scenarioCapHit
+          ? ('scenario-cap' as const)
+          : null
+    if (partial) {
+      warnings.push({
+        code: 'ruleListTruncated',
+        params: {
+          rules: rules.length,
+          scenarios: scenarios.length,
+          elapsedMs: Math.max(0, this.currentTime() - started),
+          deadlineMs: this.ruleListDeadlineMs,
+        },
+      })
+    }
+    return this.rulesPayload(
+      rules,
+      scenarios,
+      rules.length === 0 && scenarioDirsAll.length === 0,
+      warnings,
+      started,
+      {
+        partial,
+        limitedBy,
+        progress: {
+          rules: rules.length,
+          scenarios: scenarios.length,
+          elapsedMs: Math.max(0, this.currentTime() - started),
+          deadlineMs: this.ruleListDeadlineMs,
+          ruleCap: RULES_MAX_RULES,
+          scenarioCap: RULES_MAX_SCENARIOS,
+        },
+      },
+    )
+  }
+
+  /**
+   * One scenario folder's metadata and rule-file URIs, read for the list.
+   *
+   * A missing metadata file degrades to the folder name (with a warning); a
+   * failed listing is recorded and the scenario is skipped — both are catalogue
+   * gaps, not listing failures.
+   */
+  private async readScenario(uri: string): Promise<{
+    scenario: RuleScenarioGroup | null
+    files: Array<{ uri: string; scenarioId: string; scenarioName: string }>
+    warnings: PluginNotice[]
+  }> {
+    const scenarioId = tailOf(uri)
+    const meta = await this.readScenarioMeta(uri, scenarioId)
+    const warnings = [...meta.warnings]
+    const listing = await this.options.api.listDirectory(uri)
+    if (!listing.ok) {
+      warnings.push({ code: 'ruleListFailed', params: { uri, error: listing.error ?? `HTTP ${listing.status}` } })
+      return { scenario: null, files: [], warnings }
+    }
+    const files = (listing.result ?? [])
+      .filter((entry) => entry.isDir !== true && entry.uri.endsWith('.md') && !isIndexFile(tailOf(entry.uri)))
+      .map((entry) => ({ uri: entry.uri, scenarioId, scenarioName: meta.meta.name }))
+    return { scenario: { id: meta.meta.id, name: meta.meta.name, ruleCount: 0 }, files, warnings }
   }
 
   /**
@@ -420,44 +581,61 @@ export class CatalogService {
     throw new Error(reply.error ?? `HTTP ${reply.status}`)
   }
 
-  /** One rule file → the list row; unreadable files become warnings, not gaps. */
+  /**
+   * One rule file → the list row plus its own notices.
+   *
+   * Returning the notice rather than pushing it keeps the concurrent phase's
+   * wire order deterministic; the caller appends results in input order.
+   */
   private async readRule(
     uri: string,
     scenarioId: string | null,
-    warnings: PluginNotice[],
     scenarioName: string,
-  ): Promise<RuleSummary | null> {
+  ): Promise<{ rule: RuleSummary | null; warnings: PluginNotice[] }> {
     const reply = await this.options.api.readText(uri)
     if (!reply.ok || reply.result === null) {
-      warnings.push({ code: 'ruleUnreadable', params: { uri, error: reply.error ?? `HTTP ${reply.status}` } })
-      return null
+      return {
+        rule: null,
+        warnings: [{ code: 'ruleUnreadable', params: { uri, error: reply.error ?? `HTTP ${reply.status}` } }],
+      }
     }
     const parsed = parseRuleFile(uri, reply.result, scenarioId)
     return {
-      id: parsed.facts.id.length > 0 ? parsed.facts.id : tailOf(uri).replace(/\.md$/, ''),
-      uri,
-      name: parsed.facts.name,
-      status: parsed.facts.status ?? 'unknown',
-      scenario: parsed.facts.scenario === null ? (scenarioName.length > 0 ? scenarioName : null) : parsed.facts.scenario,
-      description: (parsed.document.fields.description ?? '').trim() || null,
+      rule: {
+        id: parsed.facts.id.length > 0 ? parsed.facts.id : tailOf(uri).replace(/\.md$/, ''),
+        uri,
+        name: parsed.facts.name,
+        status: parsed.facts.status ?? 'unknown',
+        scenario:
+          parsed.facts.scenario === null ? (scenarioName.length > 0 ? scenarioName : null) : parsed.facts.scenario,
+        description: (parsed.document.fields.description ?? '').trim() || null,
+      },
+      warnings: [],
     }
   }
 
   /** Scenario metadata from `<scenario>/abstract.md`, falling back to the id. */
-  private async readScenarioMeta(uri: string, scenarioId: string, warnings: PluginNotice[]) {
+  private async readScenarioMeta(
+    uri: string,
+    scenarioId: string,
+  ): Promise<{ meta: ReturnType<typeof parseScenarioMeta>; warnings: PluginNotice[] }> {
     const abstractUri = `${uri.replace(/\/+$/, '')}/abstract.md`
     const reply = await this.options.api.readText(abstractUri)
     if (!reply.ok || reply.result === null) {
       // A scenario without metadata is still a scenario — its id becomes the
       // name — but the failed read is recorded like every other catalogue read
       // failure, so the panel can say the name may be missing.
-      warnings.push({
-        code: 'ruleScenarioUnreadable',
-        params: { uri: abstractUri, error: reply.error ?? `HTTP ${reply.status}` },
-      })
-      return parseScenarioMeta(scenarioId, '')
+      return {
+        meta: parseScenarioMeta(scenarioId, ''),
+        warnings: [
+          {
+            code: 'ruleScenarioUnreadable',
+            params: { uri: abstractUri, error: reply.error ?? `HTTP ${reply.status}` },
+          },
+        ],
+      }
     }
-    return parseScenarioMeta(scenarioId, reply.result)
+    return { meta: parseScenarioMeta(scenarioId, reply.result), warnings: [] }
   }
 
   /** One payload for both the "empty library" and the listed case. */
@@ -466,11 +644,42 @@ export class CatalogService {
     scenarios: RuleScenarioGroup[],
     empty: boolean,
     warnings: PluginNotice[],
+    started: number,
+    bounds: Pick<RuleListPayload, 'partial' | 'limitedBy' | 'progress'> = {
+      partial: false,
+      limitedBy: null,
+      progress: {
+        rules: rules.length,
+        scenarios: scenarios.length,
+        elapsedMs: Math.max(0, this.currentTime() - started),
+        deadlineMs: this.ruleListDeadlineMs,
+        ruleCap: RULES_MAX_RULES,
+        scenarioCap: RULES_MAX_SCENARIOS,
+      },
+    },
   ): RuleListPayload {
-    return { rules, scenarios, empty, warnings, observedAt: this.nowIso() }
+    return {
+      rules,
+      scenarios,
+      empty,
+      partial: bounds.partial,
+      limitedBy: bounds.limitedBy,
+      progress: bounds.progress,
+      warnings,
+      observedAt: this.nowIso(),
+    }
+  }
+
+  private currentTime(): number {
+    return this.options.now?.() ?? Date.now()
   }
 
   private nowIso(): string {
-    return new Date(this.options.now?.() ?? Date.now()).toISOString()
+    return new Date(this.currentTime()).toISOString()
   }
+}
+
+/** One thrown value as a short message for a warning parameter. */
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }

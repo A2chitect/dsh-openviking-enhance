@@ -76,6 +76,19 @@ function loaderWrapper() {
   }
 }
 
+/**
+ * Build-time identity.
+ *
+ * The version constant is injected rather than read from `package.json` at
+ * runtime: a published bundle lives in a profile whose node_modules layout this
+ * plugin does not control, and the host half must be able to report its own
+ * version for the request User-Agent and the Doctor. `src/shared/build-info.ts`
+ * degrades to `'unknown'` outside this build.
+ */
+const define = {
+  __DSH_OPENVIKING_ENHANCE_VERSION__: JSON.stringify(pkg.version),
+}
+
 /** @type {import('esbuild').BuildOptions} */
 const host = {
   entryPoints: [join(root, 'src/host/index.ts')],
@@ -89,6 +102,7 @@ const host = {
   // The profile owns these; bundling them would duplicate the loader's own
   // service classes and break `instanceof` checks across the plugin boundary.
   external: HOST_EXTERNAL,
+  define,
 }
 
 /** @type {import('esbuild').BuildOptions} */
@@ -103,6 +117,7 @@ const client = {
   sourcemap: true,
   logLevel: 'info',
   external: PLATFORM_MODULES,
+  define,
   ...loaderWrapper(),
 }
 

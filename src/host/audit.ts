@@ -26,11 +26,12 @@
 import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
 import type { AuditEntry, AuditIdentity, AuditKind, AuditPayload } from '../shared/protocol.ts'
+import { AUDIT_KEEP_ROTATIONS, AUDIT_MAX_BYTES } from '../shared/limits.ts'
 import { appendJsonl, pluginStateDir, readJsonlTail } from './plugin-state.ts'
 
-/** Rotation cap; two old files are kept (`audit.1.jsonl`, `audit.2.jsonl`). */
-export const AUDIT_MAX_BYTES = 1024 * 1024
-export const AUDIT_KEEP_ROTATIONS = 2
+// Rotation caps live in `shared/limits.ts` (documented in the README contract
+// table); re-exported here because `audit.ts` is where the behaviour is applied.
+export { AUDIT_KEEP_ROTATIONS, AUDIT_MAX_BYTES }
 
 /** One audit record before the log stamps `id`/`ts`. */
 export interface AuditInput {

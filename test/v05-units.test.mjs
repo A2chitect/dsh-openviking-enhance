@@ -449,6 +449,10 @@ class FakeOpenViking {
     return { ok: true, status: 200, result: [], requestId: 'req-log' }
   }
 
+  async probeRuleSearchRoute() {
+    return { ok: false, status: 422, result: null, error: 'validation', errorCode: null, errorDetails: null }
+  }
+
   async listTasks(filters = {}) {
     if (this.tasksStatus === 404) return { ok: false, status: 404, result: null, error: 'Not Found' }
     return {
@@ -1467,6 +1471,7 @@ test('the capability probe distinguishes snapshot history, no history and an abs
     api: {
       health: () => fake.health(),
       listTasks: () => fake.listTasks(),
+      probeRuleSearchRoute: () => fake.probeRuleSearchRoute(),
       snapshotLog: async () => ({ ok: false, status: 404, result: null, error: 'Not Found', errorCode: null, errorDetails: null }),
     },
     transport: () => true,
