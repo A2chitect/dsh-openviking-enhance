@@ -48,13 +48,17 @@ import {
  * The DSH generations this release is built and type-checked against.
  *
  * This is the manifest range verbatim (check-package asserts they agree): a
- * floor of 0.2.0-rc.2 and an upper bound below the next major, so a future
- * 1.x generation is not silently accepted. The separate *write* floor
+ * floor of 0.2.0-rc.2 and an upper bound below the next major on every
+ * pre-release line, so a future 1.x generation is not silently accepted. The
+ * range is split per DSH pre-release tuple because npm-style semver excludes
+ * 0.2.x pre-releases from a single comparator set anchored at `0.2.0-rc.2`
+ * (DSH's own runtime check evaluates with `includePrerelease`, so it accepts
+ * this range for every listed generation). The separate *write* floor
  * (0.2.2-rc.1, authenticated `connection.fetch`) is documented in the README
- * contract chapter — it cannot be expressed here without excluding the older
- * read-only generations that still work.
+ * contract chapter.
  */
-export const PLUGIN_DSH_RANGE = '>=0.2.0-rc.2 <1.0.0-0'
+export const PLUGIN_DSH_RANGE =
+  '>=0.2.0-rc.2 <1.0.0-0 || >=0.2.1-rc.2 <0.2.2-0 || >=0.2.2-rc.1 <0.3.0-0'
 /** The OpenViking versions this release's contract tests cover. */
 export const TESTED_OV_RANGE = 'OpenViking 0.5.1.1 – 0.5.3'
 
@@ -218,6 +222,17 @@ export class DoctorService {
       health.ok
         ? check('server', 'ok', health.version ? `OpenViking ${health.version}` : null, null)
         : check('server', 'error', health.error, 'doctor.hint.startServer'),
+    )
+    // S7: the tested range is part of the contract, not decoration. An unknown
+    // or unparseable version stays `unknown` (nothing is hidden); a parsed
+    // version outside the tested range is a warning with the documented reason.
+    const openvikingVersion = classifyOpenVikingVersion(health.version)
+    checks.push(
+      openvikingVersion.state === 'ok'
+        ? check('openvikingVersion', 'ok', health.version, null)
+        : openvikingVersion.state === 'warn'
+          ? check('openvikingVersion', 'warn', health.version, 'doctor.hint.openvikingVersion')
+          : check('openvikingVersion', 'unknown', health.version, null),
     )
     checks.push(
       sessionId === undefined
@@ -458,6 +473,12 @@ export class DoctorService {
     traces.rules = reply.requestId ?? null
     const capability = classifyRuleProbe(reply)
     if (!capability.available) return { state: 'unavailable', detail: capability.detail }
+    // A transport failure/cancellation is `kind: 'unknown'`, NOT "available":
+    // `available: true` is only the UI-gating answer ("do not hide the surface"),
+    // while the Doctor must say the capability was not observed. Claiming a
+    // feature works because the probe could not reach the server would hide the
+    // one failure the page exists to report.
+    if (capability.kind === 'unknown') return { state: 'unknown', detail: capability.detail }
     const detail = capability.kind === 'available' ? 'validation-only probe ok' : capability.detail
     return { state: 'available', detail }
   }
@@ -532,6 +553,34 @@ function effectiveConfig(config: Record<string, unknown> | null): Record<string,
   const excludes = config.recallExcludeUris
   if (Array.isArray(excludes)) out.recallExcludeUris = `${excludes.length} URIs`
   return out
+}
+
+/**
+ * Classify the server version against the range this release's contract is
+ * verified on (`0.5.1.1 – 0.5.3`, 0.5.2 unverified but inside).
+ *
+ * Parsing is deliberately permissive: OpenViking reports four-part versions and
+ * may append pre-release suffixes, and a build this plugin has never seen must
+ * still be *displayed* rather than hidden. Only a version whose numeric tuple
+ * lies outside `[0.5.1.1, 0.5.4.0)` warns; unparseable/absent is `unknown`.
+ */
+export function classifyOpenVikingVersion(version: string | null): {
+  state: 'ok' | 'warn' | 'unknown'
+  detail: string | null
+} {
+  if (version === null || version.trim().length === 0) return { state: 'unknown', detail: null }
+  const match = /^v?(\d+)\.(\d+)(?:\.(\d+))?(?:\.(\d+))?/.exec(version.trim())
+  if (match === null) return { state: 'unknown', detail: version }
+  const tuple = [Number(match[1]), Number(match[2]), Number(match[3] ?? 0), Number(match[4] ?? 0)]
+  const compare = (left: number[], right: number[]): number => {
+    for (let index = 0; index < left.length; index += 1) {
+      const difference = (left[index] ?? 0) - (right[index] ?? 0)
+      if (difference !== 0) return difference
+    }
+    return 0
+  }
+  const inside = compare(tuple, [0, 5, 1, 1]) >= 0 && compare(tuple, [0, 5, 4, 0]) < 0
+  return { state: inside ? 'ok' : 'warn', detail: version }
 }
 
 /** A small, dependency-free DSH generation check for the Doctor display. */

@@ -194,7 +194,7 @@ peer 和身份指纹，并对远程端点给出警告；写入弹窗无论 chip 
 
 | 组件 | 支持范围 | 实测 / 说明 |
 | --- | --- | --- |
-| DSH（只读） | `>=0.2.0-rc.2 <1.0.0-0`（`engines.dsh`，上界锁在 1.0 之前） | 按 0.2.2-rc.1 构建与类型检查；在 0.2.0-rc.2、0.2.1-rc.5、0.2.2-rc.1 实测 |
+| DSH（只读） | `>=0.2.0-rc.2 <1.0.0-0 || >=0.2.1-rc.2 <0.2.2-0 || >=0.2.2-rc.1 <0.3.0-0`（`engines.dsh`，每条预发布线上界都锁在 1.0 之前） | 按 0.2.2-rc.1 构建与类型检查；在 0.2.0-rc.2、0.2.1-rc.3/rc.5、0.2.2-rc.1 实测 |
 | DSH（写入） | **0.2.2-rc.1+** | 需要认证的 `ctx.connection.fetch`；旧版本保留全部只读界面，写入带原因禁用 |
 | OpenViking | 实测 0.5.1.1 – 0.5.3 | 0.5.2 未验证，0.5.4 未探测。预览/搜索/技能/Experience 在 0.5.1.1+ 可用（Experience 在 0.5.3 验证）；**规则需要 0.5.3+**；上下文接口为 0.5.3 |
 | 官方记忆插件 | `@openviking/dsh-memory-plugin`（可选） | 在维护者机器上验证 0.5.32；它进程内的状态是**被读取**的接口事实，不是上游发布的稳定契约（见“已知缺口”） |
@@ -204,9 +204,10 @@ peer 和身份指纹，并对远程端点给出警告；写入弹窗无论 chip 
 本版本声称的 OpenViking 实测范围是 **OpenViking 0.5.1.1 – 0.5.3**（0.5.2 未验证，
 0.5.4 未探测）。
 
-清单里的 `peerDependencies` 按 DSH 预发布版本线拆成同一策略（`<0.2.2-0` /
-`<0.3.0-0`）：npm 风格的 semver 不会让单个 `>=0.2.0-rc.2` 区间接受 0.2.x 预发布版，
-而 DSH 自己的兼容检查是包含预发布的。每一段都保留低于 1.0 的上界。
+DSH 范围按预发布版本线分别声明（0.2.0 / 0.2.1 / 0.2.2 各一段，上界都在 1.0 之前）：
+npm 风格的 semver 不会让单个 `>=0.2.0-rc.2` 区间接受 `0.2.2-rc.1`，而 DSH 自己的
+兼容检查是包含预发布的。`engines.dsh` 与 `peerDependencies` 使用同一字符串，
+清单与 peer 检查因此一致，且每一段都有上界。
 
 ### 安装 / 升级 / 卸载
 
@@ -272,6 +273,10 @@ dsh plugin --profile web remove dsh-openviking-enhance
 | WRITE_TIMEOUT_MS | 20000 |
 | SET_TAGS_TIMEOUT_MS | 10000 |
 | SNAPSHOT_TIMEOUT_MS | 30000 |
+| DOCTOR_CONTEXT_PROBE_TIMEOUT_MS | 10000 |
+| DOCTOR_RULES_PROBE_TIMEOUT_MS | 8000 |
+| DOCTOR_FS_PROBE_TIMEOUT_MS | 5000 |
+| RULES_CAPABILITY_TTL_MS | 600000 |
 | WRITE_TOKEN_TTL_MS | 120000 |
 | WRITE_BODY_MAX_BYTES | 65536 |
 | RULE_LIST_DEADLINE_MS | 15000 |
@@ -283,6 +288,8 @@ dsh plugin --profile web remove dsh-openviking-enhance
 | AUDIT_KEEP_ROTATIONS | 2 |
 | ACTIVITY_TASKS_MAX_LIMIT | 50 |
 <!-- /contract:limits -->
+
+规则列表的截止时间是**调度**截止：已经发出的请求仍按各自的单请求超时跑完，所以慢服务端最多会让实际耗时再多一个在途请求的时间；每次部分结果都会在 `progress` 里给出实际耗时。
 
 另外固定：每个召回桶/搜索请求最多 25 条，召回解释与单次正文载入各 20 000 字符，
 规则列表上限 100 条规则 / 20 个场景，L2 预览一页最多返回 1 000 行。
@@ -524,7 +531,9 @@ pnpm run watch      # 改动后自动重建
 ```
 
 冒烟脚本不需要开界面就能打印提交时间线；OpenViking 没在跑时它会跳过实时数据部分
-（`SMOKE_REQUIRE_SERVER=1` 可让跳过变成失败）。各部分的实现细节见源码注释。
+（`SMOKE_REQUIRE_SERVER=1` 可让跳过变成失败）。独立召回契约所依据的文档摘录记录在
+[CONTRACT.md](CONTRACT.md)，独立性声明的行为清单在 [PROVENANCE.md](PROVENANCE.md)，
+各部分的实现细节见源码注释。
 
 版本号写在 `package.json`，每次发布在 git 里打 `vX.Y.Z` 标签；`0.x` 期间内部实现
 仍可能调整。每个版本包含什么见 [CHANGELOG.md](CHANGELOG.md)，发版步骤和必须在界面里

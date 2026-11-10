@@ -58,6 +58,10 @@ job 在每个 PR 上跑同一脚本（固定 DSH 0.2.2-rc.1；升级腿仅在 `v
 把结果（日期、DSH/Node/OS、OpenViking 版本、结果、CI run 链接）追加成 `VERIFICATION.md`
 的一行；**标签 PR 必须带上这行**，没有它不允许打标签。
 
+同一次发布还要把 CI 里的升级腿向前推一格：`.github/workflows/ci.yml` 的
+`--upgrade-from dsh-openviking-enhance@<版本>` 必须指向**上一个已发布版本**（不能停在
+0.3.0，否则升级测试会悄悄变成跨两代的跳跃）。发布脚本不会改它，这是发布清单的一项。
+
 ### 排练与逃生口
 
 ```bash

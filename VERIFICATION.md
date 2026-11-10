@@ -27,16 +27,23 @@ link **before tagging**.
 
 | Version | Date | DSH (profile) | Node | OS | OpenViking | Install path | Result | Evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 0.4.0 (PR #2) | 2026-11 | 0.2.2-rc.1 (web, scratch profile) | 22 | macOS 15 | 0.5.3 read-only | tarball into a scratch DSH home + mock-fixture browser capture | pass (browser render only; no clean-profile install/uninstall record) | PR #2 screenshots + review evidence; see "Live evidence" |
-| 0.5.0 (PR #3) | 2026-11 | 0.2.2-rc.1 (web, scratch profile) | 22 | macOS 15 | 0.5.3 contract via stand-in fixture (no real writes) | tarball into a scratch DSH home + stateful mock-fixture browser capture | pass (browser render only; no clean-profile install record, no real-server write) | PR #3 BEFORE/AFTER capture set; write paths covered by fake-transport unit/E2E tests |
-| 0.6.0 (PR #4) | 2026-11-10 | 0.2.1-rc.3 local + 0.2.2-rc.1 pinned in CI | 22.22.3 | macOS (Darwin 24); Linux CI | 0.5.3 reachable, read-only; mock fixture for the UI deltas | `pnpm pack` tarball → scratch `DSH_HOME` web profile | pass | `node scripts/verify-install.mjs …` → 23/23 steps (~5 s); CI `install-verify` job on the PR; browser BEFORE/AFTER set in the PR |
+| 0.4.0 (PR #2) | 2026-11 | 0.2.2-rc.1 (web, scratch profile) | 22 | macOS 15 | 0.5.3 read-only | tarball into a scratch DSH home + mock-fixture browser capture | **pending release** — browser render evidence only; 0.4.0 is not tagged/published yet, so no clean-profile install record exists | PR #2 screenshots + review evidence; row becomes `pass` when the release ships |
+| 0.5.0 (PR #3) | 2026-11 | 0.2.2-rc.1 (web, scratch profile) | 22 | macOS 15 | 0.5.3 contract via stand-in fixture (no real writes) | tarball into a scratch DSH home + stateful mock-fixture browser capture | **pending release** — browser render evidence only; 0.5.0 is not tagged/published yet | PR #3 BEFORE/AFTER capture set; write paths covered by fake-transport unit tests |
+| 0.6.0 (PR #4) | 2026-11-10 | 0.2.1-rc.3 local + 0.2.2-rc.1 pinned in CI | 22.22.3 | macOS (Darwin 24); Linux CI | 0.5.3 reachable, read-only; mock fixture for the UI deltas | `pnpm pack` tarball → scratch `DSH_HOME` web profile | pass | `node scripts/verify-install.mjs …` → 27/27 steps, `tarballVersion === installedVersion` (0.3.0); CI `install-verify` job on the PR; browser BEFORE/AFTER set in the PR |
+
+These not-yet-released versions are rows in an append-only table, not release
+evidence: the stack merges in order `#2 → release 0.4.0 → #3 → release 0.5.0 →
+#4 → release 0.6.0`, and each row becomes `pass` when its tagged version ships.
 
 What the v0.6 local run actually proved:
 
 1. `dsh plugin --profile web add <tarball>` installs the published tarball;
 2. `dsh --profile web --dump-config` composes exactly one
-   `- id: openviking-enhance` row naming `dsh-openviking-enhance`, and the
-   installed package version is the tarball version;
+   `- id: openviking-enhance` row naming `dsh-openviking-enhance`, and the version
+   in the profile's installed `node_modules/dsh-openviking-enhance/package.json`
+   **equals the version read from `package/package.json` inside the packed
+   tarball** (both are recorded in the JSON summary as `installedVersion` and
+   `tarballVersion`);
 3. the profile **boots** and the real shell **composes this plugin's client
    half** into its boot page; the served composed bundle registers
    `window.__ModuleLoader__`/`load` and names the package (the shell's combo
@@ -56,14 +63,14 @@ CI covers 1–6, 8–10 on Linux; the rest is maintainer evidence recorded here:
 
 | # | Scenario | Covered by |
 | --- | --- | --- |
-| 1 | clean-profile install from the published tarball | `verify-install` |
+| 1 | clean-profile install from the published tarball, installed version equals the packed version | `verify-install` (reads the tarball's `package/package.json`) |
 | 2 | profile boot / non-blocking activation | `verify-install` |
 | 3 | client bundle composed + host route answers | `verify-install` |
 | 4 | tabs and `/viking` command present (browser render) | manual (mock-fixture capture or live DSH) |
 | 5 | read paths: recall explain, preview, search, rules, skills, experience | host smoke against a live server (read-only) + manual |
 | 6 | writes off by default (no write surface reachable) | unit/fence/smoke tests + manual |
 | 7 | writes on, with a **disposable** profile only | manual, never CI |
-| 8 | reinstall keeps exactly one row | `verify-install` |
+| 8 | reinstall keeps exactly one row and the packed version | `verify-install` |
 | 9 | upgrade from the previous published version | `verify-install --upgrade-from` (CI: tags only) |
 | 10 | uninstall leaves no row/route/bundle | `verify-install` |
 | 11 | Desktop carrier from the Plugins page | manual, Desktop app (not CI) |

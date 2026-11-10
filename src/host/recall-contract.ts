@@ -17,8 +17,11 @@
  * the request deadline must survive. The contract itself is recorded here, and
  * the numbers in `test/fixtures/recall-wire/context-requests.json` are derived
  * by applying that contract; no other plugin's source expression is reproduced
- * here. See `PROVENANCE.md` for the full record and `scripts/check-independence.mjs`
- * for the gate that keeps it that way.
+ * here. The excerpts this contract is written from are version-controlled in
+ * `CONTRACT.md` (§1 fields, §2 quota semantics, §3 stage budgets); the untracked
+ * `docs/api-v05.md` research note is only the working source. See `PROVENANCE.md`
+ * for the full record and `scripts/check-independence.mjs` for the gate that
+ * keeps it that way.
  *
  * ### The contract, in one place
  *

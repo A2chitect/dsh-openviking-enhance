@@ -47,7 +47,7 @@ jobs:
         run: |
           pnpm pack --pack-destination /tmp
           tarball=$(ls /tmp/dsh-openviking-enhance-*.tgz)
-          for entry in package/lib/index.js package/lib/client.js package/cordis.patch.yml package/LICENSE package/package.json package/THIRD_PARTY_NOTICES package/PROVENANCE.md; do
+          for entry in package/lib/index.js package/lib/client.js package/cordis.patch.yml package/LICENSE package/package.json package/THIRD_PARTY_NOTICES package/PROVENANCE.md package/CONTRACT.md; do
             tar tzf "$tarball" | grep -qx "$entry" || { echo "missing from the tarball: $entry"; exit 1; }
           done
           echo "tarball carries the bundle, the patch, the licence and the manifest"
@@ -81,6 +81,10 @@ jobs:
           node scripts/verify-install.mjs --dsh "$(command -v dsh)" --tarball "$tarball" --json-out /tmp/install-verify.json
       # The upgrade leg needs the npm registry for the previously published
       # package; keeping it on tags only means PRs stay hermetic and fast.
+      # MOVE THE PIN FORWARD AT EVERY RELEASE: `--upgrade-from` must name the
+      # newest published version (never the v0.3.0 baseline once 0.4.0/0.5.0
+      # ship), otherwise the leg silently tests a two-generation jump. The
+      # release checklist in RELEASING.md covers this step.
       - name: upgrade from the previous published version (tags only)
         if: startsWith(github.ref, 'refs/tags/v')
         run: |

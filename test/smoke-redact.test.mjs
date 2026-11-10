@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url'
 import {
   createRedactor,
   redactEndpoint,
+  redactFreeText,
   redactPath,
   redactQuery,
   redactSessionId,
@@ -31,14 +32,14 @@ test('session ids become stable, non-reversible run-local handles', () => {
   assert.ok(!hashed.includes('0123456789abcdef'))
 })
 
-test('URIs keep the namespace and kind but never the leaf or a peer name', () => {
+test('URIs keep the namespace and kind but never the account, user, leaf or peer name', () => {
   assert.equal(
     redactUri('viking://user/default/memories/events/2026/11/01/release.md'),
-    'viking://user/default/memories/<redacted>',
+    'viking://user/<user>/memories/<redacted>',
   )
   assert.equal(
     redactUri('viking://user/default/peers/github.com-a2chitect-project/memories/entities/x.md'),
-    'viking://user/default/peers/<peer>/memories/<redacted>',
+    'viking://user/<user>/peers/<peer>/memories/<redacted>',
   )
   assert.equal(redactUri('viking://agent/skills/code-review/SKILL.md'), 'viking://agent/skills/<redacted>')
   assert.equal(redactUri('viking://unknown-shape'), 'viking://<redacted>/<redacted>')
@@ -55,6 +56,50 @@ test('endpoints keep only the loopback server', () => {
 test('query text becomes a length fact', () => {
   assert.equal(redactQuery('0123456789'), '<10 chars>')
   assert.equal(redactQuery(''), '<no query>')
+})
+
+test('free text loses home paths, inline URIs and session ids', () => {
+  const home = '/tmp/fixture-dsh-home'
+  const env = { DSH_HOME: home }
+  const error = `cannot read ${home}/state/dsh-openviking-enhance/profiles.json`
+  const redacted = redactFreeText(error, env)
+  assert.ok(redacted.includes('$DSH_HOME/state/dsh-openviking-enhance/profiles.json'), redacted)
+  assert.ok(!redacted.includes(home), redacted)
+
+  // A different user's home directory is hidden even when it is not this
+  // machine's; the error can quote a path the plugin never touched.
+  const foreign = redactFreeText('fetch failed for /Users/someone/.dsh/state/audit.jsonl', env)
+  assert.ok(!foreign.includes('/Users/someone'), foreign)
+  assert.ok(foreign.includes('<path>'), foreign)
+
+  const uri = redactFreeText('missing viking://user/alice/memories/events/2026/11/01/x.md entry', env)
+  assert.ok(!uri.includes('alice'), uri)
+  assert.ok(!uri.includes('/2026/11/01/x.md'), uri)
+  assert.ok(uri.includes('viking://user/<user>/memories/<redacted>'), uri)
+
+  const session = redactFreeText('session dsh-0123456789abcdef failed', env)
+  assert.ok(!session.includes('dsh-0123456789abcdef'), session)
+  assert.match(session, /sess-[0-9a-f]{8}/)
+})
+
+test('a home path inside a structured error field is redacted by summarise()', () => {
+  const home = '/tmp/fixture-dsh-home'
+  const summary = createRedactor({ DSH_HOME: home }).summarise({
+    ok: false,
+    error: `fetch failed ${home}/state/profiles.json`,
+    warnings: [{ code: 'probeFailed', message: 'viking://user/alice/memories/events/x.md unreadable' }],
+  })
+  assert.ok(!summary.includes(home), summary)
+  assert.ok(!summary.includes('alice'), summary)
+  assert.ok(summary.includes('$DSH_HOME/state/profiles.json'), 'the structure survives symbolically')
+})
+
+test('redactor.text redacts and truncates a free-text line', () => {
+  const redactor = createRedactor({ DSH_HOME: '/tmp/fixture-dsh-home' })
+  const line = redactor.text('boom at /tmp/fixture-dsh-home/state/x.json then more text', 80)
+  assert.ok(!line.includes('/tmp/fixture-dsh-home'), line)
+  assert.ok(line.includes('$DSH_HOME'), line)
+  assert.equal(redactor.text('x'.repeat(120)).length, 81, '80 chars plus the ellipsis')
 })
 
 test('home paths are symbolised, unknown paths hidden', () => {
@@ -109,7 +154,7 @@ test('summary scrubbing hides bodies, sessions, queries and identities in a whol
   assert.ok(summary.includes('sess-'), 'the session id is replaced, not dropped')
   assert.ok(summary.includes('<redacted>'), 'the URI shape is kept')
   assert.ok(!summary.includes('archive_001'), 'archive names are never echoed')
-  assert.ok(summary.includes('sessions/<redacted>'), 'the session URI shape is kept')
+  assert.ok(summary.includes('viking://user/<user>/sessions/<redacted>'), 'the session URI shape is kept')
 })
 
 test('SMOKE_VERBOSE=1 is the only way to get the raw detail', () => {
@@ -139,6 +184,7 @@ test('the offline smoke path prints no URI leaves, session ids or memory bodies'
   assert.doesNotMatch(output, /viking:\/\/user\/[^\s"]+\/memories\/[^\s"/]+/, 'no memory URI leaf')
   assert.doesNotMatch(output, /\bdsh-[0-9a-f]{8,}\b/, 'no raw session id')
   assert.doesNotMatch(output, /"abstract":\s*"[^"]+"/, 'no memory abstract body')
+  assert.doesNotMatch(output, /\/Users\/[^\s"']+/, 'no raw home path')
   // The redaction note is printed so an operator knows why the output is terse.
   assert.match(output, /redacted/i)
 })

@@ -419,21 +419,21 @@ async function report(base, sessionId) {
   // else is refused before a request leaves the host.
   const probe = await get(`${base}/api/openviking-enhance/probe?endpoint=${encodeURIComponent(config.endpoint)}`)
   console.log(
-    `[smoke] probe       ${probe?.ok === true ? `reachable=${probe.reachable} version=${probe.version ?? '?'}` : `FAIL ${probe?.error ?? 'no answer'}`}`,
+    `[smoke] probe       ${probe?.ok === true ? `reachable=${probe.reachable} version=${probe.version ?? '?'}` : `FAIL ${redactor.text(probe?.error ?? 'no answer')}`}`,
   )
   if (probe?.ok !== true || probe.reachable !== true) process.exitCode = 1
   const refused = await get(
     `${base}/api/openviking-enhance/probe?endpoint=${encodeURIComponent('http://example.com:1933')}`,
   )
   const refusedOk = refused?.ok === false
-  console.log(`[smoke] probe guard ${refusedOk ? 'ok  ' : 'FAIL'} non-loopback endpoint refused (${refused?.error ?? 'not refused'})`)
+  console.log(`[smoke] probe guard ${refusedOk ? 'ok  ' : 'FAIL'} non-loopback endpoint refused (${redactor.text(refused?.error ?? 'not refused')})`)
   if (!refusedOk) process.exitCode = 1
 
   const recall = await get(
     `${base}/api/openviking-enhance/recall?sessionId=${encodeURIComponent(sessionId)}&limit=3`,
   )
   if (recall?.ok !== true) {
-    console.log(`[smoke] FAIL recall      ${recall?.error ?? 'no answer'}`)
+    console.log(`[smoke] FAIL recall      ${redactor.text(recall?.error ?? 'no answer')}`)
     process.exitCode = 1
   } else {
     const payload = recall.recall
@@ -461,7 +461,7 @@ async function report(base, sessionId) {
         `${base}/api/openviking-enhance/recall/content?uri=${encodeURIComponent(first.uri)}`,
       )
       if (content?.ok !== true) {
-        console.log(`[smoke] FAIL content     ${content?.error ?? 'no answer'}`)
+        console.log(`[smoke] FAIL content     ${redactor.text(content?.error ?? 'no answer')}`)
         process.exitCode = 1
       } else {
         console.log(
@@ -478,7 +478,7 @@ async function report(base, sessionId) {
       `&query=${encodeURIComponent('what is this project about')}&source=turn`,
   )
   if (explain?.ok !== true) {
-    console.log(`[smoke] FAIL explain     ${explain?.error ?? 'no answer'}`)
+    console.log(`[smoke] FAIL explain     ${redactor.text(explain?.error ?? 'no answer')}`)
     process.exitCode = 1
   } else {
     const explanation = explain.explanation
@@ -508,7 +508,7 @@ async function report(base, sessionId) {
     `${base}/api/openviking-enhance/session-log?sessionId=${encodeURIComponent(sessionId)}`,
   )
   if (logAnswer?.ok !== true) {
-    console.log(`[smoke] FAIL log         ${logAnswer?.error ?? 'no answer'}`)
+    console.log(`[smoke] FAIL log         ${redactor.text(logAnswer?.error ?? 'no answer')}`)
     process.exitCode = 1
   } else {
     const log = logAnswer.log
@@ -531,7 +531,7 @@ async function report(base, sessionId) {
     `${base}/api/openviking-enhance/doctor?sessionId=${encodeURIComponent(sessionId)}&probe=1`,
   )
   if (doctorAnswer?.ok !== true) {
-    console.log(`[smoke] FAIL doctor      ${doctorAnswer?.error ?? 'no answer'}`)
+    console.log(`[smoke] FAIL doctor      ${redactor.text(doctorAnswer?.error ?? 'no answer')}`)
     process.exitCode = 1
   } else {
     const report = doctorAnswer.report
@@ -598,7 +598,7 @@ async function report(base, sessionId) {
     searchBuckets.map((bucket) => bucket.bucket).join(',') === 'memories,resources,skills'
   console.log(
     `[smoke] search      ${searchOk ? 'ok  ' : 'FAIL'} ${
-      searchOk ? searchBuckets.map((bucket) => `${bucket.bucket}:${bucket.items.length}`).join(' ') : search?.error ?? 'no answer'
+      searchOk ? searchBuckets.map((bucket) => `${bucket.bucket}:${bucket.items.length}`).join(' ') : redactor.text(search?.error ?? 'no answer')
     }`,
   )
   if (!searchOk) process.exitCode = 1
@@ -611,7 +611,7 @@ async function report(base, sessionId) {
   const optInOk = searchWithRules?.ok === true && rulesBucket !== undefined
   console.log(
     `[smoke] search opt-in ${optInOk ? 'ok  ' : 'FAIL'} ${
-      optInOk ? `rules bucket requested explicitly (${rulesBucket.items.length} hit(s))` : searchWithRules?.error ?? 'no answer'
+      optInOk ? `rules bucket requested explicitly (${rulesBucket.items.length} hit(s))` : redactor.text(searchWithRules?.error ?? 'no answer')
     }`,
   )
   if (!optInOk) process.exitCode = 1
@@ -630,7 +630,7 @@ async function report(base, sessionId) {
     `[smoke] rules       ${rulesOk ? 'ok  ' : 'FAIL'} ${
       rules?.ok === true
         ? `${rules.list.rules.length} rule(s), ${rules.list.scenarios.length} scenario(s), empty=${rules.list.empty}, partial=${rules.list.partial}`
-        : rules?.error
+        : redactor.text(rules?.error ?? 'no answer')
     }`,
   )
   if (!rulesOk) process.exitCode = 1
@@ -643,7 +643,7 @@ async function report(base, sessionId) {
     `[smoke] rule tester ${ruleSearchOk ? 'ok  ' : 'FAIL'} ${
       ruleSearch?.ok === true
         ? `${ruleSearch.rules.matches.length} match(es), complete=${ruleSearch.rules.complete}`
-        : ruleSearch?.error
+        : redactor.text(ruleSearch?.error ?? 'no answer')
     }`,
   )
   if (!ruleSearchOk) process.exitCode = 1
@@ -654,7 +654,7 @@ async function report(base, sessionId) {
     (skills?.ok === true && Array.isArray(skills.catalogue?.skills)) || skills?.error === 'unsupported'
   console.log(
     `[smoke] skills      ${skillsOk ? 'ok  ' : 'FAIL'} ${
-      skills?.ok === true ? `${skills.catalogue.skills.length} skill(s)` : skills?.error
+      skills?.ok === true ? `${skills.catalogue.skills.length} skill(s)` : redactor.text(skills?.error ?? 'no answer')
     }`,
   )
   if (!skillsOk) process.exitCode = 1
@@ -666,7 +666,7 @@ async function report(base, sessionId) {
     `[smoke] experience  ${experienceOk ? 'ok  ' : 'FAIL'} ${
       experience?.ok === true
         ? `${experience.experience.experiences.length} experience(s)${experience.experience.note ? ` (${experience.experience.note})` : ''}`
-        : experience?.error
+        : redactor.text(experience?.error ?? 'no answer')
     }`,
   )
   if (!experienceOk) process.exitCode = 1

@@ -65,7 +65,10 @@ rules-list notice.
   rules bucket is an explicit **"include rules (server cost)"** opt-in; the Rule
   tester states that Run costs a server-side rule search. Both READMEs and this
   changelog now say that read-only is not the same as free.
-- The `engines.dsh` / peer range is now upper-bounded: `>=0.2.0-rc.2 <1.0.0-0`.
+- The `engines.dsh` / peer range is now upper-bounded per DSH pre-release line
+  (both fields use the same string), so plain semver accepts 0.2.1-rc.3 and the
+  0.2.2-rc.1 write floor while a future 1.x is still refused:
+  `>=0.2.0-rc.2 <1.0.0-0 || >=0.2.1-rc.2 <0.2.2-0 || >=0.2.2-rc.1 <0.3.0-0`.
 - Explore `RulesSection` aborts its request on unmount (no setState after unmount);
   the `viking://` preview loads L2 as bounded line pages (`offset`/`limit`) with a
   "Show more" control instead of downloading the whole file.
@@ -75,13 +78,33 @@ rules-list notice.
 - Stale "verified against 0.4.22" and mirrored-request comments replaced with the
   tested range and the actual contract; timeouts/limits centralized in
   `src/shared/limits.ts` with a README parity test.
+- **Install verification compares real versions.** `verify-install` now reads
+  `package/package.json` out of the packed `.tgz` and asserts the installed
+  package equals that version (review blocker B1); the reinstall leg compares to
+  the same value, the JSON summary records `tarballVersion`/`installedVersion`,
+  and the freshly installed profile must refuse a non-loopback `Host` header.
+- **The independent-contract argument is auditable from the repo.** The cited
+  context-face field table, quota semantics and stage budgets are tracked in
+  `CONTRACT.md` (source/date included) and linked from `PROVENANCE.md` and the
+  contract module; PROVENANCE states the claim is *consistency with the
+  documented contract*, not runtime equality with the official plugin. The
+  independence gate exports its marker matcher and has negative-control tests
+  (review S6/S8/S9).
+- **Privacy sweep covers free text.** Smoke output redacts home paths, inline
+  `viking://` URIs and session ids inside error/message/reason strings, and
+  account/user URI segments are hidden (review S3/S4).
+- **Doctor honesty.** An unprobed (transport-failed/cancelled) rules capability
+  is reported as `unknown`, the server version is classified against the tested
+  `0.5.1.1–0.5.3` range with a warning outside it, rule-listing warnings are
+  emitted in input order, and a worker throw becomes a per-item warning instead
+  of failing the section (review S2/S7 + small hardening).
 
 #### Verified
 
 - `pnpm test`: typecheck, build, packaging contract, independence gate,
   **318** unit tests, client smoke and host smoke (live read-only path redacted)
   all green.
-- `pnpm run verify:install`: 23/23 clean-profile steps (install → one config row
+- `pnpm run verify:install`: 27/27 clean-profile steps (install → one config row
   → boot → composed client bundle → host route → reinstall → uninstall), also
   running as a CI `install-verify` job pinned to DSH 0.2.2-rc.1 on Linux.
 - Independence gate has a demonstrated negative control (fails on a re-introduced

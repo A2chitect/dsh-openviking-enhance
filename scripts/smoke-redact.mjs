@@ -18,6 +18,8 @@
  * rules instead of inventing another exception.
  */
 import { createHash } from 'node:crypto'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 
 /** Whether the caller explicitly asked for the detailed output. */
 export function smokeVerbose(env = process.env) {
@@ -73,10 +75,16 @@ export function redactUri(uri) {
   )
   if (kind === undefined) return 'viking://<redacted>/<redacted>'
   const kindIndex = segments.indexOf(kind)
-  // A peer id is a scope segment too; keep its existence, hide its name.
+  // Every identity-bearing scope segment is symbolised, not just peers: the
+  // namespace stays (`user`/`agent`, the kind stays structural) but the account
+  // or user id after it does not.
   const scope = segments
     .slice(0, kindIndex)
-    .map((segment, index, all) => (all[index - 1] === 'peers' || all[index - 1] === 'actors' ? '<peer>' : segment))
+    .map((segment, index, all) => {
+      if (all[index - 1] === 'peers' || all[index - 1] === 'actors') return '<peer>'
+      if (index === 1 && (all[0] === 'user' || all[0] === 'agent')) return '<user>'
+      return segment
+    })
     .join('/')
   const leaf = segments.length > kindIndex + 1 ? segments[segments.length - 1] : ''
   const suffix = leaf.length > 0 ? '/<redacted>' : ''
@@ -102,6 +110,56 @@ export function redactPath(path) {
 export function redactQuery(text) {
   const length = typeof text === 'string' ? text.length : 0
   return length === 0 ? '<no query>' : `<${length} chars>`
+}
+
+/**
+ * The home/identity substitutes a free-text sweep applies, longest prefix first.
+ *
+ * The real home directories are substituted with the same symbolic forms the
+ * structured redactor uses (`$DSH_HOME`, `$OPENVIKING_HOME`), so an error string
+ * stays as useful as its structured twin after redaction.
+ */
+function textHomePrefixes(env) {
+  const pairs = []
+  const dsh = env.DSH_HOME?.trim()
+  if (dsh !== undefined && dsh.length > 0) pairs.push([dsh, '$DSH_HOME'])
+  pairs.push([join(homedir(), '.dsh'), '$DSH_HOME'])
+  const ov = env.OPENVIKING_HOME?.trim()
+  if (ov !== undefined && ov.length > 0) pairs.push([ov, '$OPENVIKING_HOME'])
+  pairs.push([join(homedir(), '.openviking'), '$OPENVIKING_HOME'])
+  return pairs.sort((left, right) => right[0].length - left[0].length)
+}
+
+/**
+ * Redact one piece of free text (an error message, a warning, a log line).
+ *
+ * Structured payloads are redacted key-by-key; errors are the leak that gets
+ * past that, because the interesting part can appear mid-sentence:
+ *
+ *   `fetch failed /Users/alice/.dsh/state/profiles.json`
+ *
+ * The sweep therefore looks *inside* the string: known home prefixes become the
+ * same symbolic forms as above, inline `viking://` URIs lose their identity and
+ * leaf, any remaining absolute user-home path becomes `<path>`, and session ids
+ * are hashed. Order matters: the known prefixes are replaced before the generic
+ * absolute-path sweep, so `$DSH_HOME/...` survives with useful structure.
+ */
+export function redactFreeText(text, env = process.env) {
+  if (typeof text !== 'string') return String(text)
+  let out = text
+  // Inline URIs first, so their path segments are not mistaken for a file path.
+  out = out.replace(/viking:\/\/[^\s"'<>),;]+/g, (match) => redactUri(match))
+  for (const [prefix, label] of textHomePrefixes(env)) {
+    out = out.split(prefix).join(label)
+  }
+  // A remaining absolute path under a user home (`/Users/<id>/…`, `/home/<id>/…`).
+  out = out.replace(/\/(?:Users|home|root)\/[^/\s"'<>]+(?:\/[^\s"'<>]*)?/g, '<path>')
+  // Windows drive paths (`C:\\Users\\…`).
+  out = out.replace(/[A-Za-z]:\\[^\s"'<>]+/g, '<path>')
+  // Session handles are hex-shaped (`dsh-7060531e`); the package name
+  // `dsh-openviking-enhance` is not one and must survive as a path segment.
+  out = out.replace(/\bdsh-[0-9a-f]{8,}\b/g, (match) => redactSessionId(match))
+  return out
 }
 
 /** One line of human text, truncated, for errors that might quote a body. */
@@ -168,6 +226,9 @@ export function createRedactor(env = process.env) {
       }
       if (lowered === 'query') return redactQuery(value)
       if (lowered === 'path' || lowered === 'storepath' || lowered === 'directory') return redactPath(value)
+      if (lowered === 'error' || lowered === 'message' || lowered === 'reason' || lowered === 'warning') {
+        return redactFreeText(value, env)
+      }
       if (value.startsWith('viking://')) return redactUri(value)
       if (/^dsh-[0-9A-Za-z._-]{6,}$/.test(value)) return redactSessionId(value)
       return value
@@ -191,7 +252,7 @@ export function createRedactor(env = process.env) {
     query: (text) => (verbose ? text : redactQuery(text)),
     endpoint: (endpoint) => (verbose ? endpoint : redactEndpoint(endpoint)),
     path: (path) => (verbose ? path : redactPath(path)),
-    text: (text, limit) => (verbose ? text : redactText(text, limit)),
+    text: (text, limit) => (verbose ? text : redactText(redactFreeText(text, env), limit)),
     value: redactValue,
     summarise: (payload) => {
       // Verbose mode reproduces the harness's historical line exactly, so an

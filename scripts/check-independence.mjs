@@ -23,15 +23,10 @@
 //
 //   node scripts/check-independence.mjs
 import { readFileSync, readdirSync, existsSync } from 'node:fs'
-import { dirname, join, relative } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-const failures = []
-const check = (ok, message) => {
-  console.log(`[independence] ${ok ? 'ok  ' : 'FAIL'} ${message}`)
-  if (!ok) failures.push(message)
-}
 
 /** Every file under `dir`, recursively, without following symlinks. */
 function walk(dir) {
@@ -63,99 +58,136 @@ const BANNED_PATTERNS = [
 ]
 
 /** True when `text` contains a banned marker, returning the marker for the log. */
-function findBannedMarker(text) {
+export function findBannedMarker(text) {
   const lowered = text.toLowerCase()
   const marker = BANNED_MARKERS.find((candidate) => lowered.includes(candidate))
   if (marker !== null && marker !== undefined) return marker
   return BANNED_PATTERNS.find((entry) => entry.pattern.test(text))?.label ?? null
 }
 
-// ---- 1. source tree -------------------------------------------------------
-const srcFiles = walk(join(root, 'src'))
-check(srcFiles.length > 20, `scanned the source tree (${srcFiles.length} files)`)
-let markerHits = 0
-for (const file of srcFiles) {
-  const hit = findBannedMarker(readFileSync(file, 'utf8'))
-  if (hit !== null) {
-    markerHits += 1
-    console.log(`[independence]      ${relative(root, file)} contains "${hit}"`)
+/**
+ * Run every independence check, printing one line per check.
+ *
+ * Exported so tests can exercise the marker matcher and the gate itself without
+ * spawning a child process; the script entry point below calls this.
+ *
+ * @returns the failing check descriptions (empty when the gate passes).
+ */
+export function checkIndependence() {
+  const failures = []
+  const check = (ok, message) => {
+    console.log(`[independence] ${ok ? 'ok  ' : 'FAIL'} ${message}`)
+    if (!ok) failures.push(message)
   }
-}
-check(markerHits === 0, 'no upstream-provenance marker or AGPL text in src/')
 
-// ---- 2. imports -----------------------------------------------------------
-const forbiddenImport = /(?:import|require)\s*(?:\(|\s)[^'"\n]*['"][^'"]*(?:@openviking\/|examples\/memory-plugin-shared)/
-let importHits = 0
-for (const file of srcFiles) {
-  const text = readFileSync(file, 'utf8')
-  if (forbiddenImport.test(text) || text.includes('examples/memory-plugin-shared')) {
-    importHits += 1
-    console.log(`[independence]      ${relative(root, file)} imports/cites an upstream implementation path`)
+  // ---- 1. source tree -------------------------------------------------------
+  const srcFiles = walk(join(root, 'src'))
+  check(srcFiles.length > 20, `scanned the source tree (${srcFiles.length} files)`)
+  let markerHits = 0
+  for (const file of srcFiles) {
+    const hit = findBannedMarker(readFileSync(file, 'utf8'))
+    if (hit !== null) {
+      markerHits += 1
+      console.log(`[independence]      ${relative(root, file)} contains "${hit}"`)
+    }
   }
-}
-check(importHits === 0, 'no import from @openviking/* or the upstream shared example in src/')
+  check(markerHits === 0, 'no upstream-provenance marker or AGPL text in src/')
 
-// ---- 3. built bundles -----------------------------------------------------
-for (const artefact of ['lib/index.js', 'lib/client.js']) {
-  const path = join(root, artefact)
-  if (!existsSync(path)) {
-    console.log(`[independence] note ${artefact} does not exist yet; run pnpm run build to scan it`)
-    continue
+  // ---- 2. imports -----------------------------------------------------------
+  const forbiddenImport = /(?:import|require)\s*(?:\(|\s)[^'"\n]*['"][^'"]*(?:@openviking\/|examples\/memory-plugin-shared)/
+  let importHits = 0
+  for (const file of srcFiles) {
+    const text = readFileSync(file, 'utf8')
+    if (forbiddenImport.test(text) || text.includes('examples/memory-plugin-shared')) {
+      importHits += 1
+      console.log(`[independence]      ${relative(root, file)} imports/cites an upstream implementation path`)
+    }
   }
-  const hit = findBannedMarker(readFileSync(path, 'utf8'))
-  check(hit === null, hit === null ? `${artefact} carries no upstream marker` : `${artefact} contains "${hit}"`)
-}
+  check(importHits === 0, 'no import from @openviking/* or the upstream shared example in src/')
 
-// ---- 4. committed fixtures ------------------------------------------------
-const fixtureDir = join(root, 'test', 'fixtures')
-if (existsSync(fixtureDir)) {
-  const fixtures = walk(fixtureDir)
-  let captured = 0
-  for (const file of fixtures) {
-    let text
-    try {
-      text = readFileSync(file, 'utf8')
-    } catch {
+  // ---- 3. built bundles -----------------------------------------------------
+  for (const artefact of ['lib/index.js', 'lib/client.js']) {
+    const path = join(root, artefact)
+    if (!existsSync(path)) {
+      console.log(`[independence] note ${artefact} does not exist yet; run pnpm run build to scan it`)
       continue
     }
-    if (text.includes('"capturedFrom"') || text.includes('"captured_at"')) {
-      captured += 1
-      console.log(`[independence]      ${relative(root, file)} claims to be a real-server capture`)
-    }
+    const hit = findBannedMarker(readFileSync(path, 'utf8'))
+    check(hit === null, hit === null ? `${artefact} carries no upstream marker` : `${artefact} contains "${hit}"`)
   }
-  check(captured === 0, `no fixture is a real-server capture (${fixtures.length} fixture files)`)
-} else {
-  check(false, 'test/fixtures exists (the recall contract matrix lives there)')
-}
 
-// ---- 5. provenance record and notices ------------------------------------
-const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
-const provenancePath = join(root, 'PROVENANCE.md')
-check(existsSync(provenancePath), 'PROVENANCE.md exists')
-if (existsSync(provenancePath)) {
-  const provenance = readFileSync(provenancePath, 'utf8')
-  const rows = provenance.split('\n').filter((line) => /^\|/.test(line))
-  // Header + separator are not rows.
-  const auditRows = Math.max(0, rows.length - 2)
-  check(auditRows >= 8, `PROVENANCE.md records ${auditRows} upstream-coupled behaviours (maintained audit)`)
-}
+  // ---- 4. committed fixtures ------------------------------------------------
+  const fixtureDir = join(root, 'test', 'fixtures')
+  if (existsSync(fixtureDir)) {
+    const fixtures = walk(fixtureDir)
+    let captured = 0
+    for (const file of fixtures) {
+      let text
+      try {
+        text = readFileSync(file, 'utf8')
+      } catch {
+        continue
+      }
+      if (text.includes('"capturedFrom"') || text.includes('"captured_at"')) {
+        captured += 1
+        console.log(`[independence]      ${relative(root, file)} claims to be a real-server capture`)
+      }
+    }
+    check(captured === 0, `no fixture is a real-server capture (${fixtures.length} fixture files)`)
+  } else {
+    check(false, 'test/fixtures exists (the recall contract matrix lives there)')
+  }
 
-const noticesPath = join(root, 'THIRD_PARTY_NOTICES')
-check(existsSync(noticesPath), 'THIRD_PARTY_NOTICES exists')
-if (existsSync(noticesPath)) {
-  const notices = readFileSync(noticesPath, 'utf8')
-  check(
-    Array.isArray(pkg.files) && pkg.files.includes('THIRD_PARTY_NOTICES'),
-    'THIRD_PARTY_NOTICES is listed in package.json.files, so the tarball carries it',
+  // ---- 5. provenance record and notices ------------------------------------
+  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  const provenancePath = join(root, 'PROVENANCE.md')
+  check(existsSync(provenancePath), 'PROVENANCE.md exists')
+  if (existsSync(provenancePath)) {
+    const provenance = readFileSync(provenancePath, 'utf8')
+    const rows = provenance.split('\n').filter((line) => /^\|/.test(line))
+    // Header + separator are not rows.
+    const auditRows = Math.max(0, rows.length - 2)
+    check(auditRows >= 8, `PROVENANCE.md records ${auditRows} upstream-coupled behaviours (maintained audit)`)
+  }
+
+  // ---- 5b. tracked contract excerpts ---------------------------------------
+  const contractPath = join(root, 'CONTRACT.md')
+  check(existsSync(contractPath), 'CONTRACT.md exists (the cited contract excerpts are version-controlled)')
+  if (existsSync(contractPath)) {
+    const contract = readFileSync(contractPath, 'utf8')
+    check(contract.includes('## 2. Coding-purpose quota semantics'), 'CONTRACT.md records the quota semantics the contract module cites')
+    check(contract.includes('## 3. Request deadline and stage budgets'), 'CONTRACT.md records the deadline derivation')
+    check(contract.includes('45 000'), 'CONTRACT.md records the rewrite stage budget')
+    check(
+      Array.isArray(pkg.files) && pkg.files.includes('CONTRACT.md'),
+      'CONTRACT.md is listed in package.json.files, so the published package carries its own contract',
+    )
+  }
+
+  const noticesPath = join(root, 'THIRD_PARTY_NOTICES')
+  check(existsSync(noticesPath), 'THIRD_PARTY_NOTICES exists')
+  if (existsSync(noticesPath)) {
+    const notices = readFileSync(noticesPath, 'utf8')
+    check(
+      Array.isArray(pkg.files) && pkg.files.includes('THIRD_PARTY_NOTICES'),
+      'THIRD_PARTY_NOTICES is listed in package.json.files, so the tarball carries it',
+    )
+    check(notices.includes('@deepseek-ai/schemastery'), 'THIRD_PARTY_NOTICES names the bundled @deepseek-ai/schemastery')
+    check(notices.includes('@deepseek-ai/cosmokit'), 'THIRD_PARTY_NOTICES names the bundled @deepseek-ai/cosmokit')
+    check(notices.includes('MIT License'), 'THIRD_PARTY_NOTICES reproduces the MIT permission notice')
+  }
+
+  console.log(
+    failures.length === 0
+      ? '[independence] all checks passed'
+      : `[independence] ${failures.length} check(s) failed`,
   )
-  check(notices.includes('@deepseek-ai/schemastery'), 'THIRD_PARTY_NOTICES names the bundled @deepseek-ai/schemastery')
-  check(notices.includes('@deepseek-ai/cosmokit'), 'THIRD_PARTY_NOTICES names the bundled @deepseek-ai/cosmokit')
-  check(notices.includes('MIT License'), 'THIRD_PARTY_NOTICES reproduces the MIT permission notice')
+  return failures
 }
 
-console.log(
-  failures.length === 0
-    ? '[independence] all checks passed'
-    : `[independence] ${failures.length} check(s) failed`,
-)
-if (failures.length > 0) process.exitCode = 1
+const invokedAsScript =
+  process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+if (invokedAsScript) {
+  const failures = checkIndependence()
+  if (failures.length > 0) process.exitCode = 1
+}

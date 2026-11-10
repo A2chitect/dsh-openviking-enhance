@@ -29,7 +29,11 @@ test('the fixture matrix is derived, not captured', () => {
   assert.equal(fixture.schema, 1)
   assert.match(fixture.derivation, /Hand-authored/)
   assert.equal(fixture.capturedFrom, undefined, 'a capture of a real server must never be committed')
-  assert.ok(Array.isArray(fixture.cases) && fixture.cases.length >= 20, `expected the ~18-case matrix, saw ${fixture.cases?.length}`)
+  assert.ok(
+    Array.isArray(fixture.cases) && fixture.cases.length === 25,
+    `the reviewed matrix has 25 cases, saw ${fixture.cases?.length}`,
+  )
+  assert.match(fixture.derivation, /invented inputs/, 'the fixture says its inputs are invented')
 })
 
 test('the fixture category order is the contract order', () => {
@@ -111,6 +115,80 @@ test('the timeout matrix covers none, expansion, rewrite and the explicit overri
   assert.equal(recallContextTimeoutMs(null, { ...noStages, query_expansion: 'off' }), undefined, 'no stage, no special deadline')
   assert.equal(recallContextTimeoutMs({ recallContextTimeoutMs: 60_000 }, expansion), 60_000)
   assert.equal(recallContextTimeoutMs({ recallContextTimeoutMs: 10 }, expansion), 1000, 'the explicit override has a 1 s floor')
+})
+
+test('hand-derived timeout expectations match CONTRACT.md §3', () => {
+  // Written as literal expectations derived from the contract excerpt (the
+  // request needs no special deadline unless it asks for a stage; the explicit
+  // override has a 1 s floor; a configured timeout only raises the stage floor).
+  const query = 'why'
+  const sessionId = 'dsh-s1'
+  const cases = [
+    { config: null, expected: 15_000, note: 'session_id present, expansion not off' },
+    {
+      config: { recallQueryExpansionConfigured: true, recallQueryExpansion: 'off' },
+      expected: null,
+      note: 'no rewrite and expansion explicitly off -> no stage deadline',
+    },
+    { config: { timeoutMs: 30_000 }, expected: 30_000, note: 'configured request timeout raises the expansion floor' },
+    {
+      config: { recallRewrite: 'server', timeoutMs: 12_000 },
+      expected: 45_000,
+      note: 'rewrite stage budget wins over a lower request timeout',
+    },
+    { config: { recallContextTimeoutMs: 10 }, expected: 1000, note: 'explicit override clamps to the 1 s floor' },
+    {
+      config: { recallContextTimeoutMs: 60_000, recallRewrite: 'server' },
+      expected: 60_000,
+      note: 'an explicit override above the stage budget wins',
+    },
+  ]
+  for (const item of cases) {
+    const body = buildRecallContextBody({ query, sessionId, config: item.config })
+    assert.equal(recallContextTimeoutMs(item.config, body) ?? null, item.expected, item.note)
+  }
+})
+
+test('hand-derived optional-field expectations match CONTRACT.md §1', () => {
+  // dedup 0 is omitted (not sent as 0); bullets are sent only with a rewrite and
+  // only when the configured flag says so; max_tokens stays server-default.
+  const noDedup = buildRecallContextBody({
+    query: 'why',
+    sessionId: 'dsh-s1',
+    config: {
+      recallDedupTurns: 0,
+      recallRewrite: 'server',
+      recallCompressMaxBullets: 4,
+      recallCompressMaxBulletsConfigured: false,
+      recallMaxTokensConfigured: false,
+    },
+  })
+  assert.deepEqual(noDedup, {
+    query: 'why',
+    mode: 'context',
+    purpose: 'coding',
+    score_threshold: 0.35,
+    session_id: 'dsh-s1',
+    rewrite: true,
+  })
+
+  // limit 6 = one guaranteed seat per category; actor scope adds peer_scope;
+  // absent dedup defaults to 5.
+  const baseSeats = buildRecallContextBody({
+    query: 'why',
+    sessionId: 'dsh-s1',
+    config: { recallLimit: 6, recallLimitConfigured: true, recallPeerScope: 'actor' },
+  })
+  assert.deepEqual(baseSeats, {
+    query: 'why',
+    mode: 'context',
+    purpose: 'coding',
+    score_threshold: 0.35,
+    session_id: 'dsh-s1',
+    quotas: { events: 1, entities: 1, preferences: 1, experiences: 1, resources: 1, skills: 1 },
+    dedup_turns: 5,
+    peer_scope: 'actor',
+  })
 })
 
 test('configured lists are filtered and capped at the documented 200 URIs', () => {

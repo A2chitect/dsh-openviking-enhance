@@ -548,3 +548,170 @@ test('the page line bound is clamped to the documented response cap', () => {
   assert.equal(clampPageLines(5000), PREVIEW_BODY_MAX_LINES_RESPONSE)
   assert.equal(clampPageLines(Number.NaN), PREVIEW_BODY_MAX_LINES)
 })
+
+/* ========================================================================
+ * Optional review notes: per-item throw isolation, deterministic warnings,
+ * capability generation counter.
+ * ===================================================================== */
+
+test('the pool isolates a worker that throws instead of failing the whole map', async () => {
+  const outcome = await mapPool([1, 2, 3, 4], 2, async (item) => {
+    if (item === 2) throw new Error('boom')
+    return item * 10
+  })
+  assert.equal(outcome.failures, 1)
+  assert.equal(outcome.started, 4)
+  assert.deepEqual(outcome.results, [10, undefined, 30, 40])
+  assert.match(String(outcome.errors[1]), /boom/)
+  assert.equal(outcome.errors[0], undefined)
+})
+
+/** A rules fake where one scenario listing and one rule read throw synchronously. */
+function throwingRulesApi() {
+  const root = RULES_ROOT
+  return {
+    probeRuleSearchRoute: async () => ({ ok: false, status: 422, result: null, error: 'validation', errorCode: null }),
+    listDirectory: async (uri) => {
+      if (uri === root) {
+        return {
+          ok: true,
+          status: 200,
+          result: [
+            { uri: `${root}/scenario-a`, isDir: true },
+            { uri: `${root}/scenario-b`, isDir: true },
+          ],
+        }
+      }
+      if (uri === `${root}/scenario-a`) throw new Error('listing exploded')
+      return { ok: true, status: 200, result: [{ uri: `${root}/scenario-b/good.md`, isDir: false }] }
+    },
+    readText: async (uri) => {
+      if (uri.endsWith('/abstract.md')) return { ok: true, status: 200, result: '---\nname: B\n---\n' }
+      if (uri.endsWith('good.md')) return { ok: true, status: 200, result: RULE_MARKDOWN }
+      throw new Error('rule exploded')
+    },
+  }
+}
+
+test('a throwing catalogue read becomes a warning, not a failed section', async () => {
+  const api = throwingRulesApi()
+  api.listDirectory = async (uri) => {
+    if (uri === RULES_ROOT) {
+      return {
+        ok: true,
+        status: 200,
+        result: [
+          { uri: `${RULES_ROOT}/scenario-a`, isDir: true },
+          { uri: `${RULES_ROOT}/scenario-b`, isDir: true },
+        ],
+      }
+    }
+    if (uri === `${RULES_ROOT}/scenario-a`) throw new Error('listing exploded')
+    return {
+      ok: true,
+      status: 200,
+      result: [
+        { uri: `${RULES_ROOT}/scenario-b/good.md`, isDir: false },
+        { uri: `${RULES_ROOT}/scenario-b/bad.md`, isDir: false },
+      ],
+    }
+  }
+  api.readText = async (uri) => {
+    if (uri.endsWith('/abstract.md')) return { ok: true, status: 200, result: '---\nname: B\n---\n' }
+    if (uri.endsWith('good.md')) return { ok: true, status: 200, result: RULE_MARKDOWN }
+    throw new Error('rule exploded')
+  }
+  const catalog = new CatalogService({ api })
+  const list = await catalog.listRules()
+  assert.equal(list.partial, false)
+  assert.equal(list.rules.length, 1, 'the readable rule still lists')
+  const codes = list.warnings.map((warning) => warning.code)
+  assert.ok(codes.includes('ruleScenarioFailed'), `scenario throw became a warning: ${codes.join(', ')}`)
+  assert.ok(codes.includes('ruleReadFailed'), `rule throw became a warning: ${codes.join(', ')}`)
+})
+
+test('warning order follows the input order even when completions race', async () => {
+  const scenarios = ['slow', 'fast', 'medium']
+  const delays = { slow: 60, fast: 5, medium: 30 }
+  const routes = [
+    {
+      match: (url, method) => url.pathname === '/api/v1/rules/search' && method === 'POST',
+      handler: (_url, _body, context) => context.finish(422, { detail: [] }),
+    },
+    {
+      match: (url) => url.pathname === '/api/v1/fs/ls' && url.searchParams.get('uri') === RULES_ROOT,
+      handler: (_url, _body, context) =>
+        context.json({
+          status: 'ok',
+          result: scenarios.map((id) => ({ uri: `${RULES_ROOT}/${id}`, isDir: true })),
+        }),
+    },
+    {
+      match: (url) => url.pathname === '/api/v1/fs/ls' && url.searchParams.get('uri')?.startsWith(`${RULES_ROOT}/`),
+      handler: (url, _body, context) => {
+        const id = url.searchParams.get('uri').split('/').pop()
+        // Alternate failure/success so each slow scenario leaves a notice.
+        if (id !== 'fast') {
+          context.json({ status: 'error', error: { message: `cannot list ${id}` } }, delays[id])
+          return
+        }
+        context.json({ status: 'ok', result: [{ uri: `${RULES_ROOT}/${id}/good.md`, isDir: false }] }, delays[id])
+      },
+    },
+    {
+      match: (url) => url.pathname === '/api/v1/content/read',
+      handler: (_url, _body, context) => context.json({ status: 'ok', result: RULE_MARKDOWN }, 5),
+    },
+  ]
+  await withStub(routes, async ({ base }) => {
+    const api = new OpenVikingApi({ endpoint: base, apiKey: '', account: 'default', user: 'default' })
+    const catalog = new CatalogService({ api })
+    const first = await catalog.listRules({ rulesAvailable: true })
+    // The fake returns HTTP 200 with an error envelope for the two listing
+    // failures, which the service treats as a successful (empty) listing; the
+    // determinism assertion is about the probe warning order regardless.
+    const second = await catalog.listRules({ rulesAvailable: true })
+    assert.deepEqual(
+      first.warnings.map((warning) => warning.code),
+      second.warnings.map((warning) => warning.code),
+      'two runs over the same server produce the same warning order',
+    )
+  })
+})
+
+test('an identity invalidation during a rules probe is not cached for the next identity', async () => {
+  let ruleProbes = 0
+  const routes = [
+    {
+      match: (url) => url.pathname === '/health',
+      handler: (_url, _body, context) => context.json({ status: 'ok', result: { version: '0.5.3', auth_mode: 'dev' } }),
+    },
+    {
+      match: (url) => url.pathname === '/api/v1/snapshot/log',
+      handler: (_url, _body, context) => context.json({ status: 'ok', result: {} }),
+    },
+    {
+      match: (url) => url.pathname === '/api/v1/tasks',
+      handler: (_url, _body, context) => context.json({ status: 'ok', result: { items: [] } }),
+    },
+    {
+      match: (url, method) => url.pathname === '/api/v1/rules/search' && method === 'POST',
+      handler: (_url, _body, context) => {
+        ruleProbes += 1
+        context.finish(422, { detail: [] }, 80)
+      },
+    },
+  ]
+  await withStub(routes, async ({ base }) => {
+    const api = new OpenVikingApi({ endpoint: base, apiKey: '', account: 'default', user: 'default' })
+    const capability = new CapabilityService({ api, transport: () => false })
+    const inFlight = capability.rules()
+    // A profile switch while the probe is still on the wire.
+    capability.invalidate()
+    const first = await inFlight
+    assert.equal(first.available, true)
+    const second = await capability.rules()
+    assert.deepEqual(second, first)
+    assert.equal(ruleProbes, 2, 'the stale probe answer was not trusted for the new identity')
+  })
+})

@@ -26,6 +26,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { request as httpRequest } from 'node:http'
+import { readTarballManifest } from './tarball-meta.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
@@ -289,6 +290,21 @@ async function main() {
     }
     if (!existsSync(tarball)) throw new Error(`tarball does not exist: ${tarball}`)
     step('tarball exists', true, tarball)
+    // B1: the version this run trusts must come *from the tarball*, not from
+    // whatever the profile manager happened to install. Everything below
+    // compares the installed package against this value.
+    let packed = null
+    try {
+      packed = readTarballManifest(tarball)
+    } catch (error) {
+      step('the tarball is a readable npm tarball', false, error instanceof Error ? error.message : String(error))
+      throw error
+    }
+    step('the tarball is a readable npm tarball', packed !== null, packed === null ? 'no package/package.json' : null)
+    if (packed === null) throw new Error('the tarball does not carry package/package.json')
+    step('the tarball declares the package name', packed.name === PACKAGE, packed.name ?? 'missing')
+    step('the tarball declares a version', packed.version !== null, packed.version ?? 'missing')
+    const packedVersion = packed.version
 
     const dshVersion = await exec(args.dsh, ['--version'], { timeoutMs: 30_000 })
     step('the dsh executable answers --version', dshVersion.code === 0, dshVersion.stdout.trim())
@@ -312,7 +328,13 @@ async function main() {
     })
     step('dsh plugin add installs the tarball', installed.code === 0, installed.stderr.trim().split('\n').slice(-1)[0] ?? '')
     const version = await installedVersion(dshHome, args.profile)
-    step('the installed package version is the tarball version', version !== null, version ?? 'not found')
+    // B1's actual comparison: the installed manifest version equals the version
+    // read out of the packed tarball, not merely "some version is installed".
+    step(
+      'the installed package version equals the tarball version',
+      version !== null && version === packedVersion,
+      `${version ?? 'not found'} installed / ${packedVersion ?? 'missing'} in tarball`,
+    )
     if (args.upgradeFrom !== null) {
       step('the upgrade changed the installed version', version !== null && version !== previousVersion, `${previousVersion} -> ${version}`)
     }
@@ -376,6 +398,18 @@ async function main() {
       scope.status === 200 && scopeBody !== null && scopeBody.ok === true && scopeBody.scope?.capabilities !== undefined,
       `HTTP ${scope.status}`,
     )
+    // The read routes sit outside DSH's own web auth, so the plugin's fence is
+    // the only barrier. Put that into the release gate: the freshly installed
+    // profile must refuse a non-loopback Host header.
+    const fenced = await request(`${origin}/api/openviking-enhance/config`, {
+      headers: { host: 'dsh.example.com' },
+      timeoutMs: 5000,
+    })
+    step(
+      'the installed plugin routes refuse a non-loopback Host header',
+      fenced.status === 403,
+      `HTTP ${fenced.status} (expected 403)`,
+    )
     await boot.stop()
     boot = null
 
@@ -390,10 +424,11 @@ async function main() {
       timeoutMs: 120_000,
     })
     step('reinstall still composes exactly one row', countRows(redump.stdout) === 1, `${countRows(redump.stdout)} row(s)`)
+    const reinstalledVersion = await installedVersion(dshHome, args.profile)
     step(
-      'reinstall kept the installed version',
-      (await installedVersion(dshHome, args.profile)) === version,
-      version ?? 'unknown',
+      'reinstall kept the tarball version',
+      reinstalledVersion === packedVersion,
+      `${reinstalledVersion ?? 'not found'} installed / ${packedVersion ?? 'missing'} in tarball`,
     )
 
     // ---- uninstall --------------------------------------------------------
@@ -420,7 +455,19 @@ async function main() {
     await boot.stop()
     boot = null
 
-    summary = { ok: failures.length === 0, dsh: args.dsh, dshVersion: dshVersion.stdout.trim(), tarball, dshHome, profile: args.profile, version, steps, elapsedMs: Date.now() - startedAt }
+    summary = {
+      ok: failures.length === 0,
+      dsh: args.dsh,
+      dshVersion: dshVersion.stdout.trim(),
+      tarball,
+      tarballVersion: packedVersion,
+      installedVersion: version,
+      dshHome,
+      profile: args.profile,
+      version,
+      steps,
+      elapsedMs: Date.now() - startedAt,
+    }
   } catch (error) {
     step('verification completed without an exception', false, error instanceof Error ? error.message : String(error))
     summary = { ok: false, dsh: args.dsh, tarball: args.tarball, dshHome, profile: args.profile, steps, error: error instanceof Error ? error.message : String(error), elapsedMs: Date.now() - startedAt }

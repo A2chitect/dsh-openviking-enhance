@@ -260,7 +260,7 @@ does **not** do, and the privacy boundary. Dated evidence lives in
 
 | Component | Supported | Verified / notes |
 | --- | --- | --- |
-| DSH (reads) | `>=0.2.0-rc.2 <1.0.0-0` (`engines.dsh`; every range is upper-bounded below 1.0) | built and type-checked against 0.2.2-rc.1; verified on 0.2.0-rc.2, 0.2.1-rc.5, 0.2.2-rc.1 |
+| DSH (reads) | `>=0.2.0-rc.2 <1.0.0-0 || >=0.2.1-rc.2 <0.2.2-0 || >=0.2.2-rc.1 <0.3.0-0` (`engines.dsh`; every pre-release line is upper-bounded below 1.0) | built and type-checked against 0.2.2-rc.1; verified on 0.2.0-rc.2, 0.2.1-rc.3/rc.5, 0.2.2-rc.1 |
 | DSH (writes) | **0.2.2-rc.1+** | authenticated `ctx.connection.fetch`; older generations keep every read surface and disable writes with a stated reason |
 | OpenViking | 0.5.1.1 – 0.5.3 tested | 0.5.2 unverified, 0.5.4 unprobed. Preview/search/skills/Experience on 0.5.1.1+ (Experience verified on 0.5.3); **Rules need 0.5.3+**; the context face is 0.5.3 |
 | Official memory plugin | `@openviking/dsh-memory-plugin` (optional) | 0.5.32 verified on the maintainer's machine; its in-process state is read, not a published stable contract (see Known gaps) |
@@ -270,10 +270,12 @@ does **not** do, and the privacy boundary. Dated evidence lives in
 The tested OpenViking range this release claims is **OpenViking 0.5.1.1 – 0.5.3**
 (0.5.2 unverified, 0.5.4 unprobed).
 
-The manifest's `peerDependencies` range states the same DSH policy split per
-pre-release line (`<0.2.2-0` / `<0.3.0-0`): npm-style semver excludes the 0.2.x
-pre-releases from a single `>=0.2.0-rc.2` set, while DSH's own compatibility check
-evaluates with pre-releases included. The upper bound below 1.0 is on every line.
+The DSH range is stated per pre-release line (`0.2.0` / `0.2.1` / `0.2.2`, each
+with the upper bound below 1.0): npm-style semver will not admit `0.2.2-rc.1` to
+a single comparator set anchored at `>=0.2.0-rc.2`, while DSH's own compatibility
+check evaluates with pre-releases included. `engines.dsh` and the
+`peerDependencies` range are the same string, so the manifest and the peer check
+agree; each alternative is upper-bounded.
 
 ### Install / upgrade / uninstall
 
@@ -351,6 +353,10 @@ from the code. Times are milliseconds; sizes are bytes unless marked.
 | WRITE_TIMEOUT_MS | 20000 |
 | SET_TAGS_TIMEOUT_MS | 10000 |
 | SNAPSHOT_TIMEOUT_MS | 30000 |
+| DOCTOR_CONTEXT_PROBE_TIMEOUT_MS | 10000 |
+| DOCTOR_RULES_PROBE_TIMEOUT_MS | 8000 |
+| DOCTOR_FS_PROBE_TIMEOUT_MS | 5000 |
+| RULES_CAPABILITY_TTL_MS | 600000 |
 | WRITE_TOKEN_TTL_MS | 120000 |
 | WRITE_BODY_MAX_BYTES | 65536 |
 | RULE_LIST_DEADLINE_MS | 15000 |
@@ -362,6 +368,11 @@ from the code. Times are milliseconds; sizes are bytes unless marked.
 | AUDIT_KEEP_ROTATIONS | 2 |
 | ACTIVITY_TASKS_MAX_LIMIT | 50 |
 <!-- /contract:limits -->
+
+The Rules-listing deadline is a **scheduling** deadline: requests already in
+flight still finish under their own per-request timeouts, so a slow server can
+push the wall clock to roughly the deadline plus one in-flight request. The
+`progress` payload reports the actual elapsed time with every partial answer.
 
 Also fixed: 25 entries per recall bucket / search request, 20 000 characters per
 recall explanation and per loaded memory body, the Rules listing caps at 100
@@ -663,7 +674,10 @@ The smoke harness prints the commit timeline without needing the GUI (redacted b
 default — set `SMOKE_VERBOSE=1` for raw local detail), and skips the live-data part
 when OpenViking is not running (`SMOKE_REQUIRE_SERVER=1` makes that a failure
 instead). `pnpm run verify:install` runs the clean-profile install/boot/reinstall/
-uninstall check; the code comments explain how the pieces fit together.
+uninstall check; the excerpts the independent recall contract is written from are
+tracked in [CONTRACT.md](CONTRACT.md), the behaviour inventory behind the
+independence claim is in [PROVENANCE.md](PROVENANCE.md), and the code comments
+explain how the pieces fit together.
 
 The version lives in `package.json` and is tagged `vX.Y.Z` in git; while it is `0.x`
 the internals may still change. See [CHANGELOG.md](CHANGELOG.md) for what each

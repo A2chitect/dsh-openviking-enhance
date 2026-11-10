@@ -19,6 +19,16 @@ below, and removes every "copied/mirrored from" comment from `src/`.
 `scripts/check-independence.mjs` (part of `pnpm test`) fails the build if that
 expression or wording comes back.
 
+The cited contract passages are version-controlled in [`CONTRACT.md`](CONTRACT.md)
+(context-face field table, quota semantics, stage budgets) with their source and
+date, because the working notes under `docs/` are gitignored and never ship.
+
+**What this record verifies is consistency with the documented contract
+(`CONTRACT.md`), not runtime equality with the official plugin's
+implementation.** The recall plan reproduces the documented request shape; it
+does not claim to produce byte-identical requests to another client on every
+configuration.
+
 ## Licence evidence (recorded, not resolved by this repository)
 
 - The OpenViking server repository root `LICENSE` is **AGPL-3.0**.
@@ -39,9 +49,9 @@ This file is an engineering record, not a legal opinion.
 
 | Behaviour | Source of truth used | Where re-expressed | Evidence | Classification |
 | --- | --- | --- | --- | --- |
-| Coding-purpose quota apportionment (weights, guaranteed seats, unmet-proportional-demand allocation, category tie-break order) | The contract recorded in `src/host/recall-contract.ts`; the field is an integer map the server accepts (`docs/api-v05.md` request schema) | `src/host/recall-contract.ts` → `allocateRecallQuotas` | `test/v06-recall-contract.test.mjs`; hand-derived fixture matrix `test/fixtures/recall-wire/context-requests.json` | Independent re-implementation |
-| Context-face request body (which optional fields are sent, and the value each carries) | Server request schema; the mounted memory plugin's *effective configuration* (its own "configured" flags are interface facts) | `src/host/recall-contract.ts` → `buildRecallContextBody` | Fixture matrix + `test/v03-units.test.mjs`; mock-server cross-check allowed, never committed as a capture | Interface fact (request schema) |
-| Context request deadline (explicit override wins; expansion/rewrite stage budgets raise the configured timeout) | The two stage budgets as observed through the request deadline, recorded as constants in `recall-contract.ts` | `src/host/recall-contract.ts` → `recallContextTimeoutMs` | `test/v06-recall-contract.test.mjs` timeout matrix | Interface fact (HTTP stage budget) |
+| Coding-purpose quota apportionment (weights, guaranteed seats, unmet-proportional-demand allocation, category tie-break order) | `CONTRACT.md` §2 (version-controlled excerpt); the field is an integer map the server accepts | `src/host/recall-contract.ts` → `allocateRecallQuotas` | `test/v06-recall-contract.test.mjs`; hand-derived fixture matrix `test/fixtures/recall-wire/context-requests.json` | Independent re-implementation |
+| Context-face request body (which optional fields are sent, and the value each carries) | `CONTRACT.md` §1 (version-controlled excerpt of the server request schema); the mounted memory plugin's *effective configuration* (its own "configured" flags are interface facts) | `src/host/recall-contract.ts` → `buildRecallContextBody` | Fixture matrix + `test/v03-units.test.mjs`; mock-server cross-check allowed, never committed as a capture | Interface fact (request schema) |
+| Context request deadline (explicit override wins; expansion/rewrite stage budgets raise the configured timeout) | `CONTRACT.md` §3 (version-controlled excerpt of the observed stage budgets), recorded as constants in `recall-contract.ts` | `src/host/recall-contract.ts` → `recallContextTimeoutMs` | `test/v06-recall-contract.test.mjs` timeout matrix | Interface fact (HTTP stage budget) |
 | Connection resolution (files/layers and precedence) | The documented OpenViking CLI/memory-plugin configuration layers: `~/.openviking/ovcli.conf`, `ovcli.conf.local`, `OPENVIKING_*` environment variables, plugin config | `src/host/config.ts` | `test/v03-units.test.mjs`, `test/host-units.test.mjs`; documented differences in both READMEs' host-contract chapter | Interface fact (configuration contract) |
 | Official memory plugin's runtime/config objects read in-process | The plugin's exposed `openvikingMemory` runtime shape and its session config keys (`enabled`, `autoRecall`, `autoCapture`, `recallLimit`, `commitTokenThreshold`, …) | `src/host/commit-service.ts`, `src/host/session-control.ts` | Fake-runtime unit tests; the shape is not a published stable contract (listed under known gaps in both READMEs) | Interface fact (cross-plugin object, read-only) |
 | Pending queue and capability memos on disk (`~/.openviking/pending`, `~/.openviking/state/*.json`) | The files the official plugin writes; this plugin only reads names/ages and two memo keys | `src/host/local-state.ts` | `test/host-units.test.mjs`, `test/v03-units.test.mjs` | Interface fact (on-disk data at rest; never written) |
@@ -70,6 +80,10 @@ tarball or the git tree. User-facing documentation lives in `README.md`,
 
 ## Keeping this record true
 
+- **Contract refresh rule:** `CONTRACT.md` is the tracked excerpt of the
+  documented contract. Re-read the server documentation/OpenAPI, update the
+  excerpt with a source and date, re-derive the fixtures, and only then change
+  `src/host/recall-contract.ts`.
 - **Review rule:** if you cannot name the behaviour contract (the server field,
   the documented rule, the interface fact) that justifies a piece of logic, do
   not code it — go back to the documented source of truth first.

@@ -83,6 +83,13 @@ export class CapabilityService {
   private rulesCached: RuleSearchCapability | null = null
   private rulesObservedAt = 0
   private rulesInflight: Promise<RuleSearchCapability> | null = null
+  /**
+   * Monotonic identity generation. A probe started before `invalidate()` may
+   * still resolve afterwards; caching that answer would bind the previous
+   * identity's probes into the new cache for the whole TTL, so every cache
+   * write checks it is still the current generation.
+   */
+  private generation = 0
 
   constructor(options: CapabilityOptions) {
     this.options = options
@@ -93,6 +100,7 @@ export class CapabilityService {
 
   /** Forget the probe; called on a profile switch and by a `fresh=1` read. */
   invalidate(): void {
+    this.generation += 1
     this.cached = null
     this.rulesCached = null
     this.rulesObservedAt = 0
@@ -111,12 +119,18 @@ export class CapabilityService {
       return this.rulesCached
     }
     if (this.rulesInflight !== null) return this.rulesInflight
+    const generation = this.generation
     this.rulesInflight = this.options.api
       .probeRuleSearchRoute()
       .then((reply) => {
         const capability = classifyRuleProbe(reply)
-        this.rulesCached = capability
-        this.rulesObservedAt = this.now()
+        // Only the current identity may populate the cache; a probe that raced
+        // an `invalidate()` returns its answer to its own caller but is not
+        // trusted for the new identity's TTL window.
+        if (this.generation === generation) {
+          this.rulesCached = capability
+          this.rulesObservedAt = this.now()
+        }
         return capability
       })
       .finally(() => {
@@ -143,13 +157,14 @@ export class CapabilityService {
       return this.cached
     }
     if (this.inflight !== null) return this.inflight
-    this.inflight = this.probeUncached().finally(() => {
+    const generation = this.generation
+    this.inflight = this.probeUncached(generation).finally(() => {
       this.inflight = null
     })
     return this.inflight
   }
 
-  private async probeUncached(): Promise<CapabilitySnapshot> {
+  private async probeUncached(generation: number): Promise<CapabilitySnapshot> {
     const started = this.now()
     const health = await this.options.api.health()
     // An unreachable server answers the other probes with the same timeout, so a
@@ -172,7 +187,7 @@ export class CapabilityService {
         tasks: { available: false, detail: 'profile-unhealthy' },
         rules: { available: true, detail: 'profile-unhealthy', kind: 'unknown' },
       }
-      this.cached = result
+      if (this.generation === generation) this.cached = result
       return result
     }
     // The two capability probes are independent reads; run them together so the
@@ -205,7 +220,7 @@ export class CapabilityService {
       tasks,
       rules,
     }
-    this.cached = result
+    if (this.generation === generation) this.cached = result
     return result
   }
 

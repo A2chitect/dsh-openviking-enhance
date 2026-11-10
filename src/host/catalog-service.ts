@@ -117,6 +117,10 @@ export interface RuleSearchCapability {
 
 export function classifyRuleProbe(reply: OvResult<unknown>): RuleSearchCapability {
   if (reply.status === 0) {
+    // Deliberate asymmetry: UI gating keeps the surface visible (an unprobed
+    // route is not proof it is absent, so hiding it would be worse), but the
+    // Doctor maps `kind: 'unknown'` to the unknown state — a probe that never
+    // reached the server did not observe an available capability.
     return { available: true, detail: reply.error ?? 'probe-failed', kind: 'unknown' }
   }
   if (reply.status === 400 || reply.status === 422)
@@ -237,13 +241,23 @@ export class CatalogService {
     const scenarioCapHit = scenarioDirsAll.length > RULES_MAX_SCENARIOS
     const scenarioDirs = scenarioDirsAll.slice(0, RULES_MAX_SCENARIOS)
 
-    // Phase 1: scenario metadata + listing, bounded and pooled.
+    // Phase 1: scenario metadata + listing, bounded and pooled. Workers return
+    // their notices instead of pushing them, so the wire payload's warning order
+    // is the input order — not whichever request finished first.
     const scenarioOutcomes = await mapPool(
       scenarioDirs,
       this.ruleListConcurrency,
-      async (scenario) => this.readScenario(scenario.uri, warnings),
+      async (scenario) => this.readScenario(scenario.uri),
       { deadline, now: () => this.currentTime() },
     )
+    for (let index = 0; index < scenarioOutcomes.results.length; index += 1) {
+      const outcome = scenarioOutcomes.results[index]
+      if (outcome !== undefined) warnings.push(...outcome.warnings)
+      const error = scenarioOutcomes.errors[index]
+      if (error !== undefined) {
+        warnings.push({ code: 'ruleScenarioFailed', params: { error: messageOf(error) } })
+      }
+    }
 
     // Phase 2: rule files, bounded and pooled. Loose root files come first, in
     // the same order the serial version read them, then each scenario's files.
@@ -255,7 +269,7 @@ export class CatalogService {
     const tasks: RuleTask[] = looseFiles.map((file) => ({ uri: file.uri, scenarioId: null, scenarioName: '' }))
     const scenarios: RuleScenarioGroup[] = []
     for (const outcome of scenarioOutcomes.results) {
-      if (outcome === undefined || outcome === null) continue
+      if (outcome === undefined || outcome.scenario === null) continue
       scenarios.push(outcome.scenario)
       for (const file of outcome.files) tasks.push(file)
     }
@@ -264,12 +278,20 @@ export class CatalogService {
     const ruleOutcomes = await mapPool(
       boundedTasks,
       this.ruleListConcurrency,
-      async (task) => this.readRule(task.uri, task.scenarioId, warnings, task.scenarioName),
+      async (task) => this.readRule(task.uri, task.scenarioId, task.scenarioName),
       { deadline, now: () => this.currentTime() },
     )
     const rules: RuleSummary[] = []
-    for (const outcome of ruleOutcomes.results) {
-      if (outcome !== undefined && outcome !== null) rules.push(outcome)
+    for (let index = 0; index < ruleOutcomes.results.length; index += 1) {
+      const outcome = ruleOutcomes.results[index]
+      if (outcome !== undefined) {
+        warnings.push(...outcome.warnings)
+        if (outcome.rule !== null) rules.push(outcome.rule)
+      }
+      const error = ruleOutcomes.errors[index]
+      if (error !== undefined) {
+        warnings.push({ code: 'ruleReadFailed', params: { error: messageOf(error) } })
+      }
     }
     // Scenario rule counts are only known after the rule phase.
     for (const scenario of scenarios) {
@@ -323,21 +345,23 @@ export class CatalogService {
    * failed listing is recorded and the scenario is skipped — both are catalogue
    * gaps, not listing failures.
    */
-  private async readScenario(
-    uri: string,
-    warnings: PluginNotice[],
-  ): Promise<{ scenario: RuleScenarioGroup; files: Array<{ uri: string; scenarioId: string; scenarioName: string }> } | null> {
+  private async readScenario(uri: string): Promise<{
+    scenario: RuleScenarioGroup | null
+    files: Array<{ uri: string; scenarioId: string; scenarioName: string }>
+    warnings: PluginNotice[]
+  }> {
     const scenarioId = tailOf(uri)
-    const meta = await this.readScenarioMeta(uri, scenarioId, warnings)
+    const meta = await this.readScenarioMeta(uri, scenarioId)
+    const warnings = [...meta.warnings]
     const listing = await this.options.api.listDirectory(uri)
     if (!listing.ok) {
       warnings.push({ code: 'ruleListFailed', params: { uri, error: listing.error ?? `HTTP ${listing.status}` } })
-      return null
+      return { scenario: null, files: [], warnings }
     }
     const files = (listing.result ?? [])
       .filter((entry) => entry.isDir !== true && entry.uri.endsWith('.md') && !isIndexFile(tailOf(entry.uri)))
-      .map((entry) => ({ uri: entry.uri, scenarioId, scenarioName: meta.name }))
-    return { scenario: { id: meta.id, name: meta.name, ruleCount: 0 }, files }
+      .map((entry) => ({ uri: entry.uri, scenarioId, scenarioName: meta.meta.name }))
+    return { scenario: { id: meta.meta.id, name: meta.meta.name, ruleCount: 0 }, files, warnings }
   }
 
   /**
@@ -557,44 +581,61 @@ export class CatalogService {
     throw new Error(reply.error ?? `HTTP ${reply.status}`)
   }
 
-  /** One rule file → the list row; unreadable files become warnings, not gaps. */
+  /**
+   * One rule file → the list row plus its own notices.
+   *
+   * Returning the notice rather than pushing it keeps the concurrent phase's
+   * wire order deterministic; the caller appends results in input order.
+   */
   private async readRule(
     uri: string,
     scenarioId: string | null,
-    warnings: PluginNotice[],
     scenarioName: string,
-  ): Promise<RuleSummary | null> {
+  ): Promise<{ rule: RuleSummary | null; warnings: PluginNotice[] }> {
     const reply = await this.options.api.readText(uri)
     if (!reply.ok || reply.result === null) {
-      warnings.push({ code: 'ruleUnreadable', params: { uri, error: reply.error ?? `HTTP ${reply.status}` } })
-      return null
+      return {
+        rule: null,
+        warnings: [{ code: 'ruleUnreadable', params: { uri, error: reply.error ?? `HTTP ${reply.status}` } }],
+      }
     }
     const parsed = parseRuleFile(uri, reply.result, scenarioId)
     return {
-      id: parsed.facts.id.length > 0 ? parsed.facts.id : tailOf(uri).replace(/\.md$/, ''),
-      uri,
-      name: parsed.facts.name,
-      status: parsed.facts.status ?? 'unknown',
-      scenario: parsed.facts.scenario === null ? (scenarioName.length > 0 ? scenarioName : null) : parsed.facts.scenario,
-      description: (parsed.document.fields.description ?? '').trim() || null,
+      rule: {
+        id: parsed.facts.id.length > 0 ? parsed.facts.id : tailOf(uri).replace(/\.md$/, ''),
+        uri,
+        name: parsed.facts.name,
+        status: parsed.facts.status ?? 'unknown',
+        scenario:
+          parsed.facts.scenario === null ? (scenarioName.length > 0 ? scenarioName : null) : parsed.facts.scenario,
+        description: (parsed.document.fields.description ?? '').trim() || null,
+      },
+      warnings: [],
     }
   }
 
   /** Scenario metadata from `<scenario>/abstract.md`, falling back to the id. */
-  private async readScenarioMeta(uri: string, scenarioId: string, warnings: PluginNotice[]) {
+  private async readScenarioMeta(
+    uri: string,
+    scenarioId: string,
+  ): Promise<{ meta: ReturnType<typeof parseScenarioMeta>; warnings: PluginNotice[] }> {
     const abstractUri = `${uri.replace(/\/+$/, '')}/abstract.md`
     const reply = await this.options.api.readText(abstractUri)
     if (!reply.ok || reply.result === null) {
       // A scenario without metadata is still a scenario — its id becomes the
       // name — but the failed read is recorded like every other catalogue read
       // failure, so the panel can say the name may be missing.
-      warnings.push({
-        code: 'ruleScenarioUnreadable',
-        params: { uri: abstractUri, error: reply.error ?? `HTTP ${reply.status}` },
-      })
-      return parseScenarioMeta(scenarioId, '')
+      return {
+        meta: parseScenarioMeta(scenarioId, ''),
+        warnings: [
+          {
+            code: 'ruleScenarioUnreadable',
+            params: { uri: abstractUri, error: reply.error ?? `HTTP ${reply.status}` },
+          },
+        ],
+      }
     }
-    return parseScenarioMeta(scenarioId, reply.result)
+    return { meta: parseScenarioMeta(scenarioId, reply.result), warnings: [] }
   }
 
   /** One payload for both the "empty library" and the listed case. */
@@ -636,4 +677,9 @@ export class CatalogService {
   private nowIso(): string {
     return new Date(this.currentTime()).toISOString()
   }
+}
+
+/** One thrown value as a short message for a warning parameter. */
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }

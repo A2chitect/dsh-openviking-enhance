@@ -52,6 +52,10 @@ check(notices.includes('@deepseek-ai/cosmokit'), 'THIRD_PARTY_NOTICES names the 
 // The provenance record is the audit trail behind the independence gate.
 check(existsSync(join(root, 'PROVENANCE.md')), 'PROVENANCE.md exists')
 check(pkg.files?.includes('PROVENANCE.md'), 'files includes PROVENANCE.md')
+// The tracked contract excerpts behind the independent recall implementation
+// must travel with the package the independence claim is made about.
+check(existsSync(join(root, 'CONTRACT.md')), 'CONTRACT.md exists (tracked contract excerpts)')
+check(pkg.files?.includes('CONTRACT.md'), 'files includes CONTRACT.md')
 check(typeof pkg.description === 'string' && pkg.description.length > 20, 'a one-line description is set')
 check(Array.isArray(pkg.keywords) && pkg.keywords.length > 0, 'keywords are set')
 // The marketplace links an npm package to its repository through this field, and
@@ -71,10 +75,13 @@ check(typeof pkg.engines?.node === 'string', 'engines.node is declared')
 check(typeof pkg.engines?.dsh === 'string', 'engines.dsh is declared')
 check(pkg.dsh?.engines?.dsh === pkg.engines?.dsh, 'dsh.engines.dsh and engines.dsh agree')
 // The old range was a logically unbounded disjunction (`>=0.2.0-rc.2 || …`), so a
-// future 1.x would have been accepted silently. The upper bound is intentional.
+// future 1.x would have been accepted silently. The upper bound is intentional,
+// and it is stated per DSH pre-release line: npm-style semver does not admit
+// 0.2.2-rc.1 to a single comparator set anchored at `0.2.0-rc.2`.
 check(
-  typeof pkg.engines?.dsh === 'string' && /<\d+\.\d+\.\d+-0/.test(pkg.engines.dsh),
-  'engines.dsh has an upper bound below the next major',
+  typeof pkg.engines?.dsh === 'string' &&
+    pkg.engines.dsh.split('||').every((alternative) => /<\d+\.\d+\.\d+-0/.test(alternative)),
+  'engines.dsh is upper-bounded below the next major on every pre-release line',
 )
 // `engines.dsh` is the authoritative DSH check. The peer range states the same
 // policy split per DSH prerelease line, because npm-style semver excludes the
@@ -89,6 +96,10 @@ check(
 check(
   typeof peerRange === 'string' && peerRange.includes('>=0.2.2-rc.1'),
   'the peer range admits the authenticated-write DSH generation',
+)
+check(
+  peerRange === pkg.engines?.dsh,
+  'the @deepseek-ai/dsh peer range and engines.dsh state the same policy',
 )
 
 // ---- a stranger can install it --------------------------------------------

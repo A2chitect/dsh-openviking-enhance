@@ -14,7 +14,7 @@ import { join } from 'node:path'
 
 import { Config } from '../src/host/index.ts'
 import { OpenVikingApi } from '../src/host/openviking-api.ts'
-import { DoctorService } from '../src/host/doctor-service.ts'
+import { DoctorService, classifyOpenVikingVersion } from '../src/host/doctor-service.ts'
 import { ProfileStore } from '../src/host/profiles.ts'
 import { localStateHealth } from '../src/host/local-state.ts'
 import { configSourceHealth, readJsonSource, resolveConnectionWithOrigins } from '../src/host/config.ts'
@@ -291,8 +291,24 @@ async function doctorReport({ configSources } = {}) {
   })
 }
 
+test('the server version is classified against the contract range, permissively', () => {
+  assert.deepEqual(classifyOpenVikingVersion('0.5.1.1'), { state: 'ok', detail: '0.5.1.1' })
+  assert.deepEqual(classifyOpenVikingVersion('0.5.2'), { state: 'ok', detail: '0.5.2' })
+  assert.deepEqual(classifyOpenVikingVersion('0.5.3.2'), { state: 'ok', detail: '0.5.3.2' })
+  assert.deepEqual(classifyOpenVikingVersion('v0.5.3'), { state: 'ok', detail: 'v0.5.3' })
+  for (const version of ['0.5.1', '0.5.0', '0.5.4', '0.6.0', '1.0.0']) {
+    assert.equal(classifyOpenVikingVersion(version).state, 'warn', `${version} is outside the tested range`)
+  }
+  // Unparseable/absent stays visible as unknown; nothing is hidden.
+  assert.deepEqual(classifyOpenVikingVersion(null), { state: 'unknown', detail: null })
+  assert.deepEqual(classifyOpenVikingVersion('unknown-build'), { state: 'unknown', detail: 'unknown-build' })
+})
+
 test('the Doctor reports build identity, including a non-release warning', async () => {
   const report = await doctorReport()
+  const versionCheck = report.checks.find((check) => check.id === 'openvikingVersion')
+  assert.equal(versionCheck.status, 'ok', 'the stub health answers 0.5.3, inside the tested range')
+  assert.equal(versionCheck.hint, null)
   assert.equal(report.build.pluginVersion, 'unknown')
   assert.equal(report.build.dshVersion, '0.2.2-rc.1')
   assert.match(report.build.nodeVersion, /^v\d+/)
@@ -382,4 +398,37 @@ test('a failed health probe carries the short request id in the warning params',
     assert.equal(warning.params.requestId, 'abcdef12', 'the last 8 chars correlate with the server log')
     assert.equal(report.diagnostics.traces.health, 'req-failing-abcdef12', 'the full id stays in diagnostics')
   })
+})
+
+test('the Doctor reports an unprobed rules route as unknown, not available', async () => {
+  // A transport failure/cancellation returns status 0 from the cheap probe. The
+  // UI keeps the surface visible (`available` stays optimistic), but the Doctor
+  // must not claim the capability was observed.
+  const api = {
+    health: async () => ({ ok: true, version: '0.5.3', authMode: 'dev', role: null, accountId: null, userId: null, error: null, requestId: null }),
+    systemStatus: async () => ({ ok: true, status: 200, result: { initialized: true, user: 'bob' }, error: null }),
+    listSkills: async () => ({ ok: true, status: 200, result: { skills: [], root_uris: [], total: 0 }, error: null }),
+    observerRetrieval: async () => ({ ok: true, status: 200, result: { status: { total_queries: 1, avg_latency_ms: 2 } }, error: null }),
+    searchContext: async () => ({ ok: true, status: 200, result: { entries: [], stats: {} }, error: null }),
+    probeRuleSearchRoute: async () => ({ ok: false, status: 0, result: null, error: 'fetch failed', errorCode: null, requestId: null }),
+    fsStat: async () => ({ ok: true, status: 200, result: { uri: 'viking://~', isDir: true }, error: null }),
+  }
+  const commit = {
+    ovSessionId: () => 'dsh-s1',
+    actorPeer: () => undefined,
+    pluginConfig: () => null,
+    pluginMounted: () => false,
+    pluginPeerSource: () => null,
+  }
+  const service = new DoctorService({
+    api,
+    commit,
+    connection: { endpoint: 'http://127.0.0.1:1933', apiKey: '', account: 'default', user: 'default' },
+    origins: [],
+    dshVersion: () => '0.2.2-rc.1',
+    localState: { home: tempDir('ove-doctor-unknown-') },
+  })
+  const report = await service.report(undefined, { probe: true })
+  assert.equal(report.capabilities.ruleSearch.state, 'unknown')
+  assert.equal(report.capabilities.ruleSearch.detail, 'fetch failed')
 })
