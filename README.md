@@ -926,12 +926,15 @@ made).
   movement, Right/Left expand-collapse-enter-leave, Enter/Space select,
   `aria-level`, `aria-selected`, `aria-expanded`, `aria-busy`.
 - **Tabs**: cockpit/Explore/Activity/Browse/Stats/Operate/Preview tab strips are
-  `tablist`/`tab`/`tabpanel` with `aria-controls`/`aria-labelledby`, Arrow/Home/
-  End selection and roving tabindex.
+  `tablist`/`tab`/`tabpanel` with `aria-labelledby` (only the active panel is
+  mounted, so the tabs intentionally carry no dangling `aria-controls`),
+  Arrow/Home/End selection that skips unavailable preview tiers, and roving
+  tabindex.
 - **Dialogs**: write/ops/undo dialogs trap Tab inside the modal and restore focus
   to the opener; cancel-first default focus; `role="dialog"` + `aria-modal`.
 - **Live regions**: toasts use `aria-live` (assertive for errors, polite for
-  outcomes), host warnings/details announce politely, errors are `role="alert"`.
+  outcomes), host warnings keep their native `<details>` disclosure with a polite
+  count announcement, errors are `role="alert"`.
 - **Scope menu**: the trigger announces `aria-haspopup`/`aria-expanded`; the scope
   choices are a labelled `menu` of `menuitem` rows with Arrow/Home/End traversal;
   Escape closes and restores focus. The surrounding panel stays a dialog because
@@ -965,7 +968,7 @@ zh-CN walkthrough is part of the manual acceptance checklist.
 | Initial cockpit paint | one composed `/overview` host request, cached 5 s, single-flight; no polling on paint | `test/v10-performance.test.mjs` (counting parts, TTL, concurrency) |
 | Browse | 1 request per expanded page (50 rows); prompt/abstract caps; explicit subtree action ≤2 levels/100 nodes | browse limits + route tests |
 | Recent commits | ≤8 sessions, 4 in flight, 10 s deadline, 30 s cache; never polled | commits constants + route tests |
-| Polling | only a mounted, visible surface; a hidden document schedules nothing; an open running task polls at 2 s, the health log at 15 s while visible | `poll-policy.ts` + `test/v10-performance.test.mjs` |
+| Polling | only a mounted, visible surface; a hidden document creates **no timer at all** (asserted with a fake clock, not just by reading the policy); an open running task polls at 2 s, the health log at 15 s while visible | `startScheduledPoll` in `poll-policy.ts` + `test/v10-performance.test.mjs` |
 | Cancellation | view/scope/refresh/unmount aborts in-flight reads; stale answers are dropped by generation/scope key | v0.7/v0.9 tests |
 | Payload bounds | preview 400 lines/page (1 000 max, 20 000 chars display), evidence 512 KiB, pack 64 MiB, task events 64×32 KiB | limits + route tests |
 | First-paint timing | **not instrumented** (no benchmark/browser dependency) — manual observation only, recorded as a limitation | `ACCEPTANCE.md` limitations |

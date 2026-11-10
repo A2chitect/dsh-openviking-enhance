@@ -44,9 +44,8 @@ import {
 } from './host-api.ts'
 import { formatDateTime, t, writeErrorText } from './locale.ts'
 import { useA11yTabs } from './a11y.ts'
-import { startVisibleInterval } from './poll-policy.ts'
+import { nextPollDelay, startScheduledPoll, startVisibleInterval } from './poll-policy.ts'
 import { MetricCard, MetricsCards } from './metrics-view.tsx'
-import { nextPollDelay } from './poll-policy.ts'
 import { ScopeChip } from './scope-chip.tsx'
 import { useScope } from './scope-store.ts'
 import { forceCommitEnabled } from './commit-status.tsx'
@@ -72,11 +71,8 @@ function formatSeconds(value: number | null): string {
 
 function formatTime(seconds: number | null): string {
   if (seconds === null) return '—'
-  try {
-    return formatDateTime(seconds * 1000)
-  } catch {
-    return '—'
-  }
+  // `formatDateTime` already handles invalid values; no throw path to catch.
+  return formatDateTime(seconds * 1000)
 }
 
 function shortId(value: string | null): string {
@@ -103,11 +99,30 @@ function TaskRow({ task, sessionId, canCancel }: { task: ActivityTask; sessionId
   const [note, setNote] = useState<string | null>(null)
   void sessionId
 
+  const detailController = useRef<AbortController | null>(null)
+  const detailInFlight = useRef(false)
   const loadDetail = useCallback(async () => {
-    const answer = await fetchTaskDetail(task.taskId, true)
-    if (answer.ok) setDetail(answer.task)
-    else setError(writeErrorText(answer.error))
+    if (detailInFlight.current) return
+    detailInFlight.current = true
+    detailController.current?.abort()
+    const controller = new AbortController()
+    detailController.current = controller
+    try {
+      const answer = await fetchTaskDetail(task.taskId, true, controller.signal)
+      if (controller.signal.aborted) return
+      if (answer.ok) setDetail(answer.task)
+      else setError(writeErrorText(answer.error))
+    } finally {
+      detailInFlight.current = false
+    }
   }, [task.taskId])
+  // Unmount aborts the in-flight detail read: no setState after teardown.
+  useEffect(() => {
+    return () => {
+      detailController.current?.abort()
+      detailController.current = null
+    }
+  }, [])
 
   const toggle = useCallback(() => {
     const next = !open
@@ -283,25 +298,14 @@ function TasksSection({ sessionId }: { sessionId: string }) {
   const [statusFilter, setStatusFilter] = useState('')
   const [refreshAt, setRefreshAt] = useState(0)
   const [commitError, setCommitError] = useState<string | null>(null)
-  const errorCount = useRef(0)
-  const [hidden, setHidden] = useState(false)
 
-  // Polling pauses while the document is hidden; a visibility change also
-  // restarts it immediately (the timer is scheduled by the effect below).
-  useEffect(() => {
-    if (typeof document === 'undefined') return
-    const update = () => setHidden(document.visibilityState === 'hidden')
-    update()
-    document.addEventListener('visibilitychange', update)
-    return () => document.removeEventListener('visibilitychange', update)
-  }, [])
+  /** The last successful answer's "a task is active" fact, read by the scheduler. */
+  const workingRef = useRef(false)
+  const errorCount = useRef(0)
 
   useEffect(() => {
     let cancelled = false
-    let timer: ReturnType<typeof setTimeout> | undefined
     const controller = new AbortController()
-    const workingNow = (tasks ?? []).some((task) => isCancellableStatus(task.status))
-
     const load = async (): Promise<void> => {
       const answer = await fetchTasks(
         {
@@ -314,6 +318,10 @@ function TasksSection({ sessionId }: { sessionId: string }) {
       if (cancelled) return
       if (answer.ok) {
         errorCount.current = 0
+        // Review S2: remember the fresh "working" fact for the *next* schedule;
+        // a closure over `tasks` was frozen at the first render, so the 5 s
+        // active cadence could never happen.
+        workingRef.current = answer.tasks.some((task) => isCancellableStatus(task.status))
         setTasks(answer.tasks)
         setAvailable(answer.available)
         setNote(answer.note)
@@ -322,18 +330,19 @@ function TasksSection({ sessionId }: { sessionId: string }) {
       } else {
         errorCount.current += 1
       }
-      timer = setTimeout(() => void load(), nextPollDelay({ working: workingNow, hidden, errorCount: errorCount.current }))
     }
+    // One scheduler owns the loop: hidden documents create no timers, and the
+    // delay is recomputed after every load from live refs.
+    const dispose = startScheduledPoll(load, () =>
+      nextPollDelay({ working: workingRef.current, hidden: false, errorCount: errorCount.current }),
+    )
     void load()
     return () => {
       cancelled = true
       controller.abort()
-      if (timer !== undefined) clearTimeout(timer)
+      dispose()
     }
-    // `tasks` is intentionally excluded: it is updated by this effect and would
-    // restart the poll on every response.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [typeFilter, statusFilter, hidden, refreshAt])
+  }, [typeFilter, statusFilter, refreshAt])
 
   const loadMore = useCallback(async () => {
     if (nextCursor === null) return

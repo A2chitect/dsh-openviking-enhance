@@ -23,6 +23,21 @@ read-only `/health` call.
 The release checklist (`RELEASING.md`) requires a dated row here plus the CI run
 link **before tagging**.
 
+## Base review status (fixed v0.9 base)
+
+v1.0 is rebased onto the **fixed v0.9 head `b64d9cf`**, which carries the fixes for
+PR #7's review round 1: **B1** client scope switch chain, **B2** peer read lens is
+never write authority, **B3** session-scope mismatch gates writes host- and
+client-side, **B4** expired tokens purged so a stale dialog cannot block a switch,
+**B5** the activity metrics cache resets on a switch — plus ACL **S2** (no guess:
+only documented `inherit`/`restricted` modes echoed, missing mode unknown, 401/5xx
+distinguished). Regression tests: `test/v09-client-scope.test.mjs`,
+`test/v09-component.test.mjs` (B1/B3/S4/S11),
+`test/v09-scope-routes.test.mjs` ("Review round 1 regression tests"),
+`test/v09-scope-units.test.mjs` (B4). PR #8's own review round 1 (N1 hidden-poll
+self-loop, N2 mount focus steal, S1/S2/S4/S5) is addressed in this revision; see
+`ACCEPTANCE.md` §13 and the CHANGELOG "Fixed (PR #8 review round 1)" entry.
+
 ## Verified matrix
 
 | Version | Date | DSH (profile) | Node | OS | OpenViking | Install path | Result | Evidence |
@@ -33,7 +48,7 @@ link **before tagging**.
 | 0.8.0 (PR #6) | 2026-11 | 0.2.2-rc.1 (web, scratch profile) | 22 | macOS 15 | 0.5.3 read-only + deterministic fake fixture for the action layer | tarball into a scratch DSH home; browser capture of the v0.7 cockpit + v0.8 fixture-labelled dialogs/plans/downloads | pending release — no live-store write: every action is exercised against the fake server/fake transport; live reads only) | `pnpm test` (v08 route/unit/component suites + smoke); fixture-labelled action screenshots; live read-only Snapshots/Compile/Tasks/Observability rows |
 | 0.9.0 (PR #7) | 2026-11 | 0.2.2-rc.1 (web, scratch profile) | 22.22.3 | macOS 15 | 0.5.3 read-only (single live scope) + three invented fake servers (dev A, dev B, api_key C) for the multi-scope evidence | `pnpm test`; no live-store write anywhere — every scope/identity switch in tests is exercised against the fake servers and the fake `ctx.connection.fetch` transport; live server is read-only `/health`/reads | **pending release** — browser/evidence set: fixture-labelled two-scope capture (scope menu, banners, switch notice, ACL states) + live single-scope read-only screenshots; `pnpm test` includes the v0.9 host route/unit + component render suites |
 
-| 1.0.0 (PR #8 — final; ships the whole v0.4–v0.9 stack if no intermediate tags are cut) | 2026-11 | 0.2.2-rc.1 pinned in CI; 0.2.1-rc.3 local | 22 | macOS 15 M; Linux CI | 0.5.3 read-only + deterministic fake fixtures for the action/scope layers | `pnpm pack` tarball → scratch `DSH_HOME` web profile (`verify:install`) + browser BEFORE(v0.9)/AFTER(v1.0) capture | pending tag — hard gates green at drafting (`pnpm test`, `verify:install` 27/27); a11y/bilingual/performance/degraded suites added; human sign-off block in `ACCEPTANCE.md` still empty | v1.0 tests (`test/v10-*.test.mjs`), F1–F14 ledger, final matrix, `ACCEPTANCE.md`; CI links to be filled at tag time |
+| 1.0.0 (PR #8 — final; rebased on the fixed v0.9 head `b64d9cf`; ships the whole v0.4–v0.9 stack if no intermediate tags are cut) | 2026-11 | 0.2.2-rc.1 pinned in CI; 0.2.1-rc.3 local | 22 | macOS 15 M; Linux CI | 0.5.3 read-only + deterministic fake fixtures for the action/scope layers | `pnpm pack` tarball → scratch `DSH_HOME` web profile (`verify:install`) + browser BEFORE(v0.9)/AFTER(v1.0) capture | pending tag — hard gates green after review round 1 (`pnpm test` 566/566 unit, `verify:install` 27/27); a11y/bilingual/performance/degraded suites added; PR #7 blockers fixed in base and PR #8 review items addressed (ACCEPTANCE §13); human sign-off block still empty | v1.0 tests (`test/v10-*.test.mjs`), v0.9 review regression tests, F1–F14 ledger, final matrix, `ACCEPTANCE.md`; CI links to be filled at tag time |
 
 These not-yet-released versions are rows in an append-only table, not release
 evidence. Two release paths are documented in `RELEASING.md`:
@@ -188,6 +203,8 @@ still required before tagging, recorded here by the maintainer:
 - [ ] both themes contrast + 200% zoom + reduced-motion checks
 - [ ] EN and ZH walkthrough of the 12 daily checks
 - [ ] CI run id (unit + install-verify jobs) linked in the 1.0.0 row
+- [ ] review status confirmed: fixed v0.9 base `b64d9cf` (PR #7 blockers B1–B5 +
+      ACL S2 regression tests) and PR #8 review round 1 addressed (ACCEPTANCE §13)
 - [ ] human sign-off block in `ACCEPTANCE.md` completed
 
 ## Live evidence

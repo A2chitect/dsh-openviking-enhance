@@ -110,7 +110,9 @@ function ConfirmDialog({ prepare, className }: { prepare: WritePreparePayload; c
   const busy = useWriteStore().busy
   const cancelRef = useRef<HTMLButtonElement | null>(null)
   const dialogRef = useRef<HTMLDivElement | null>(null)
-  useModalFocus(dialogRef)
+  useModalFocus(dialogRef, {
+    fallbackFocus: () => document.querySelector<HTMLElement>('[data-dsh-plugin="openviking-enhance"]'),
+  })
   const [error, setError] = useState<OveError | null>(null)
   const [content, setContent] = useState(prepare.content ?? '')
   const [typed, setTyped] = useState('')
@@ -506,7 +508,9 @@ function UndoPlanDialog({ plan, className }: { plan: WriteUndoPlan; className: s
   const busy = useWriteStore().busy
   const cancelRef = useRef<HTMLButtonElement | null>(null)
   const dialogRef = useRef<HTMLDivElement | null>(null)
-  useModalFocus(dialogRef)
+  useModalFocus(dialogRef, {
+    fallbackFocus: () => document.querySelector<HTMLElement>('[data-dsh-plugin="openviking-enhance"]'),
+  })
   const [error, setError] = useState<OveError | null>(null)
 
   useEffect(() => {

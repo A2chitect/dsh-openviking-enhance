@@ -135,6 +135,47 @@ test('CHANGELOG has the final v1.0 section under Unreleased, above v0.9', () => 
   assert.match(body, /27\/27/, 'install evidence count is recorded')
 })
 
+test('the acceptance record states the fixed-base review status and this review round (B0)', () => {
+  assert.match(acceptance, /## 13\. Review status/)
+  assert.match(acceptance, /PR #7/)
+  for (const blocker of ['B1', 'B2', 'B3', 'B4', 'B5', 'S2']) {
+    assert.ok(acceptance.includes(blocker), `ACCEPTANCE §13 names PR #7 item ${blocker}`)
+  }
+  assert.match(acceptance, /b64d9cf/, 'the fixed v0.9 base commit is named')
+  assert.match(acceptance, /PR #8 review round 1|review round-1 items are addressed/, 'this PR review round is named')
+  assert.match(acceptance, /shouldRestoreFocus|fake-clock/, 'the N1/N2 evidence approach is stated')
+  assert.match(acceptance, /review round-1 items are addressed/, 'the sign-off asks the reviewer to confirm review status')
+  const checkboxes = [...acceptance.matchAll(/^- \[ \]/gm)].length
+  assert.ok(checkboxes >= 8, `the sign-off block lists the review-status gate (${checkboxes} checkboxes)`)
+  // VERIFICATION carries the same base-review statement.
+  assert.match(verification, /Base review status/)
+  assert.match(verification, /b64d9cf/)
+  assert.match(verification, /PR #7/)
+  assert.match(verification, /PR #8/)
+  assert.match(verification, /review round 1 addressed|review round 1/)
+})
+
+test('the changelog records the review-round fixes and aligned claims', () => {
+  assert.match(changelog, /#### Fixed \(PR #8 review round 1\)/)
+  for (const item of ['N1', 'N2', 'S1', 'S2', 'S4', 'S5', 'S9', 'B0']) {
+    assert.ok(changelog.includes(item), `the changelog names review item ${item}`)
+  }
+  assert.match(changelog, /zero-delay timer|zero-delay self-loop/, 'the N1 bug is described')
+  assert.match(changelog, /fixed v0\.9 base|rebased v0\.9 base/, 'B0 base status is described')
+  // The old claims that contradicted the code are gone.
+  assert.doesNotMatch(changelog, /tablist\/tab\/tabpanel with `aria-controls`\/`aria-labelledby`/)
+  assert.match(changelog, /no dangling `aria-controls`/)
+})
+
+test('README polling/tab claims match the fixed implementation', () => {
+  for (const [language, markdown] of [['en', readmeEn], ['zh', readmeZh]]) {
+    assert.match(markdown, /no dangling `aria-controls`|故意没有悬空的 `aria-controls`/, `${language} README explains the aria-controls decision`)
+    assert.match(markdown, /creates \*\*no timer at all\*\*|完全不创建计时器/, `${language} README states the hidden-tab no-timer guarantee`)
+    assert.match(markdown, /fake clock|假时钟/, `${language} README names the fake-clock evidence`)
+  }
+  assert.doesNotMatch(readmeEn, /tablist`\/`tab`\/`tabpanel` with `aria-controls`/, 'the stale aria-controls claim is gone')
+})
+
 test('the package ships the decisions record and not the acceptance record', () => {
   assert.ok(pkg.files.includes('DECISIONS.md'), 'package files include DECISIONS.md')
   assert.ok(!pkg.files.includes('ACCEPTANCE.md'), 'the acceptance record is repository-only')

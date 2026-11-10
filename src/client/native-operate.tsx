@@ -1063,11 +1063,11 @@ function TasksView(props: { refreshKey: number }) {
       <div className="ove-ops-toolbar">
         <label className="ove-write-field ove-ops-inline-field">
           <span>{t('ops.tasks.typeFilter')}</span>
-          <input className="ove-write-input" type="text" value={typeFilter} placeholder="compile" onChange={(event) => setTypeFilter(event.target.value)} />
+          <input className="ove-write-input" type="text" value={typeFilter} placeholder={t('native.operate.taskTypePlaceholder')} onChange={(event) => setTypeFilter(event.target.value)} />
         </label>
         <label className="ove-write-field ove-ops-inline-field">
           <span>{t('ops.tasks.statusFilter')}</span>
-          <input className="ove-write-input" type="text" value={statusFilter} placeholder="running" onChange={(event) => setStatusFilter(event.target.value)} />
+          <input className="ove-write-input" type="text" value={statusFilter} placeholder={t('native.operate.taskStatusPlaceholder')} onChange={(event) => setStatusFilter(event.target.value)} />
         </label>
       </div>
 

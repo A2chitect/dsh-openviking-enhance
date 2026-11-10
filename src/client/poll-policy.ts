@@ -85,3 +85,117 @@ export function startVisibleInterval(callback: () => void, intervalMs: number): 
     document.removeEventListener('visibilitychange', onVisibility)
   }
 }
+
+/** The timer/visibility surface the poll scheduler needs (injectable for tests). */
+export interface PollScheduler {
+  setTimeout(callback: () => void, delayMs: number): unknown
+  clearTimeout(handle: unknown): void
+  isHidden(): boolean
+  /** Subscribe to visibility changes; returns an unsubscribe function. */
+  onVisibilityChange(listener: () => void): () => void
+}
+
+/** The browser scheduler; null in a server render / older harness (no DOM). */
+export function defaultPollScheduler(): PollScheduler | null {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return null
+  return {
+    setTimeout: (callback, delayMs) => window.setTimeout(callback, delayMs),
+    clearTimeout: (handle) => {
+      if (handle !== undefined && handle !== null) window.clearTimeout(handle as number)
+    },
+    isHidden: () => document.visibilityState === 'hidden',
+    onVisibilityChange: (listener) => {
+      document.addEventListener('visibilitychange', listener)
+      return () => document.removeEventListener('visibilitychange', listener)
+    },
+  }
+}
+
+/**
+ * A visibility-gated, self-scheduling poll loop — the only polling primitive.
+ *
+ * Why a helper instead of an effect-local `setTimeout` chain: the review of this
+ * release caught a zero-delay self-loop where `nextPollDelay()` returned 0
+ * ("do not schedule") but the consumer scheduled anyway. Here that contract is
+ * enforced in one place and can be tested with a fake clock:
+ *
+ *  - while the document is hidden the loop schedules **nothing** (no timer is
+ *    created at all) and resumes with an immediate load on visibility;
+ *  - `nextDelay() <= 0` stops the loop until an event resumes it;
+ *  - a load that is still running is never overlapped (a visibility resume waits
+ *    for it, then runs);
+ *  - the delay is recomputed after every load from live facts (the caller's
+ *    refs), so a task that starts/finishes mid-session changes the cadence.
+ *
+ * @param load the read to perform; awaited before the next delay is computed
+ * @param nextDelay the policy delay for the current state (see `nextPollDelay`)
+ * @param scheduler injectable timer/visibility surface (default: the browser)
+ * @returns a disposer; safe to call more than once
+ */
+export function startScheduledPoll(
+  load: () => Promise<void> | void,
+  nextDelay: () => number,
+  scheduler: PollScheduler | null = defaultPollScheduler(),
+): () => void {
+  if (scheduler === null) return () => {}
+  let closed = false
+  let timer: unknown = null
+  let loading = false
+  let resumeOnIdle = false
+
+  const clear = (): void => {
+    if (timer !== null) {
+      scheduler.clearTimeout(timer)
+      timer = null
+    }
+  }
+  const schedule = (delay: number): void => {
+    clear()
+    // The documented contract: 0/negative means "wait for an event", and a
+    // hidden document must not own a timer either.
+    if (closed || delay <= 0 || scheduler.isHidden()) return
+    timer = scheduler.setTimeout(() => {
+      timer = null
+      void tick()
+    }, delay)
+  }
+  const tick = async (): Promise<void> => {
+    if (closed || loading) return
+    if (scheduler.isHidden()) return
+    loading = true
+    try {
+      await load()
+    } finally {
+      loading = false
+    }
+    if (closed) return
+    if (resumeOnIdle) {
+      resumeOnIdle = false
+      void tick()
+      return
+    }
+    schedule(nextDelay())
+  }
+  const onVisibility = (): void => {
+    if (closed) return
+    if (scheduler.isHidden()) {
+      clear()
+      return
+    }
+    if (loading) {
+      resumeOnIdle = true
+      return
+    }
+    void tick()
+  }
+  const unsubscribe = scheduler.onVisibilityChange(onVisibility)
+  // Initial scheduling respects the hidden state (no timer), so mounting a
+  // hidden tab never starts a loop.
+  schedule(nextDelay())
+  return () => {
+    if (closed) return
+    closed = true
+    clear()
+    unsubscribe()
+  }
+}

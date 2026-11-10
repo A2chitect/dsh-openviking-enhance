@@ -22,13 +22,14 @@ export interface NativeWarningsProps {
 export function NativeWarnings({ warnings, labelKey = 'native.warnings.summary' }: NativeWarningsProps) {
   if (warnings.length === 0) return null
   return (
-    <details
-      className="ove-nat-warnings-box"
-      data-dsh-plugin="openviking-enhance-warnings"
-      role="status"
-      aria-live="polite"
-    >
-      <summary>{t(labelKey, { count: warnings.length })}</summary>
+    <details className="ove-nat-warnings-box" data-dsh-plugin="openviking-enhance-warnings">
+      {/* Keep the native `<details>` disclosure semantics; the live region is a
+          sibling announcement of the count, not the whole expandable group. */}
+      <summary>
+        <span role="status" aria-live="polite">
+          {t(labelKey, { count: warnings.length })}
+        </span>
+      </summary>
       <ul>
         {warnings.map((warning, index) => (
           <li key={`${warning.code}-${index}`}>{noticeText(warning)}</li>

@@ -45,8 +45,9 @@ write/ops gates are unchanged.
   ARIA tree (roving tabindex, Up/Down/Home/End, Right/Left expand-collapse-enter-
   leave, Enter/Space select, `aria-level`/`aria-selected`/`aria-expanded`/`aria-busy`);
   every tab strip (cockpit/Explore/Activity/Browse/Stats/Operate/Preview) is a
-  tablist/tab/tabpanel with `aria-controls`/`aria-labelledby`, arrow/Home/End
-  selection and roving tabindex; write/ops/undo dialogs trap Tab and restore focus
+  tablist/tab/tabpanel with `aria-labelledby` (no dangling `aria-controls`: only
+  the active panel is mounted), arrow/Home/End selection that skips unavailable
+  preview tiers, and roving tabindex; write/ops/undo dialogs trap Tab and restore focus
   to the opener; toasts/host warnings are explicit live regions (assertive errors,
   polite outcomes); the scope trigger announces `aria-haspopup`/`aria-expanded`,
   Escape closes and restores focus; `:focus-visible` rings, reduced-motion CSS,
@@ -60,9 +61,10 @@ write/ops gates are unchanged.
   output stays English and is documented as a limitation.
 - **Test-enforced performance/request budgets** (`test/v10-performance.test.mjs`):
   one composed `/overview` request (single-flight, 5 s cache, per-part degradation),
-  no hidden polling (all recurring requests go through the new visibility-gated
-  interval; a hidden document schedules nothing), poll backoff schedule, bounded
-  fan-outs/caches, and the client's one-fetch overview path.
+  no hidden polling (all recurring requests go through the shared schedulers; a
+  hidden document creates no timer at all, asserted with a fake clock), poll
+  backoff schedule, bounded fan-outs/caches, and the client's one-fetch overview
+  path.
 - **Unified degraded-state / error copy**: every host code that can reach a
   surface now has EN+ZH `notice.*`/`wcode.*` copy, enforced by
   `test/v10-degraded.test.mjs` scanning the host vocabulary; recovery actions are
@@ -80,9 +82,70 @@ write/ops gates are unchanged.
 - Activity detail polling and the health log polling now use one
   visibility-gated interval helper instead of per-component timers.
 
+#### Fixed (PR #8 review round 1)
+
+- **N1 — hidden-tab polling self-loop.** Activity's list poll scheduled
+  `setTimeout(load, nextPollDelay({hidden:true}))` where the policy's `0` means
+  "do not schedule", so a hidden tab re-armed a zero-delay timer forever. Both the
+  Activity list and the commit-status poll now go through a single, testable
+  `startScheduledPoll` helper: a hidden document creates **no timer**, `delay <= 0`
+  stops the loop until an event resumes it, a resume loads immediately and then
+  recomputes the delay from the latest facts. Covered by fake-clock tests
+  (hidden → 0 timers; 0 → no schedule; running task → next delay 5 s) and a
+  structural guard that only `poll-policy.ts` may own a router timer.
+- **N2 — mount-time focus steal.** `ScopeChip`/`ScopeBanner` focused their trigger
+  in an effect whenever `open === false`, which ran on mount and stole focus from
+  the new roving-tabindex surfaces. Focus is now restored only on a true→false
+  transition (pure `shouldRestoreFocus(prev, open)` helper + tests); a mount is a
+  no-op.
+- **S1 — dangling `aria-controls`.** Only the active panel is rendered, so six of
+  seven `aria-controls` IDREFs pointed at nothing. The tabs now rely on
+  `aria-labelledby` (panel labelled by a real tab id; component test asserts every
+  IDREF resolves and tab ids are unique).
+- **S2 — frozen activity cadence.** The "a task is working" fact was captured in
+  the effect closure, so the 5 s active cadence never happened. The poll now
+  writes the fact to a ref after a successful load and the scheduler reads it when
+  scheduling; a fake-clock test proves the next delay switches from idle 30 s to
+  active 5 s after a load reports a running task.
+- **S3 — behavioural a11y tests.** The scope menu is now rendered with fake state
+  and asserted by roles/counts (`role="menu"`, one `menu` per group, one
+  `menuitem` per profile row, exactly one `aria-current`), instead of grepping the
+  source; the CSS assertions are labelled structural guards and the corresponding
+  contrast/zoom/reduced-motion acceptance rows are manual.
+- **S4 — menu keyboard reachability.** Opening the scope menu now focuses its
+  first enabled `menuitem` (or the dialog root when every row is disabled), so the
+  Arrow/Home/End handler on the menu container is reachable; pure
+  `firstEnabledIndex`/`nextMenuIndex` helpers are unit-tested.
+- **S5 — structural polling guard.** The old test only scanned `setInterval`;
+  it now scans both timer APIs with an explicit allow-list of one-shot timers,
+  asserts the two polling consumers own no timer, and the fake-clock tests cover
+  the recursive `setTimeout` pattern directly.
+- **S7/S8 — wording aligned with code.** "No guessing" now also covers the ACL
+  state machine (only the server's documented `inherit`/`restricted` modes are
+  echoed; a missing mode stays unknown; 401/5xx are distinguished — regression
+  tested in the v0.9 base). README/CHANGELOG claims about hidden polling and
+  `aria-controls` were corrected to the shipped behaviour.
+- **S9 — disclosure semantics.** Host warnings keep their native `<details>`
+  disclosure; the polite live region is the summary count instead of a
+  `role="status"` on the whole expandable group.
+- **Smaller review items**: Activity detail reads are aborted on unmount and never
+  overlap; `Intl` formatters are cached per locale; the browse shortcut row is a
+  labelled `treeitem` (`role="none"` wrapper); dialog focus falls back to the
+  panel container when the opener unmounted; the focus ring now also covers the
+  dock slots (scope chip/commit pill); `/viking` placeholders that shipped
+  hardcoded filter examples are localized.
+- **B0 — base review status.** The rebased v0.9 base (`b64d9cf`) carries the fixes
+  for PR #7's five review blockers (B1 client switch chain, B2 peer/read-write
+  boundary, B3 session-scope write gating, B4 expired-token purge, B5 activity
+  cache reset) and the ACL S2 no-guess fix, with regression tests
+  (`test/v09-client-scope.test.mjs`, `test/v09-component.test.mjs`,
+  `test/v09-scope-routes.test.mjs` "Review round 1 regression tests",
+  `test/v09-scope-units.test.mjs`). `ACCEPTANCE.md`/`VERIFICATION.md` now state
+  that status instead of vouching for an unfixed base.
+
 #### Verified
 
-- `pnpm test`: typecheck, build, packaging contract, independence gate, **506**
+- `pnpm test`: typecheck, build, packaging contract, independence gate, **566**
   unit tests, client smoke and host smoke (live read-only path redacted) all
   green; new v1.0 a11y/locale/degraded/performance suites included.
 - `pnpm run verify:install`: 27/27 clean-profile steps; also runs as a CI

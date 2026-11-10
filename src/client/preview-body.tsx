@@ -122,10 +122,12 @@ export function PreviewBody(props: PreviewBodyProps) {
   const [loading, setLoading] = useState(false)
   const [tierId, setTierId] = useState<PreviewTierId>('l0')
   /** v1.0 a11y: tier switching by keyboard; unavailable tiers stay unselectable. */
-  const tabs = useA11yTabs(PREVIEW_TIERS, tierId, (id) => {
-    const candidate = payload?.tiers.find((entry) => entry.id === id)
-    if (candidate?.available === true) setTierId(id)
-  })
+  const tabs = useA11yTabs(
+    PREVIEW_TIERS,
+    tierId,
+    (id) => setTierId(id),
+    { isDisabled: (id) => payload?.tiers.find((entry) => entry.id === id)?.available !== true },
+  )
   const [copied, setCopied] = useState(false)
   const [pageError, setPageError] = useState<string | null>(null)
   const [pageLoading, setPageLoading] = useState(false)

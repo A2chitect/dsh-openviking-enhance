@@ -1014,6 +1014,8 @@ const zh: Record<string, string> = {
   'native.operate.tab.compile': '编译',
   'native.operate.tab.packs': '包',
   'native.operate.tab.tasks': '任务',
+  'native.operate.taskTypePlaceholder': '类型（例如 compile）',
+  'native.operate.taskStatusPlaceholder': '状态（例如 running）',
   'native.stats.segment.metrics': '指标',
   'native.stats.segment.observability': '可观测性',
   'config.enableOps': '启用操作动作',
@@ -1396,6 +1398,10 @@ const zh: Record<string, string> = {
   'wcode.profile-missing': '配置档不存在。',
   'wcode.scope-changed': '作用域已改变。',
   'wcode.scope-switch-blocked': '有进行中的操作，暂不能切换作用域。',
+  'notice.scopeStateCorrupt': '作用域状态文件损坏或不可读，已按首次运行回退（不覆盖）。',
+  'notice.scopeStatePersistFailed': '无法保存作用域状态：{error}；本次切换仅在内存中生效。',
+  'wcode.scopeStateCorrupt': '作用域状态文件损坏或不可读。',
+  'wcode.scopeStatePersistFailed': '无法保存作用域状态。',
 }
 
 const en: Record<string, string> = {
@@ -2385,6 +2391,8 @@ const en: Record<string, string> = {
   'native.operate.tab.compile': 'Compile',
   'native.operate.tab.packs': 'Packs',
   'native.operate.tab.tasks': 'Tasks',
+  'native.operate.taskTypePlaceholder': 'type (e.g. compile)',
+  'native.operate.taskStatusPlaceholder': 'status (e.g. running)',
   'native.stats.segment.metrics': 'Metrics',
   'native.stats.segment.observability': 'Observability',
   'config.enableOps': 'Enable operational actions',
@@ -2767,6 +2775,10 @@ const en: Record<string, string> = {
   'wcode.profile-missing': 'The profile does not exist.',
   'wcode.scope-changed': 'The scope changed.',
   'wcode.scope-switch-blocked': 'An operation is in progress, so the scope cannot switch.',
+  'notice.scopeStateCorrupt': 'The scope state file is corrupt or unreadable; fell back to first-run behaviour without overwriting it.',
+  'notice.scopeStatePersistFailed': 'Could not persist the scope state: {error}. The switch applies to this session only.',
+  'wcode.scopeStateCorrupt': 'The scope state file is corrupt or unreadable.',
+  'wcode.scopeStatePersistFailed': 'Could not persist the scope state.',
 }
 
 /** Every key the plugin ships, per language. */
@@ -2868,6 +2880,19 @@ export function intlLocale(): string {
   return activeLocale() === 'zh' ? 'zh-CN' : 'en-US'
 }
 
+/** One cached formatter per locale: a table of 20 timestamps must not build 20. */
+const dateTimeFormatters = new Map<string, Intl.DateTimeFormat>()
+const numberFormatters = new Map<string, Intl.NumberFormat>()
+
+function dateTimeFormatter(localeId: string): Intl.DateTimeFormat {
+  let formatter = dateTimeFormatters.get(localeId)
+  if (formatter === undefined) {
+    formatter = new Intl.DateTimeFormat(localeId, { dateStyle: 'medium', timeStyle: 'short' })
+    dateTimeFormatters.set(localeId, formatter)
+  }
+  return formatter
+}
+
 /**
  * A locale-aware date+time for display (server timelines, task timestamps).
  *
@@ -2880,13 +2905,19 @@ export function formatDateTime(value: string | number | null | undefined): strin
   if (value === null || value === undefined || value === '') return '—'
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return String(value)
-  return new Intl.DateTimeFormat(intlLocale(), { dateStyle: 'medium', timeStyle: 'short' }).format(date)
+  return dateTimeFormatter(intlLocale()).format(date)
 }
 
 /** A locale-aware count (`1,234` / `1,234`; grouping follows Intl). */
 export function formatCount(value: number): string {
   if (!Number.isFinite(value)) return '—'
-  return new Intl.NumberFormat(intlLocale()).format(value)
+  const localeId = intlLocale()
+  let formatter = numberFormatters.get(localeId)
+  if (formatter === undefined) {
+    formatter = new Intl.NumberFormat(localeId)
+    numberFormatters.set(localeId, formatter)
+  }
+  return formatter.format(value)
 }
 
 export function t(key: string, params?: Record<string, string | number>): string {

@@ -107,7 +107,10 @@ export function liveRegionForTone(tone: 'success' | 'warning' | 'error' | 'info'
  * back. Escape handling stays with the dialog's own close handler so the two
  * cannot fight.
  */
-export function useModalFocus(dialogRef: RefObject<HTMLElement | null>): void {
+export function useModalFocus(
+  dialogRef: RefObject<HTMLElement | null>,
+  options: { fallbackFocus?: () => HTMLElement | null } = {},
+): void {
   useEffect(() => {
     const dialog = dialogRef.current
     if (dialog === null || typeof document === 'undefined') return
@@ -136,14 +139,66 @@ export function useModalFocus(dialogRef: RefObject<HTMLElement | null>): void {
     dialog.addEventListener('keydown', onKeyDown)
     return () => {
       dialog.removeEventListener('keydown', onKeyDown)
-      opener?.focus?.()
+      // The opener can be unmounted between opening and closing (a refresh or a
+      // scope-driven remount). Focus would then fall to `<body>`; fall back to
+      // the caller's panel container instead of losing the keyboard position.
+      if (opener !== null && document.contains(opener)) {
+        opener.focus()
+        return
+      }
+      options.fallbackFocus?.()?.focus?.()
     }
   }, [dialogRef])
 }
 
 /**
+ * The next enabled tab for a tab strip, skipping disabled tabs and wrapping.
+ *
+ * A preview tier can be unavailable (no L2 for a directory); landing focus on a
+ * disabled button would silently no-op and trap arrow navigation (review item).
+ * Returns `null` when every tab is disabled.
+ */
+export function nextEnabledIndex(
+  current: number,
+  disabled: readonly boolean[],
+  key: string,
+  orientation: 'vertical' | 'horizontal' = 'horizontal',
+): number | null {
+  const count = disabled.length
+  if (count === 0) return null
+  const enabled = disabled.map((value, index) => (value ? -1 : index)).filter((index) => index >= 0)
+  if (enabled.length === 0) return null
+  const previousKey = orientation === 'vertical' ? 'ArrowUp' : 'ArrowLeft'
+  const nextKey = orientation === 'vertical' ? 'ArrowDown' : 'ArrowRight'
+  if (key === 'Home') return enabled[0] ?? null
+  if (key === 'End') return enabled[enabled.length - 1] ?? null
+  if (key !== nextKey && key !== previousKey) return null
+  const direction = key === nextKey ? 1 : -1
+  for (let step = 1; step <= count; step += 1) {
+    const candidate = clampIndex(current + direction * step, count)
+    if (!disabled[candidate]) return candidate
+  }
+  return null
+}
+
+/**
+ * Whether a closing surface should return focus to its trigger because it was
+ * open and just closed. On first mount (`previousOpen === false`) focus must not
+ * move: the scope chips live on ~10 surfaces and remount on view changes, where
+ * a mount-time focus grab would defeat the roving-tabindex model (review N2).
+ */
+export function shouldRestoreFocus(previousOpen: boolean, open: boolean): boolean {
+  return previousOpen && !open
+}
+
+/** The first enabled item in a menu, or -1 when none is enabled. */
+export function firstEnabledIndex(disabled: readonly boolean[]): number {
+  return disabled.findIndex((value) => value === false)
+}
+
+/**
  * Tab-strip state helper: roving `tabIndex`, Arrow/Home/End selection, ids and
- * `aria-controls` wiring for the tab and its panel.
+ * `aria-labelledby` wiring for the tab and its panel.
  *
  * The hook focuses the newly selected tab after React commits it (one
  * `requestAnimationFrame`), which is what makes arrow-key navigation usable from
@@ -153,6 +208,7 @@ export function useA11yTabs<Id extends string>(
   ids: readonly Id[],
   activeId: Id,
   onSelect: (id: Id) => void,
+  options: { isDisabled?: (id: Id) => boolean } = {},
 ): {
   tabListProps: {
     role: 'tablist'
@@ -162,7 +218,7 @@ export function useA11yTabs<Id extends string>(
     role: 'tab'
     id: string
     'aria-selected': boolean
-    'aria-controls': string
+    'aria-disabled'?: true
     tabIndex: number
     onClick: () => void
     ref: (element: HTMLButtonElement | null) => void
@@ -182,12 +238,18 @@ export function useA11yTabs<Id extends string>(
     refs.current[target]?.focus()
   })
 
+  const disabled = (id: Id): boolean => options.isDisabled?.(id) === true
+  const disabledFlags = ids.map((id) => disabled(id))
   const activate = useCallback(
     (id: Id) => {
+      if (disabled(id)) return
       focusRequest.current = id
       onSelect(id)
     },
-    [onSelect],
+    // `options.isDisabled` is a render-time predicate; the ids array is stable
+    // per surface and the callback identity is what React needs to see change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [onSelect, ids, options.isDisabled],
   )
 
   return {
@@ -195,7 +257,7 @@ export function useA11yTabs<Id extends string>(
       role: 'tablist',
       onKeyDown: (event) => {
         const index = ids.indexOf(activeId)
-        const target = nextTabIndex(index, ids.length, event.key)
+        const target = nextEnabledIndex(index, disabledFlags, event.key)
         if (target === null) return
         event.preventDefault()
         const next = ids[target]
@@ -206,8 +268,12 @@ export function useA11yTabs<Id extends string>(
       role: 'tab',
       id: `ove-tab-${idPrefix}-${id}`,
       'aria-selected': activeId === id,
-      'aria-controls': `ove-tabpanel-${idPrefix}-${id}`,
+      // No `aria-controls`: only the active panel is rendered (mounting every
+      // hidden panel would fire its data effects), and a dangling IDREF is worse
+      // than none. The panel is labelled by its tab (`aria-labelledby`), and the
+      // component test asserts every rendered tabpanel's label resolves.
       tabIndex: activeId === id ? 0 : -1,
+      'aria-disabled': disabled(id) ? true : undefined,
       onClick: () => activate(id),
       ref: (element) => {
         refs.current[id] = element

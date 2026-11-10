@@ -28,7 +28,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
-import { nextMenuIndex } from './a11y.ts'
+import { firstEnabledIndex, nextMenuIndex, shouldRestoreFocus } from './a11y.ts'
 import type { ScopeIdentityRequest, ScopeListEntry, ScopesPayload } from '../shared/protocol.ts'
 import { fetchScopes, testProfileEndpoint } from './host-api.ts'
 import { t } from './locale.ts'
@@ -354,8 +354,22 @@ export function ScopeMenu({ onClose }: ScopeMenuProps) {
     if (target !== null) items[target]?.focus()
   }
 
+  const menuRef = useRef<HTMLDivElement | null>(null)
+  // S4: opening the menu moves focus to its first selectable scope row, otherwise
+  // the arrow handler on the container is unreachable (focus stays on the
+  // trigger, outside the container).
+  useEffect(() => {
+    const menu = menuRef.current
+    if (menu === null) return
+    if (firstEnabledIndex([...menu.querySelectorAll('[role="menuitem"]')].map((item) => (item as HTMLButtonElement).disabled)) < 0) {
+      menu.focus()
+      return
+    }
+    menu.querySelector<HTMLElement>('[role="menuitem"]:not([disabled])')?.focus()
+  }, [])
+
   return (
-    <div className="ove-scope-menu" role="dialog" aria-label={t('scope.menuTitle')}>
+    <div className="ove-scope-menu" role="dialog" aria-label={t('scope.menuTitle')} ref={menuRef} tabIndex={-1}>
       <div className="ove-scope-detail-head">
         <span className="ove-scope-detail-title">{t('scope.menuTitle')}</span>
         <span className="ove-spacer" />
@@ -447,8 +461,12 @@ export function ScopeBanner(props: { className?: string; showMenu?: boolean }) {
   const state = useScope()
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
+  const wasOpen = useRef(false)
   useEffect(() => {
-    if (!open) triggerRef.current?.focus()
+    // N2: restore focus only when the menu actually closes; on mount this is a
+    // no-op (the banner remounts on view changes and must not steal focus).
+    if (shouldRestoreFocus(wasOpen.current, open)) triggerRef.current?.focus()
+    wasOpen.current = open
   }, [open])
   useEffect(() => {
     void ensureScope()
@@ -628,8 +646,11 @@ export function ScopeChip({ compact = false }: ScopeChipProps) {
   const state = useScope()
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
+  const wasOpen = useRef(false)
   useEffect(() => {
-    if (!open) triggerRef.current?.focus()
+    // N2: no mount-time focus grab; restore only on a true → false transition.
+    if (shouldRestoreFocus(wasOpen.current, open)) triggerRef.current?.focus()
+    wasOpen.current = open
   }, [open])
   useEffect(() => {
     void ensureScope()

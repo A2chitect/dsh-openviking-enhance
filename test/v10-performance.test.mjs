@@ -14,7 +14,14 @@ import { join } from 'node:path'
 
 import { OverviewService } from '../src/host/overview-service.ts'
 import { OnboardingStore } from '../src/host/onboarding.ts'
-import { nextPollDelay, POLL_ACTIVE_MS, POLL_IDLE_MS, POLL_ERROR_FIRST_MS, POLL_ERROR_MAX_MS } from '../src/client/poll-policy.ts'
+import {
+  nextPollDelay,
+  POLL_ACTIVE_MS,
+  POLL_IDLE_MS,
+  POLL_ERROR_FIRST_MS,
+  POLL_ERROR_MAX_MS,
+  startScheduledPoll,
+} from '../src/client/poll-policy.ts'
 import {
   OVERVIEW_CACHE_TTL_MS,
   BROWSE_PAGE_SIZE,
@@ -163,24 +170,145 @@ test('the poll schedule pauses when hidden and backs off after failures', () => 
   assert.equal(nextPollDelay({ working: false, hidden: false, errorCount: 99 }), POLL_ERROR_MAX_MS)
 })
 
-test('every recurring request goes through the visibility-gated interval', () => {
-  // `poll-policy.ts` is the only module allowed to own an interval; components
-  // use `startVisibleInterval`, whose timer does not exist while the document is
-  // hidden. A bare `setInterval` in a component would spend requests on a
-  // hidden panel — the budget forbids that.
+/**
+ * A fake scheduler: records timers, runs them on demand, and lets the test flip
+ * the document between visible/hidden. This is the "fake clock" the review asked
+ * for: the hidden-tab zero-schedule property is asserted behaviourally, not by a
+ * regex over the source.
+ */
+function fakeScheduler(options = {}) {
+  const state = { hidden: options.hidden === true, timers: [], nextId: 1 }
+  const listeners = new Set()
+  const scheduler = {
+    setTimeout: (callback, delayMs) => {
+      const handle = { id: state.nextId++, callback, delayMs }
+      state.timers.push(handle)
+      return handle
+    },
+    clearTimeout: (handle) => {
+      const index = state.timers.indexOf(handle)
+      if (index >= 0) state.timers.splice(index, 1)
+    },
+    isHidden: () => state.hidden,
+    onVisibilityChange: (listener) => {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+  }
+  return {
+    scheduler,
+    state,
+    /** Number of timers created so far (including already-fired/cleared ones). */
+    created: () => state.nextId - 1,
+    pending: () => state.timers.length,
+    advance(ms) {
+      const due = state.timers.filter((timer) => timer.delayMs <= ms)
+      state.timers = state.timers.filter((timer) => timer.delayMs > ms)
+      for (const timer of due) timer.callback()
+    },
+    setHidden(hidden) {
+      state.hidden = hidden
+      for (const listener of listeners) listener()
+    },
+  }
+}
+
+test('the scheduler creates no timer at all while the tab is hidden (review N1)', async () => {
+  const clock = fakeScheduler({ hidden: true })
+  let loads = 0
+  const dispose = startScheduledPoll(() => {
+    loads += 1
+  }, () => POLL_ACTIVE_MS, clock.scheduler)
+  assert.equal(clock.created(), 0, 'hidden mount schedules nothing (0 is "do not schedule")')
+  assert.equal(loads, 0)
+  // Becoming visible resumes with an immediate load and then the active cadence.
+  clock.setHidden(false)
+  await Promise.resolve()
+  assert.equal(loads, 1, 'visibility resume loads immediately')
+  assert.equal(clock.created(), 1)
+  assert.equal(clock.pending(), 1)
+  assert.equal(clock.state.timers[0].delayMs, POLL_ACTIVE_MS)
+  // Hiding again clears the pending timer; no self-loop can survive.
+  clock.setHidden(true)
+  assert.equal(clock.pending(), 0, 'hiding the tab clears the timer')
+  assert.equal(clock.created(), 1, 'no new timer was created while hidden')
+  dispose()
+})
+
+test('a zero policy delay stops the loop instead of becoming setTimeout(0) (review N1)', async () => {
+  const clock = fakeScheduler()
+  let loads = 0
+  let delay = 0
+  const dispose = startScheduledPoll(() => {
+    loads += 1
+  }, () => delay, clock.scheduler)
+  assert.equal(clock.created(), 0, 'delay 0 means "do not schedule"')
+  assert.equal(loads, 0)
+  delay = 5000
+  clock.setHidden(true)
+  clock.setHidden(false)
+  await Promise.resolve()
+  assert.equal(clock.created(), 1, 'an event can resume a stopped loop')
+  dispose()
+})
+
+test('the loop recomputes the delay after every load, so a running task switches to the 5 s cadence (review S2)', async () => {
+  const clock = fakeScheduler()
+  const facts = { working: false, errorCount: 0 }
+  const delivered = []
+  const dispose = startScheduledPoll(
+    () => {
+      delivered.push(clock.pending())
+      // The activity panel writes the fresh "working" fact here (a ref), and the
+      // scheduler reads it only after the load resolves.
+      if (delivered.length === 1) facts.working = true
+    },
+    () => nextPollDelay({ working: facts.working, hidden: false, errorCount: facts.errorCount }),
+    clock.scheduler,
+  )
+  assert.equal(clock.state.timers.length, 1)
+  assert.equal(clock.state.timers[0].delayMs, POLL_IDLE_MS, 'first schedule has no tasks yet')
+  clock.advance(POLL_IDLE_MS)
+  await Promise.resolve()
+  await Promise.resolve()
+  assert.equal(clock.state.timers.length, 1)
+  assert.equal(clock.state.timers[0].delayMs, POLL_ACTIVE_MS, 'a running task switches the next delay to 5 s')
+  dispose()
+})
+
+test('only poll-policy may own a recurring timer, and the polling consumers use the scheduler', () => {
+  // Structural guard for review S5: the old regex only saw setInterval, so a
+  // recursive setTimeout loop (N1) slipped through. Non-polling timers are
+  // allow-listed explicitly with their reason; the two polling consumers must
+  // not own timers and must import the scheduler.
   const dir = new URL('../src/client/', import.meta.url)
+  const NON_POLLING_TIMERS = {
+    'host-api.ts': 'one-shot URL.revokeObjectURL cleanup',
+    'index.tsx': 'bounded deep-link retry (3 attempts)',
+    'native-sessions.tsx': 'one-shot "copied" feedback',
+    'scope-chip.tsx': 'one-shot notice countdown re-render',
+    'commit-status.tsx': 'one-shot URL.revokeObjectURL cleanup (the poll loop uses the scheduler)',
+  }
+  const timerPattern = /(?:window\.)?(?:setTimeout|setInterval)\s*\(/
   const offenders = []
   for (const name of readdirSync(dir)) {
-    if (name === 'poll-policy.ts') continue
     if (!name.endsWith('.ts') && !name.endsWith('.tsx')) continue
+    if (name === 'poll-policy.ts') continue
     const source = readFileSync(new URL(name, dir), 'utf8')
-    if (/\bsetInterval\s*\(/.test(source)) offenders.push(name)
+    if (timerPattern.test(source) && NON_POLLING_TIMERS[name] === undefined) offenders.push(name)
   }
-  assert.deepEqual(offenders, [], `intervals must come from startVisibleInterval: ${offenders.join(', ')}`)
-  const policy = readFileSync(new URL('../src/client/poll-policy.ts', import.meta.url), 'utf8')
+  assert.deepEqual(offenders, [], `unreviewed timer ownership: ${offenders.join(', ')}`)
+  for (const consumer of ['activity-panel.tsx', 'commit-status.tsx']) {
+    const source = readFileSync(new URL(consumer, dir), 'utf8')
+    assert.match(source, /startScheduledPoll/, `${consumer} uses the shared scheduler`)
+    // The reviewed failure pattern: a poll loop that schedules its own timer
+    // (N1's `setTimeout(() => void load(), nextPollDelay(...))`).
+    assert.doesNotMatch(source, /setTimeout\(\s*\(\)\s*=>\s*void\s+(load|run)\(/, `${consumer} owns no polling timer`)
+    assert.match(source, /nextPollDelay\(/, `${consumer} feeds the shared policy through the scheduler`)
+  }
+  const policy = readFileSync(new URL('poll-policy.ts', dir), 'utf8')
+  assert.match(policy, /export function startScheduledPoll/)
   assert.match(policy, /export function startVisibleInterval/)
-  assert.match(policy, /visibilityState === 'hidden'/)
-  assert.match(policy, /\n  start\(\)/)
 })
 
 test('the documented fan-out/cache budgets are the shipped constants', () => {

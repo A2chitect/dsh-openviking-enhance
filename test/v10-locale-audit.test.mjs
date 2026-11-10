@@ -9,7 +9,7 @@
 // documented limitation, not an untested claim.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { createElement } from 'react'
@@ -80,14 +80,94 @@ function visibleText(markup) {
     .replace(/\s+/g, ' ')
 }
 
-/** Three-or-more dotted lowercase segments is how a raw locale key looks. */
-const KEY_SHAPED = /\b[a-z][a-zA-Z0-9]*(?:\.[a-zA-Z0-9]+){2,}\b/
+/**
+ * Two-or-more dotted lowercase segments: how a raw locale key looks. The earlier
+ * audit only caught 3+ segments, so a leaked `scope.menuTitle` or `native.loading`
+ * slipped through (review S6). A short allow-list covers legitimate dotted text.
+ */
+const KEY_SHAPED = /\b[a-z][a-zA-Z0-9]*(?:\.[a-zA-Z0-9]+)+\b/
+const KEY_ALLOWLIST = new Set(['e.g', 'i.e'])
+/** Version labels (`v0.8`, `0.5.3`) and `e.g` are not locale keys. */
+const isAllowedToken = (token) => KEY_ALLOWLIST.has(token) || /^v?\d+(?:\.\d+)+$/.test(token)
 
 test('the native cockpit renders without emitting raw locale keys in either language', () => {
   for (const locale of ['en', 'zh']) {
     const text = visibleText(nativePanelMarkup(locale))
-    const hits = [...text.matchAll(new RegExp(KEY_SHAPED, 'g'))].map((match) => match[0])
+    const hits = [...text.matchAll(new RegExp(KEY_SHAPED, 'g'))].map((match) => match[0]).filter((hit) => !isAllowedToken(hit))
     assert.deepEqual(hits, [], `${locale} cockpit emitted locale-key-shaped text: ${hits.join(', ')}`)
+  }
+})
+
+/** The v1.0 surfaces a user can open without Studio. */
+const SURFACES = [
+  ['NativeBrowse', { sessionId: 's-1' }],
+  ['NativeSessions', {}],
+  ['NativeCommits', { sessionId: 's-1' }],
+  ['NativeStats', {}],
+  ['NativeOperate', { sessionId: 's-1' }],
+  ['NativeObservability', {}],
+  ['ActivityPanel', { sessionId: 's-1' }],
+  ['ExplorePanel', { sessionId: 's-1' }],
+  ['PreviewBody', { uri: 'viking://user/default/memories/preferences/tools.md' }],
+  ['AccessPanel', { uri: 'viking://resources/notes.md' }],
+]
+
+test('every native surface renders in both languages without a raw locale key', () => {
+  for (const locale of ['en', 'zh']) {
+    const { exports } = loadBundle(locale)
+    for (const [name, props] of SURFACES) {
+      const Component = exports[name]
+      assert.notEqual(Component, undefined, `${name} is exported`)
+      const markup = renderToStaticMarkup(createElement(Component, props))
+      const text = visibleText(markup)
+      // A component that rendered an untranslated key would show the key text.
+      const hits = [...text.matchAll(new RegExp(KEY_SHAPED, 'g'))].map((match) => match[0]).filter((hit) => !isAllowedToken(hit))
+      assert.deepEqual(hits, [], `${locale} ${name} emitted locale-key-shaped text: ${hits.join(', ')}`)
+    }
+  }
+})
+
+test('every native cockpit view renders in both languages without a raw locale key', () => {
+  // The cockpit view switch remounts a different view; the earlier audit only
+  // rendered the default view (review S6). Walk every view through the real
+  // bundle, including Browse/Sessions/Commits/Operate/Studio.
+  const views = [
+    ['overview', { view: 'overview' }],
+    ['browse', { view: 'browse', browse: { uri: 'viking://user/default/memories' } }],
+    ['sessions', { view: 'sessions' }],
+    ['commits', { view: 'commits', commits: { sessionId: 's-1' } }],
+    ['stats', { view: 'stats' }],
+    ['operate', { view: 'operate' }],
+    ['studio', { view: 'studio' }],
+  ]
+  for (const locale of ['en', 'zh']) {
+    attachLocale({ getSnapshot: () => ({ active: locale }) })
+    const { exports, contributions } = loadBundle(locale)
+    exports.setNativeSwitches({ nativeViews: true, onboarding: true })
+    const cockpit = contributions.find((entry) => entry.options.name === 'main')
+    assert.notEqual(cockpit, undefined)
+    for (const [name, target] of views) {
+      exports.__setNativeStateForTests({ view: target.view, target })
+      const markup = renderToStaticMarkup(createElement(cockpit.Component))
+      const text = visibleText(markup)
+      const hits = [...text.matchAll(new RegExp(KEY_SHAPED, 'g'))].map((match) => match[0]).filter((hit) => !isAllowedToken(hit))
+      assert.deepEqual(hits, [], `${locale} cockpit ${name} view emitted locale-key-shaped text: ${hits.join(', ')}`)
+    }
+    exports.resetNative()
+  }
+})
+
+test('no hardcoded English placeholders ship in the client (review S6)', () => {
+  // Placeholders are user-visible text; they must come from `t()` like any other
+  // copy. The only literal allowed is the URI scheme example (protocol data).
+  const dir = new URL('../src/client/', import.meta.url)
+  const allowed = new Set(['viking://…', 'viking://'])
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith('.ts') && !name.endsWith('.tsx')) continue
+    const source = readFileSync(new URL(name, dir), 'utf8')
+    for (const match of source.matchAll(/placeholder="([^"]*)"/g)) {
+      assert.ok(allowed.has(match[1]), `${name} ships hardcoded placeholder "${match[1]}"`)
+    }
   }
 })
 
@@ -111,7 +191,12 @@ test('the source tree ships no hardcoded user-facing string that bypasses the co
   const allowed = new Set(['OpenViking', 'Studio', 'JSON', 'MCP'])
   for (const name of files) {
     const source = readFileSync(new URL(`../src/client/${name}`, import.meta.url), 'utf8')
-    const jsxText = [...source.matchAll(/>([^<>{}\n]+)</g)].map((match) => match[1].trim()).filter((text) => text.length > 0)
+    const jsxText = [...source.matchAll(/>([^<>{}\n]+)</g)]
+      .map((match) => match[1].trim())
+      .filter((text) => text.length > 0)
+      // Only plain prose candidates: code fragments like `=> (item as X)` are
+      // picked up by the tag heuristic but are not JSX text.
+      .filter((text) => /^[A-Za-z][A-Za-z0-9 ,.!?&%'()\-]*$/.test(text))
     for (const text of jsxText) {
       const words = text.replace(/[0-9.,;:!?()\[\]{}×→←▾▸▴▾…·—\-+/%°⌘⚠🔒©®™'"#*|&]/g, ' ').match(/[A-Za-z]{3,}/g) ?? []
       for (const word of words) {

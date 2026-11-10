@@ -711,9 +711,9 @@ DOM/组件断言 + 手工键盘/VoiceOver/缩放/对比度清单（无浏览器�
 `ACCEPTANCE.md`，不做自动化合规声称）。
 
 - **树**：Browse 行是真正的 ARIA tree——roving tabindex、上/下/Home/End、右/左展开-折叠-进入-离开、Enter/Space 选择、`aria-level`、`aria-selected`、`aria-expanded`、`aria-busy`。
-- **Tabs**：驾驶舱/Explore/Activity/Browse/Stats/Operate/Preview 的 tab 条都是 `tablist`/`tab`/`tabpanel`，带 `aria-controls`/`aria-labelledby`、方向键/Home/End 与 roving tabindex。
+- **Tabs**：驾驶舱/Explore/Activity/Browse/Stats/Operate/Preview 的 tab 条都是 `tablist`/`tab`/`tabpanel`，用 `aria-labelledby` 关联（只有活动面板会挂载，因此故意没有悬空的 `aria-controls`），方向键/Home/End 会跳过不可用的预览层，并保持 roving tabindex。
 - **对话框**：写入/操作/撤销对话框把 Tab 限制在模态内，关闭后焦点回到打开者；默认聚焦取消；`role="dialog"` + `aria-modal`。
-- **实时区域**：toast 使用 `aria-live`（错误 assertive、结果 polite），宿主警告礼貌播报，错误为 `role="alert"`。
+- **实时区域**：toast 使用 `aria-live`（错误 assertive、结果 polite），宿主警告保留原生 `<details>` 展开语义、仅礼貌播报计数，错误为 `role="alert"`。
 - **作用域菜单**：触发按钮声明 `aria-haspopup`/`aria-expanded`；作用域选项是带标签的 `menu`，行为 `menuitem`，支持方向键/Home/End 移动；Escape 关闭并恢复焦点。外层仍是 dialog，因为其中还包含身份编辑表单字段。
 - **可见性与动效**：每个插件控件都有 `:focus-visible` 焦点环；`prefers-reduced-motion` 关闭过渡/动画；200% 缩放下工具栏换行、对话框可滚动。
 - **不靠颜色表达状态**：状态始终有文字/图标 + 颜色；状态点是装饰性的。
@@ -736,7 +736,7 @@ README/README.zh 的章节、F1–F14 清单与兼容矩阵逐行镜像，并由
 | 驾驶舱首屏 | 一次组合 `/overview` 宿主请求，缓存 5 s、单飞；首屏无轮询 | `test/v10-performance.test.mjs`（计数各部件、TTL、并发） |
 | Browse | 每个展开页 1 次请求（50 行）；摘要/提示有上限；子树是显式动作（≤2 层/100 节点） | browse 常量 + 路由测试 |
 | 最近提交 | ≤8 个会话、4 并发、10 s 截止、30 s 缓存；从不轮询 | 提交常量 + 路由测试 |
-| 轮询 | 仅已挂载且可见的界面；文档隐藏时不排任何计时器；打开的运行中任务 2 s，健康日志可见时 15 s | `poll-policy.ts` + `test/v10-performance.test.mjs` |
+| 轮询 | 仅已挂载且可见的界面；文档隐藏时**完全不创建计时器**（用假时钟断言，而不只是读策略）；打开的运行中任务 2 s，健康日志可见时 15 s | `poll-policy.ts` 的 `startScheduledPoll` + `test/v10-performance.test.mjs` |
 | 取消 | 切换视图/作用域/刷新/卸载中止在途读取；过期答案按 generation/作用域键丢弃 | v0.7/v0.9 测试 |
 | 载荷上限 | 预览每页 400 行（最多 1 000 行、显示 20 000 字符）、证据 512 KiB、包 64 MiB、任务事件 64×32 KiB | limits + 路由测试 |
 | 首屏耗时 | **未插桩**（无基准/浏览器依赖）——仅手工观察，作为局限记录 | `ACCEPTANCE.md` 局限 |

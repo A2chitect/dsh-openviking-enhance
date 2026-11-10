@@ -27,12 +27,15 @@ import { DICTS } from '../src/client/locale.ts'
 import {
   FOCUSABLE_SELECTOR,
   clampIndex,
+  firstEnabledIndex,
   flattenTreeRows,
   liveRegionForTone,
+  nextEnabledIndex,
   nextFocusIndex,
   nextMenuIndex,
   nextRovingIndex,
   nextTabIndex,
+  shouldRestoreFocus,
   treeKeyTarget,
 } from '../src/client/a11y.ts'
 
@@ -80,6 +83,26 @@ test('menu navigation wraps and supports Home/End without changing the value', (
   assert.equal(nextMenuIndex(-1, 3, 'ArrowDown'), 0)
   assert.equal(nextMenuIndex(1, 0, 'ArrowDown'), null)
   assert.equal(nextMenuIndex(1, 3, 'Enter'), null)
+})
+
+test('focus is restored only on a true→false transition, never on mount (review N2)', () => {
+  assert.equal(shouldRestoreFocus(false, false), false, 'mount must not move focus')
+  assert.equal(shouldRestoreFocus(false, true), false, 'opening must not move focus back')
+  assert.equal(shouldRestoreFocus(true, true), false, 'staying open is not a close')
+  assert.equal(shouldRestoreFocus(true, false), true, 'closing restores focus')
+})
+
+test('menu helpers pick the first enabled item, and disabled tabs are skipped (review S4/S1)', () => {
+  assert.equal(firstEnabledIndex([true, true, false, false]), 2)
+  assert.equal(firstEnabledIndex([true]), -1)
+  assert.equal(firstEnabledIndex([]), -1)
+  // `disabled[i] === true` is the unusable flag; arrows skip those entries.
+  assert.equal(nextEnabledIndex(0, [true, false, true], 'ArrowRight'), 1)
+  assert.equal(nextEnabledIndex(1, [true, false, true], 'ArrowRight'), 1, 'wraps back to the only enabled tab')
+  assert.equal(nextEnabledIndex(0, [true, true, true], 'ArrowRight'), null)
+  assert.equal(nextEnabledIndex(2, [true, false, true, false], 'End'), 3)
+  assert.equal(nextEnabledIndex(3, [false, true, true, false], 'Home'), 0)
+  assert.equal(nextEnabledIndex(0, [true, false], 'Tab'), null, 'Tab is not ours')
 })
 
 test('the focusable selector covers every interactive control the plugin uses', () => {
@@ -250,9 +273,19 @@ test('the cockpit view switcher is a complete tablist/tab/tabpanel set', () => {
     assert.equal((markup.match(/role="tab"/g) ?? []).length, 7, 'seven view tabs render')
     const selected = [...markup.matchAll(/role="tab"[^>]*aria-selected="true"/g)].length
     assert.equal(selected, 1, 'exactly one tab is selected')
-    assert.match(markup, /aria-controls="ove-tabpanel-/, 'each tab names its panel')
+    // S1: only the active panel is rendered, so `aria-controls` would dangle for
+    // the other tabs. Either no aria-controls is emitted, or every one resolves.
+    const ids = new Set([...markup.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]))
+    for (const match of markup.matchAll(/aria-controls="([^"]+)"/g)) {
+      assert.ok(ids.has(match[1]), `aria-controls ${match[1]} resolves to an element id`)
+    }
+    // Every rendered tabpanel is labelled by a real, unique tab id.
     assert.match(markup, /role="tabpanel"/, 'the active view is a tabpanel')
-    assert.match(markup, /aria-labelledby="ove-tab-/, 'the panel is labelled by its tab')
+    const labelledBy = [...markup.matchAll(/aria-labelledby="([^"]+)"/g)].map((match) => match[1])
+    assert.ok(labelledBy.length >= 1, 'the active panel is labelled')
+    for (const reference of labelledBy) assert.ok(ids.has(reference), `aria-labelledby ${reference} resolves`)
+    const tabIds = [...markup.matchAll(/role="tab"[^>]*\bid="([^"]+)"/g)].map((match) => match[1])
+    assert.equal(new Set(tabIds).size, tabIds.length, 'tab ids are unique')
     // Roving tabindex: only the active tab is in the page tab order.
     assert.equal((markup.match(/tabindex="0"/g) ?? []).length >= 1, true)
     assert.equal((markup.match(/tabindex="-1"/g) ?? []).length, 6, 'the other six tabs are roving (-1)')
@@ -316,32 +349,97 @@ test('the scope trigger announces that it opens a dialog', () => {
   }
 })
 
-test('the scope choices ship real menu/menuitem semantics', () => {
-  // The panel is a labelled dialog (it holds the identity editor); the scope
-  // choices inside it are an ARIA menu because they select a value.
-  const source = readFileSync(new URL('../src/client/scope-chip.tsx', import.meta.url), 'utf8')
-  assert.match(source, /role="menu"/)
-  assert.match(source, /role="menuitem"/)
-  assert.match(source, /nextMenuIndex/)
-  assert.match(source, /aria-current/)
-  for (const dict of Object.values(DICTS)) {
-    assert.ok('scope.menu.servers' in dict, 'the menu has a localized accessible name')
+test('the scope menu renders real menu/menuitem semantics with one active row', () => {
+  const { exports } = loadBundle('en')
+  const FINGERPRINT = `sha256:${'a1b2c3d4e5f6'.repeat(4)}${'0'.repeat(8)}`
+  const scope = {
+    identity: {
+      profileId: 'alpha',
+      profileLabel: 'Alpha dev',
+      endpoint: 'http://127.0.0.1:1933',
+      authMode: 'dev',
+      account: 'default',
+      user: 'alice',
+      peer: null,
+      fingerprint: FINGERPRINT,
+    },
+    activeProfileId: 'alpha',
+    role: 'ROOT',
+    version: '0.5.3',
+    healthy: true,
+    writes: { enabled: false, transport: true, reason: 'writes-disabled' },
+    ops: { enabled: false, transport: true, reason: 'ops-disabled' },
+    capabilities: {},
+    warnings: [],
+    observedAt: '2026-11-10T00:00:00.000Z',
+  }
+  const row = (id, label, active) => ({
+    id,
+    label,
+    endpoint: id === 'alpha' ? 'http://127.0.0.1:1933' : 'http://192.0.2.44:1999',
+    authMode: 'dev',
+    account: 'default',
+    user: 'alice',
+    peer: null,
+    hasApiKey: false,
+    health: { ok: true, version: '0.5.3', latencyMs: 12, error: null },
+    capabilities: {},
+    warnings: [],
+    isActive: active,
+    overrides: false,
+  })
+  const scopes = {
+    scopes: [row('alpha', 'Alpha dev', true), row('beta', 'Beta remote', false)],
+    active: {
+      scopeKey: FINGERPRINT,
+      profileId: 'alpha',
+      label: 'Alpha dev',
+      endpoint: 'http://127.0.0.1:1933',
+      authMode: 'dev',
+      account: 'default',
+      user: 'alice',
+      peer: null,
+      overrides: false,
+    },
+    overrides: {
+      account: 'default',
+      user: 'alice',
+      peer: null,
+      allowed: { account: true, user: true, peer: true, reason: null, authMode: 'dev' },
+      overrides: false,
+    },
+    warnings: [],
+    observedAt: '2026-11-10T00:00:00.000Z',
+  }
+  try {
+    exports.__setScopeStateForTests({ status: 'ready', scope, scopes, scopesStatus: 'ready' })
+    const markup = renderToStaticMarkup(createElement(exports.ScopeMenu, { onClose: () => {} }))
+    assert.match(markup, /role="dialog"/, 'the panel is a labelled dialog')
+    assert.match(markup, /aria-label="Scopes and identities"/, 'and has an accessible name')
+    assert.equal((markup.match(/role="menu"/g) ?? []).length, 1, 'one scope-choice menu')
+    const items = markup.match(/role="menuitem"/g) ?? []
+    assert.equal(items.length, 2, 'one menuitem per profile row')
+    assert.equal((markup.match(/aria-current="true"/g) ?? []).length, 1, 'exactly one row is current')
+    assert.match(markup, /Alpha dev/, 'the rows carry their labels')
+    assert.match(markup, /Beta remote/)
+  } finally {
+    exports.__resetScopeForTests()
   }
 })
 
-test('host warnings are announced politely without becoming a focus target', () => {
+test('host warnings stay a collapsible group with a polite announcement (review S9)', () => {
   const { exports } = loadBundle('en')
   const markup = renderToStaticMarkup(
     createElement(exports.NativeWarnings, {
       warnings: [{ code: 'staleDirectory', params: { uri: 'viking://user/default/memories' } }],
     }),
   )
-  assert.match(markup, /role="status"/)
-  assert.match(markup, /aria-live="polite"/)
-  assert.match(markup, /<details/, 'the detail stays collapsible')
+  assert.match(markup, /<details/, 'the disclosure group keeps its native semantics')
+  assert.doesNotMatch(markup, /<details[^>]*role="status"/, 'the live region is not the <details> itself')
+  assert.match(markup, /<summary>[\s\S]*?role="status"[\s\S]*?aria-live="polite"/, 'the summary announces the count politely')
 })
 
-test('the a11y CSS ships the focus ring, reduced motion and zoom rules', () => {
+test('the a11y stylesheet ships structural guards (conformance remains manual)', () => {
   const { find } = loadBundle('en')
   const css = readFileSync(new URL('../src/client/styles.ts', import.meta.url), 'utf8')
   // The stylesheet is a template string in TS; assert the shipped rules exist.

@@ -65,7 +65,7 @@ run without Studio; a person reviews and merges."*
 | v0.6 | No AGPL-derived code; tarball verified clean; matrix documented | independence gate, `verify:install`, README final matrix, `VERIFICATION.md` | Verified |
 | v0.7 | Core read tasks without the iframe; fallback documented | native cockpit tests + Studio-off walkthrough + README fallback text | Design-verified |
 | v0.8 | Operational tasks possible with confirmations and exportable evidence | fake-server ops E2E, audit/evidence tests, fixture screenshots | Fixture-only (no real-store writes by design) |
-| v0.9 | Multiple servers/scopes isolated and visibly labelled | fake two-server E2E, scope header refusal, banner inventory, switch walkthrough | Fixture-only (second scope) + Verified (guards) |
+| v0.9 | Multiple servers/scopes isolated and visibly labelled | fake two-server E2E, scope header refusal, banner inventory, switch walkthrough; PR #7 review blockers B1–B5 + ACL S2 fixed in the fixed base `b64d9cf` with regression tests (see §13) | Verified (guards) + Fixture-only (second scope) |
 | v1.0 | Expected goals met; core tasks without Studio; human review/merge | §3–§8 + sign-off | Design-verified + CI-verified; **human merge pending** |
 
 ## 6. Original report success criteria (honest handling)
@@ -77,7 +77,7 @@ run without Studio; a person reviews and merges."*
 | "5 real users can independently locate a recall-empty and a commit-failure cause" | **Not performed.** Protocol in §9; no fabricated study | **Externally-unverified** |
 | "80% of daily checks happen inside DSH" | 12-item checklist (§8): all 12 are DSH-native; actual frequency not measured (no telemetry, by design) | Checklist-verified (frequency-unmeasured) |
 | Bilingual parity | locale parity + render audit + mirrored docs tables (tests) | Verified (automated); zh walkthrough manual |
-| Accessible widgets (WCAG 2.2 AA-aligned) | DOM/component + keyboard-model tests + manual checklist §10 | Design-verified; no automated conformance claim; Windows/NVDA **U** |
+| Accessible widgets (WCAG 2.2 AA-aligned) | DOM/component structure + keyboard-model tests, plus manual checklist §10; stylesheet assertions are structural guards, not rendered contrast/zoom evidence | Design-verified; no automated conformance claim; Windows/NVDA **U** |
 
 ## 7. Studio-off core-flow walkthrough (reproducible)
 
@@ -164,15 +164,46 @@ health, empty state) and enforced by `test/v10-degraded.test.mjs` over the host
 code vocabulary. Verdict: **Verified (automated copy coverage)**; rendered-state
 appearance is manual evidence.
 
-## 13. Known limitations / not verified
+## 13. Review status (fixed v0.9 base + this PR's round)
 
-- No browser/accessibility automation; rendered focus movement and screen-reader
-  output are manual (§10). **Windows U**.
+The acceptance record must not vouch for an unfixed base. At this revision v1.0
+is rebased onto the **fixed v0.9 head `b64d9cf`**, which carries the fixes for
+PR #7's review round 1 — **B1** client scope switch chain (discovery reads +
+adopt-the-reply), **B2** peer read lens never becomes write authority, **B3**
+session-scope mismatch gates preview/force-commit and is enforced host-side,
+**B4** expired tokens are purged so they cannot block a switch, **B5** the
+Activity metrics cache resets on a scope switch — plus the ACL **S2** no-guess
+fix (only documented `inherit`/`restricted` modes are echoed; a missing mode stays
+unknown; 401 and 5xx are distinguished). Regression evidence:
+`test/v09-client-scope.test.mjs` (B1 end-to-end), `test/v09-component.test.mjs`
+(B1/B3/S4/S11 component regressions), `test/v09-scope-routes.test.mjs`
+("Review round 1 regression tests (B2/B3/B5/S1/S2/S6/S7)") and
+`test/v09-scope-units.test.mjs` (B4 purge). Verdict for the v0.9 guards above:
+**Verified against the fixed base** with those regression tests; the two-server
+scenario itself stays **Fixture-only**.
+
+This PR (v1.0) review round 1 raised **N1** (hidden-tab zero-delay polling
+self-loop), **N2** (mount-time focus steal in the scope chips) and suggestions
+S1–S9. All are addressed in this revision; what changed and the tests that pin it
+are listed in the CHANGELOG "Fixed (PR #8 review round 1)" entry. Two evidence
+gaps are stated rather than papered over: N2's effect wiring is covered by the
+pure `shouldRestoreFocus` helper plus a DOM-free component contract (no jsdom in
+this repository, so the rendered focus move itself is manual), and the hidden
+zero-schedule property is proven with a fake-clock scheduler test plus a
+structural timer-ownership guard (both automated).
+
+## 14. Known limitations / not verified
+
+- No browser/accessibility automation and no jsdom: rendered focus movement,
+  screen-reader output, contrast, zoom and reduced-motion are manual (§10);
+  the automated suite covers ARIA structure, IDREF integrity and the pure
+  keyboard/focus-decision helpers. **Windows U**.
 - Desktop write parity **U**; desktop read-only behaviour **M**.
 - OpenViking 0.5.2 **U**, 0.5.4 **U**; non-`dev` live auth modes **D**.
 - Real-store writes: fixture-only (by design — no live write path in automation).
 - First-paint timing not instrumented; performance budgets are request/cache
-  assertions, not benchmarks.
+  assertions, not benchmarks. Hidden-tab scheduling is fake-clock tested, not
+  browser-throttling tested.
 - `/viking` output English (documented).
 - Transcripts, OVPack backup/import/restore, compile config, rules compile,
   ACL/admin, resource upload/edit: **not shipped** (upstream dependency table in
@@ -182,7 +213,7 @@ appearance is manual evidence.
 - CI URL and browser capture links: filled in by the maintainer at tag time
   (`VERIFICATION.md`).
 
-## 14. Human sign-off block
+## 15. Human sign-off block
 
 Required before the `v1.0.0` tag (all PRs in the stack merged in order
 `#2 → #3 → #4 → #5 → #6 → #7 → #8`, or the documented single-1.0.0 fallback):
@@ -197,6 +228,11 @@ Required before the `v1.0.0` tag (all PRs in the stack merged in order
       unmeasured/externally-unverified and will not be claimed elsewhere.
 - [ ] I have linked the CI run id and the browser evidence set in
       `VERIFICATION.md` (1.0.0 row).
+- [ ] I confirm the fixed v0.9 base (`b64d9cf`) carries PR #7's review fixes with
+      regression tests, and that PR #8's review round-1 items are addressed
+      (§13 / CHANGELOG "Fixed (PR #8 review round 1)").
+- [ ] I confirm this diff adds no dependency, no new write path and touches no live
+      server store (the v1.0 changes are presentation/docs/tests only).
 
 Maintainer: ______________________  Date: ____________  Release tag: `v1.0.0`
 

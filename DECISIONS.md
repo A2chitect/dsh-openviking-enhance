@@ -50,7 +50,7 @@ probes**, never an assertion that every upstream version behaves identically.
 | --- | --- | --- |
 | Plugin config keys, host routes, command verbs, payload fields, slot ids | Own public contract | semver: added = minor, removed/changed = major; v1.x is additive |
 | DSH framework services (`ctx.webServer`, `ctx.commands`, `ctx.connection.fetch`, slots) | Host API, pinned range `engines.dsh` / peer | built and type-checked against one generation; older generations keep reads and disable writes with a stated reason; a DSH major is not accepted by the manifest |
-| OpenViking HTTP API | Tested range (currently 0.5.1.1–0.5.3) + capability probes | degrade to a stated "not available on this server" state; no guessing; the matrix labels untested versions U |
+| OpenViking HTTP API | Tested range (currently 0.5.1.1–0.5.3) + capability probes | degrade to a stated "not available on this server" state; no guessing — an absent ACL mode stays unknown (never inferred as "inherit") and 401/5xx are distinct states, regression-tested; the matrix labels untested versions U |
 | Official memory plugin in-process runtime state | **Not a stable upstream contract** | read defensively; missing/moved fields degrade to unknown/skipped, never crash the host; a major change may reduce the explanation surface |
 | Files read at rest (pending queue, capability memos, commit archives) | Observed on-disk interface fact | read-only; names/ages only; corrupt files are reported in config-source health, never written |
 | Studio iframe headers/URLs | Server-owned UI | framing probe + open-in-new-tab/browser fallback; no proxy |

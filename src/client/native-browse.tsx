@@ -504,9 +504,11 @@ export function NativeBrowse(props: NativeBrowseProps) {
   const renderRoot = (root: BrowseRoot) => {
     if (root.shortcut === true) {
       return (
-        <div key={root.id} className="ove-browse-row ove-browse-shortcut">
+        <div key={root.id} className="ove-browse-row ove-browse-shortcut" role="none">
           <button
             type="button"
+            role="treeitem"
+            aria-level={1}
             className="ove-browse-shortcut-button"
             onClick={() => {
               if (root.id === 'sessions') navigate({ view: 'sessions' })

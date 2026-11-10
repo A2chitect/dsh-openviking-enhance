@@ -69,7 +69,9 @@ export function ConfirmShell(props: {
 }) {
   const cancelRef = useRef<HTMLButtonElement | null>(null)
   const dialogRef = useRef<HTMLDivElement | null>(null)
-  useModalFocus(dialogRef)
+  useModalFocus(dialogRef, {
+    fallbackFocus: () => document.querySelector<HTMLElement>('[data-dsh-plugin="openviking-enhance"]'),
+  })
   useEffect(() => {
     // Cancel-first focus: the safe action is the default one.
     cancelRef.current?.focus()

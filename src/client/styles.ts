@@ -1570,7 +1570,11 @@ button.ove-pill-errored:hover, button.ove-pill-errored[aria-expanded="true"] {
 .ove-overlay a:focus-visible,
 .ove-overlay input:focus-visible,
 .ove-overlay textarea:focus-visible,
-.ove-overlay select:focus-visible {
+.ove-overlay select:focus-visible,
+.ove-scope button:focus-visible,
+.ove-scope a:focus-visible,
+.ove-pill button:focus-visible,
+.ove-pill a:focus-visible {
   outline: 2px solid var(--dsw-alias-state-business-primary, #4c8dff);
   outline-offset: 1px;
 }
