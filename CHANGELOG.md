@@ -102,7 +102,7 @@ rules-list notice.
 #### Verified
 
 - `pnpm test`: typecheck, build, packaging contract, independence gate,
-  **318** unit tests, client smoke and host smoke (live read-only path redacted)
+  **347** unit tests, client smoke and host smoke (live read-only path redacted)
   all green.
 - `pnpm run verify:install`: 27/27 clean-profile steps (install → one config row
   → boot → composed client bundle → host route → reinstall → uninstall), also

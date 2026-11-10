@@ -17,14 +17,30 @@ import { readTarballEntry, readTarballManifest, readTarballVersion } from '../sc
 
 const dir = mkdtempSync(join(tmpdir(), 'ove-tarball-meta-'))
 
-/** One ustar header block. */
-function tarHeader(name, size) {
+/**
+ * One ustar header block.
+ *
+ * `base256` encodes the size with GNU's base-256 extension (high bit of the
+ * first byte is the marker) so the parser's large-entry branch is exercised.
+ */
+function tarHeader(name, size, { base256 = false } = {}) {
   const block = Buffer.alloc(512)
   block.write(name, 0, 100, 'utf8')
   block.write('0000644\0', 100)
   block.write('0000000\0', 108)
   block.write('0000000\0', 116)
-  block.write(`${size.toString(8).padStart(11, '0')}\0`, 124)
+  if (base256) {
+    const field = Buffer.alloc(12)
+    field[0] = 0x80
+    let remaining = size
+    for (let index = 11; index >= 1; index -= 1) {
+      field[index] = remaining % 256
+      remaining = Math.floor(remaining / 256)
+    }
+    field.copy(block, 124)
+  } else {
+    block.write(`${size.toString(8).padStart(11, '0')}\0`, 124)
+  }
   block.write('00000000000\0', 136)
   block.write('        ', 148) // checksum placeholder, spaces while summing
   block.write('0', 156) // regular file
@@ -36,12 +52,14 @@ function tarHeader(name, size) {
   return block
 }
 
-/** A tiny npm-shaped tarball: `name -> utf8 content`. */
+/** A tiny npm-shaped tarball: `name -> utf8 content` (or `{content, base256}`). */
 function makeTarball(entries, { gzip = true } = {}) {
   const chunks = []
-  for (const [name, content] of Object.entries(entries)) {
+  for (const [name, spec] of Object.entries(entries)) {
+    const content = typeof spec === 'string' ? spec : spec.content
+    const base256 = typeof spec === 'object' && spec !== null && spec.base256 === true
     const data = Buffer.from(content, 'utf8')
-    chunks.push(tarHeader(name, data.length), data, Buffer.alloc((512 - (data.length % 512)) % 512))
+    chunks.push(tarHeader(name, data.length, { base256 }), data, Buffer.alloc((512 - (data.length % 512)) % 512))
   }
   chunks.push(Buffer.alloc(1024)) // archive terminator
   const tar = Buffer.concat(chunks)
@@ -63,6 +81,20 @@ test('the packed version is read from package/package.json, not guessed', () => 
   assert.deepEqual(readTarballManifest(tarball), { name: 'dsh-openviking-enhance', version: '1.2.3' })
   assert.equal(readTarballVersion(tarball), '1.2.3')
   assert.equal(readTarballEntry(tarball, 'package/lib/index.js'), 'export {}\n')
+})
+
+test('a GNU base-256 size field is decoded without the marker bit', () => {
+  // If the marker byte were folded into the value the parser would compute a
+  // gigantic size and fail the archive-end check; a correct read proves the math.
+  const tarball = writeTarball('base256.tgz', {
+    'package/package.json': {
+      content: JSON.stringify({ name: 'dsh-openviking-enhance', version: '2.0.0' }),
+      base256: true,
+    },
+    'package/lib/index.js': 'export {}\n',
+  })
+  assert.deepEqual(readTarballManifest(tarball), { name: 'dsh-openviking-enhance', version: '2.0.0' })
+  assert.equal(readTarballVersion(tarball), '2.0.0')
 })
 
 test('an uncompressed tar and a gzip tar produce the same answer', () => {

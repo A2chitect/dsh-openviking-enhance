@@ -8,8 +8,20 @@
 // gate already documents (`tagPlaceholder` contains the letters "agpl").
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { mkdtempSync, rmSync, symlinkSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { checkIndependence, findBannedMarker } from '../scripts/check-independence.mjs'
+
+const gateScript = fileURLToPath(new URL('../scripts/check-independence.mjs', import.meta.url))
+
+/** Run the gate exactly as the CLI does and return the child result. */
+function runGate(argument) {
+  return spawnSync(process.execPath, [argument], { cwd: process.cwd(), encoding: 'utf8', timeout: 60_000 })
+}
 
 test('a copied/mirrored provenance phrase is caught', () => {
   assert.equal(findBannedMarker('// copied from the memory plugin codingQuotas'), 'copied from')
@@ -39,3 +51,30 @@ test('the full gate can run in-process and reports its findings as data', () => 
   const failures = checkIndependence()
   assert.deepEqual(failures, [], `the tree must be independent; failing checks: ${failures.join('; ')}`)
 })
+
+test('invoking the script really runs the gate (and does not fail open)', () => {
+  const direct = runGate(gateScript)
+  assert.equal(direct.status, 0, direct.stderr)
+  assert.match(direct.stdout, /\[independence\]/, 'the gate prints its check lines')
+  assert.match(direct.stdout, /all checks passed/)
+})
+
+test(
+  'invoking the script through a symlink still runs the gate',
+  { skip: process.platform === 'win32' ? 'symlink creation needs privileges on win32' : false },
+  () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ove-gate-link-'))
+    try {
+      const link = join(dir, 'check-independence-link.mjs')
+      symlinkSync(gateScript, link)
+      const viaLink = runGate(link)
+      assert.equal(viaLink.status, 0, viaLink.stderr)
+      // The fail-open regression: resolve(argv[1]) != fileURLToPath(import.meta.url)
+      // through a symlink made the script run nothing and exit 0.
+      assert.match(viaLink.stdout, /\[independence\]/, 'the gate ran through the symlink')
+      assert.match(viaLink.stdout, /all checks passed/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  },
+)

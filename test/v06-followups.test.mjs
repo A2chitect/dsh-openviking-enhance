@@ -650,9 +650,15 @@ test('warning order follows the input order even when completions race', async (
       match: (url) => url.pathname === '/api/v1/fs/ls' && url.searchParams.get('uri')?.startsWith(`${RULES_ROOT}/`),
       handler: (url, _body, context) => {
         const id = url.searchParams.get('uri').split('/').pop()
-        // Alternate failure/success so each slow scenario leaves a notice.
+        // Non-2xx on purpose: a 200 with an error envelope is a *successful*
+        // listing as far as the HTTP client is concerned, which made the old
+        // version of this test assert on two empty warning lists.
         if (id !== 'fast') {
-          context.json({ status: 'error', error: { message: `cannot list ${id}` } }, delays[id])
+          context.finish(
+            500,
+            { status: 'error', error: { code: 'INTERNAL_ERROR', message: `cannot list ${id}` } },
+            delays[id],
+          )
           return
         }
         context.json({ status: 'ok', result: [{ uri: `${RULES_ROOT}/${id}/good.md`, isDir: false }] }, delays[id])
@@ -666,16 +672,61 @@ test('warning order follows the input order even when completions race', async (
   await withStub(routes, async ({ base }) => {
     const api = new OpenVikingApi({ endpoint: base, apiKey: '', account: 'default', user: 'default' })
     const catalog = new CatalogService({ api })
-    const first = await catalog.listRules({ rulesAvailable: true })
-    // The fake returns HTTP 200 with an error envelope for the two listing
-    // failures, which the service treats as a successful (empty) listing; the
-    // determinism assertion is about the probe warning order regardless.
-    const second = await catalog.listRules({ rulesAvailable: true })
+    const list = await catalog.listRules({ rulesAvailable: true })
+    // Input order is slow, fast, medium; completion order is fast (5 ms),
+    // medium (30 ms), slow (60 ms). Warnings must follow the INPUT order.
     assert.deepEqual(
-      first.warnings.map((warning) => warning.code),
-      second.warnings.map((warning) => warning.code),
-      'two runs over the same server produce the same warning order',
+      list.warnings.map((warning) => warning.code),
+      ['ruleListFailed', 'ruleListFailed'],
+      `exactly the two failed listings warn: ${JSON.stringify(list.warnings)}`,
     )
+    assert.deepEqual(
+      list.warnings.map((warning) => warning.params.uri),
+      [`${RULES_ROOT}/slow`, `${RULES_ROOT}/medium`],
+      'warning URIs follow the scenario input order, not completion order',
+    )
+    assert.equal(list.scenarios.length, 1, 'only the readable scenario is listed')
+    assert.equal(list.scenarios[0].name, 'Project license', 'the readable scenario metadata still resolves')
+    assert.equal(list.rules.length, 1, 'the readable scenario still contributes its rule')
+  })
+})
+
+test('a caller after invalidate() gets a fresh probe, not the previous identity in flight', async () => {
+  let ruleProbes = 0
+  const routes = [
+    {
+      match: (url) => url.pathname === '/health',
+      handler: (_url, _body, context) => context.json({ status: 'ok', result: { version: '0.5.3', auth_mode: 'dev' } }),
+    },
+    {
+      match: (url) => url.pathname === '/api/v1/snapshot/log',
+      handler: (_url, _body, context) => context.json({ status: 'ok', result: {} }),
+    },
+    {
+      match: (url) => url.pathname === '/api/v1/tasks',
+      handler: (_url, _body, context) => context.json({ status: 'ok', result: { items: [] } }),
+    },
+    {
+      match: (url, method) => url.pathname === '/api/v1/rules/search' && method === 'POST',
+      handler: (_url, _body, context) => {
+        ruleProbes += 1
+        context.finish(422, { detail: [] }, 60)
+      },
+    },
+  ]
+  await withStub(routes, async ({ base }) => {
+    const api = new OpenVikingApi({ endpoint: base, apiKey: '', account: 'default', user: 'default' })
+    const capability = new CapabilityService({ api, transport: () => false })
+    const previousIdentity = capability.rules()
+    capability.invalidate()
+    // The in-flight handle was dropped, so this call starts a current probe
+    // instead of awaiting the previous identity's answer.
+    const currentIdentity = capability.rules()
+    await Promise.all([previousIdentity, currentIdentity])
+    assert.equal(ruleProbes, 2, 'the new caller triggered a second probe')
+    // The current probe populates the cache; a later read is free again.
+    await capability.rules()
+    assert.equal(ruleProbes, 2, 'the current probe is cached')
   })
 })
 

@@ -85,12 +85,14 @@ const DOCUMENTED_LIMITS = [
   'RULES_CAPABILITY_TTL_MS',
   'WRITE_TOKEN_TTL_MS',
   'WRITE_BODY_MAX_BYTES',
+  'WRITE_CONTENT_MAX_CHARS',
   'RULE_LIST_DEADLINE_MS',
   'RULE_LIST_CONCURRENCY',
   'PREVIEW_BODY_MAX_LINES',
   'PREVIEW_BODY_MAX_LINES_RESPONSE',
   'PREVIEW_MAX_CHARS',
   'AUDIT_MAX_BYTES',
+  'AUDIT_MAX_LIMIT',
   'AUDIT_KEEP_ROTATIONS',
   'ACTIVITY_TASKS_MAX_LIMIT',
 ]
@@ -213,4 +215,19 @@ test('the contract excerpts are tracked and linked from the provenance record (S
     'PROVENANCE states the claim is contract consistency, not runtime equality (S9)',
   )
   assert.ok(pkg.files.includes('CONTRACT.md'), 'the published package carries the contract it cites')
+})
+
+test('the documented-limit list covers every numeric export of limits.ts (S5 residue)', () => {
+  // The README table and DOCUMENTED_LIMITS are hand-ordered for readability, so
+  // this derived check closes the code→doc direction: a new numeric export fails
+  // the suite until it is added to both READMEs and the list above.
+  const numericExports = Object.entries(limits)
+    .filter(([, value]) => typeof value === 'number')
+    .map(([name]) => name)
+    .sort()
+  assert.deepEqual(
+    [...DOCUMENTED_LIMITS].sort(),
+    numericExports,
+    'every numeric export of src/shared/limits.ts must be documented in both READMEs',
+  )
 })

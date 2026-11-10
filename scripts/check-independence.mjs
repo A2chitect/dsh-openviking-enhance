@@ -22,8 +22,8 @@
 //      table is maintained (its row count is printed).
 //
 //   node scripts/check-independence.mjs
-import { readFileSync, readdirSync, existsSync } from 'node:fs'
-import { dirname, join, relative, resolve } from 'node:path'
+import { readFileSync, readdirSync, existsSync, realpathSync } from 'node:fs'
+import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -185,8 +185,23 @@ export function checkIndependence() {
   return failures
 }
 
+/** One path's real location, or null when it does not exist (e.g. a broken symlink). */
+function realpathOrNull(path) {
+  try {
+    return realpathSync(path)
+  } catch {
+    return null
+  }
+}
+
+// Fail closed when invoked as a script: compare the REAL paths, because a
+// symlinked entry point has a different argv[1] spelling than the module URL and
+// a plain resolve() comparison would silently run nothing and exit 0. (Tests
+// spawn this script through a symlink to keep that property honest.)
 const invokedAsScript =
-  process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+  process.argv[1] !== undefined &&
+  realpathOrNull(process.argv[1]) !== null &&
+  realpathOrNull(process.argv[1]) === realpathOrNull(fileURLToPath(import.meta.url))
 if (invokedAsScript) {
   const failures = checkIndependence()
   if (failures.length > 0) process.exitCode = 1

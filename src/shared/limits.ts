@@ -8,7 +8,9 @@
  *     contract this release documents. `test/v06-docs.test.mjs` parses the fenced
  *     `<!-- contract:limits -->` block out of both READMEs and asserts every
  *     value here appears there, so a code change cannot silently leave the
- *     documented contract stale (and vice versa).
+ *     documented contract stale (and vice versa). The list in that test is also
+ *     checked against every numeric export of this module, so a new limit fails
+ *     the suite until it is documented.
  *
  * The values that both halves of the plugin share today live in
  * `protocol.ts` (they are part of the wire payload contract); they are

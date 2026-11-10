@@ -62,6 +62,26 @@ export const PLUGIN_DSH_RANGE =
 /** The OpenViking versions this release's contract tests cover. */
 export const TESTED_OV_RANGE = 'OpenViking 0.5.1.1 – 0.5.3'
 
+/** Parse a dotted release string into a four-number tuple (missing parts = 0). */
+function releaseTuple(text: string): number[] {
+  const parts = text.split('.').map((part) => Number(part))
+  while (parts.length < 4) parts.push(0)
+  return parts.slice(0, 4)
+}
+
+/**
+ * The version bounds the Doctor classifies against, derived once from
+ * {@link TESTED_OV_RANGE} so the display string and the classifier cannot drift
+ * apart. `floor` is inclusive; `ceiling` is exclusive (the next patch after the
+ * tested head, e.g. `0.5.3` -> `0.5.4.0`).
+ */
+export const TESTED_OV_BOUNDS: { floor: number[]; ceiling: number[] } = (() => {
+  const match = /OpenViking\s+(\d+(?:\.\d+)*)\s+[–-]\s+(\d+(?:\.\d+)*)/.exec(TESTED_OV_RANGE)
+  const floor = releaseTuple(match?.[1] ?? '0.5.1.1')
+  const head = releaseTuple(match?.[2] ?? '0.5.3')
+  return { floor, ceiling: [head[0] ?? 0, head[1] ?? 0, (head[2] ?? 0) + 1, 0] }
+})()
+
 export interface DoctorOptions {
   api: OpenVikingApi
   commit: CommitService
@@ -579,7 +599,8 @@ export function classifyOpenVikingVersion(version: string | null): {
     }
     return 0
   }
-  const inside = compare(tuple, [0, 5, 1, 1]) >= 0 && compare(tuple, [0, 5, 4, 0]) < 0
+  const inside =
+    compare(tuple, TESTED_OV_BOUNDS.floor) >= 0 && compare(tuple, TESTED_OV_BOUNDS.ceiling) < 0
   return { state: inside ? 'ok' : 'warn', detail: version }
 }
 

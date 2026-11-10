@@ -102,8 +102,12 @@ export class CapabilityService {
   invalidate(): void {
     this.generation += 1
     this.cached = null
+    // Drop in-flight handles too: a caller that arrives after the switch must
+    // start a probe for the new identity, not await the previous one's answer.
+    this.inflight = null
     this.rulesCached = null
     this.rulesObservedAt = 0
+    this.rulesInflight = null
   }
 
   /**
@@ -120,7 +124,7 @@ export class CapabilityService {
     }
     if (this.rulesInflight !== null) return this.rulesInflight
     const generation = this.generation
-    this.rulesInflight = this.options.api
+    const probe = this.options.api
       .probeRuleSearchRoute()
       .then((reply) => {
         const capability = classifyRuleProbe(reply)
@@ -134,9 +138,12 @@ export class CapabilityService {
         return capability
       })
       .finally(() => {
-        this.rulesInflight = null
+        // Never clear a newer probe's handle: after invalidate() + a new call,
+        // this old promise finishing must not make the next caller re-probe.
+        if (this.rulesInflight === probe) this.rulesInflight = null
       })
-    return this.rulesInflight
+    this.rulesInflight = probe
+    return probe
   }
 
   /**
@@ -158,10 +165,11 @@ export class CapabilityService {
     }
     if (this.inflight !== null) return this.inflight
     const generation = this.generation
-    this.inflight = this.probeUncached(generation).finally(() => {
-      this.inflight = null
+    const probe = this.probeUncached(generation).finally(() => {
+      if (this.inflight === probe) this.inflight = null
     })
-    return this.inflight
+    this.inflight = probe
+    return probe
   }
 
   private async probeUncached(generation: number): Promise<CapabilitySnapshot> {

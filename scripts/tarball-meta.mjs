@@ -22,13 +22,20 @@ function headerField(block, start, length) {
   return block.subarray(start, start + length).toString('utf8').replace(/\0.*$/, '').trim()
 }
 
-/** Parse an octal (or base-256) size field. */
+/**
+ * Parse an octal (or GNU base-256) size field.
+ *
+ * Base-256 is the GNU extension for entries ≥ 8 GiB: the high bit of the first
+ * byte is the *marker*, not part of the number, and the remaining 95 bits are
+ * the big-endian byte length. Including the marker byte in the value would
+ * inflate the size by 2^95 (npm tarballs never reach that branch, but the
+ * arithmetic should still be right if one ever does).
+ */
 function headerSize(block) {
   const raw = block.subarray(124, 136)
-  // GNU base-256 encoding for very large entries: high bit of the first byte set.
   if ((raw[0] & 0x80) !== 0) {
-    let value = 0
-    for (const byte of raw) value = value * 256 + byte
+    let value = raw[0] & 0x7f
+    for (const byte of raw.subarray(1)) value = value * 256 + byte
     return value
   }
   const text = headerField(block, 124, 11)

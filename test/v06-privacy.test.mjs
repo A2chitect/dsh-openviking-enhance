@@ -14,7 +14,13 @@ import { join } from 'node:path'
 
 import { Config } from '../src/host/index.ts'
 import { OpenVikingApi } from '../src/host/openviking-api.ts'
-import { DoctorService, classifyOpenVikingVersion } from '../src/host/doctor-service.ts'
+import {
+  DoctorService,
+  TESTED_OV_BOUNDS,
+  TESTED_OV_RANGE,
+  classifyOpenVikingVersion,
+} from '../src/host/doctor-service.ts'
+import { DICTS } from '../src/client/locale.ts'
 import { ProfileStore } from '../src/host/profiles.ts'
 import { localStateHealth } from '../src/host/local-state.ts'
 import { configSourceHealth, readJsonSource, resolveConnectionWithOrigins } from '../src/host/config.ts'
@@ -302,6 +308,44 @@ test('the server version is classified against the contract range, permissively'
   // Unparseable/absent stays visible as unknown; nothing is hidden.
   assert.deepEqual(classifyOpenVikingVersion(null), { state: 'unknown', detail: null })
   assert.deepEqual(classifyOpenVikingVersion('unknown-build'), { state: 'unknown', detail: 'unknown-build' })
+})
+
+test('every Doctor check id has a label in both languages', async () => {
+  // The renderer resolves `doctor.check.<id>` through the dictionary; a missing
+  // label renders the raw key in the UI (the round-2 review caught exactly that),
+  // and the locale test's static scan cannot see template-string keys.
+  const report = await doctorReport()
+  const ids = report.checks.map((check) => check.id)
+  assert.ok(ids.length >= 16, `the report produces the full check list, saw ${ids.length}`)
+  for (const id of ids) {
+    for (const [language, dict] of Object.entries(DICTS)) {
+      assert.ok(`doctor.check.${id}` in dict, `${language} dictionary is missing doctor.check.${id}`)
+    }
+  }
+  // The version check's hint is the other half of its bilingual copy.
+  for (const dict of Object.values(DICTS)) {
+    assert.ok('doctor.hint.openvikingVersion' in dict)
+  }
+})
+
+test('the tested OpenViking range, classifier bounds and hint copy agree', () => {
+  // Three records can drift: the display string, the classifier tuples, and the
+  // bilingual hint. The classifier is derived from TESTED_OV_RANGE now; this
+  // asserts all three name the same range.
+  const match = /OpenViking\s+(\d+(?:\.\d+)*)\s+[–-]\s+(\d+(?:\.\d+)*)/.exec(TESTED_OV_RANGE)
+  assert.notEqual(match, null, 'TESTED_OV_RANGE is a parsable range')
+  const [, floorText, headText] = match
+  assert.deepEqual(TESTED_OV_BOUNDS.floor, [...floorText.split('.').map(Number), 0].slice(0, 4))
+  assert.equal(classifyOpenVikingVersion(floorText).state, 'ok', 'the floor is inside the range')
+  assert.equal(classifyOpenVikingVersion(headText).state, 'ok', 'the head is inside the range')
+  for (const [language, dict] of Object.entries(DICTS)) {
+    const hint = dict['doctor.hint.openvikingVersion'] ?? ''
+    assert.ok(hint.includes(floorText), `${language} hint names the floor ${floorText}`)
+    assert.ok(hint.includes(headText), `${language} hint names the head ${headText}`)
+  }
+  // One step outside on either side warns; the classifier and the range agree.
+  assert.equal(classifyOpenVikingVersion('0.5.1.0').state, 'warn')
+  assert.equal(classifyOpenVikingVersion('0.5.4').state, 'warn')
 })
 
 test('the Doctor reports build identity, including a non-release warning', async () => {
