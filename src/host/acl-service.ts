@@ -65,6 +65,35 @@ export function aclStateDetail(state: AclViewState, serverMessage: string | null
   }
 }
 
+/**
+ * v0.9 review S2: the failure detail distinguishes *why* the four-state
+ * classification landed where it did. An invalid key (401) is not "this build
+ * has no ACL route", and a 5xx/network failure is not "unsupported" either — the
+ * state stays one of the four (the UI contract) but the detail is honest.
+ */
+export function aclFailureDetail(status: number, serverMessage: string | null): string {
+  if (status === 401) return 'acl-auth-required'
+  if (status === 403) return 'acl-manage-required'
+  if (status === 400) return 'acl-resources-only'
+  if (status === 0) return 'acl-unreachable'
+  if (status === 404) return 'acl-unsupported'
+  if (status >= 500) return 'acl-server-error'
+  return serverMessage === null ? 'acl-unsupported' : 'acl-request-failed'
+}
+
+/**
+ * Classify one ACL failure into the four-state UI contract.
+ *
+ * 401/403 are both permission-shaped (`denied-no-manage`), 400 is the
+ * resources-only restriction, and anything else (404, 5xx, network) is
+ * `unsupported` — never a guessed "ACL disabled".
+ */
+export function classifyAclFailure(status: number): AclViewState {
+  if (status === 400) return 'only-resources'
+  if (status === 401 || status === 403) return 'denied-no-manage'
+  return 'unsupported'
+}
+
 /** Bound and sanitize one table from the server answer. */
 function normalizeEntries(raw: unknown): AclEntry[] {
   if (!Array.isArray(raw)) return []
@@ -143,20 +172,12 @@ export class AclService {
       return cached.payload
     }
     const answer = await this.options.api.getAcl(normalized)
-    let state: AclViewState
-    if (answer.ok) state = 'available'
-    else if (answer.status === 403) state = 'denied-no-manage'
-    else if (answer.status === 400) state = 'only-resources'
-    else state = 'unsupported'
+    const state: AclViewState = answer.ok ? 'available' : classifyAclFailure(answer.status)
     const report = answer.ok ? answer.result : null
+    // Never guess the mode: only the server's own two documented values are
+    // reported, anything else (missing/unknown) stays null ("unknown").
     const aclMode =
-      report?.acl_mode === 'inherit' || report?.acl_mode === 'restricted'
-        ? report.acl_mode
-        : report?.acl_mode === undefined
-          ? answer.ok
-            ? 'inherit'
-            : null
-          : null
+      report?.acl_mode === 'inherit' || report?.acl_mode === 'restricted' ? report.acl_mode : null
     const payload: AclPayload = {
       ...base,
       state,
@@ -164,7 +185,7 @@ export class AclService {
       direct: state === 'available' ? normalizeEntries(report?.direct_entries) : [],
       inherited: state === 'available' ? normalizeEntries(report?.inherited_entries) : [],
       effective: state === 'available' ? normalizeEntries(report?.effective_entries) : [],
-      detail: aclStateDetail(state, answer.ok ? null : answer.error),
+      detail: answer.ok ? null : aclFailureDetail(answer.status, answer.error),
     }
     this.cache.delete(key)
     this.cache.set(key, { at: this.now(), payload })

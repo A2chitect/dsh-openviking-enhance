@@ -149,7 +149,7 @@ export function NativeBrowse(props: NativeBrowseProps) {
   const [previewTab, setPreviewTab] = useState<'preview' | 'access'>('preview')
   useEffect(() => {
     setPreviewTab('preview')
-  }, [selected])
+  }, [selected, props.refreshKey])
   const [subtree, setSubtree] = useState<SubtreeState | null>(null)
   const [warnings, setWarnings] = useState<PluginNotice[]>([])
   const [wide, setWide] = useState(true)

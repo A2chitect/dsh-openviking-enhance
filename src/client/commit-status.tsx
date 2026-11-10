@@ -80,6 +80,18 @@ interface FailureView {
   cancelled: boolean
 }
 
+/**
+ * v0.9 review B3: the force-commit gate. Same three facts as the preview actions:
+ * writes on, transport present, and this session not observed under another scope.
+ */
+export function forceCommitEnabled(input: {
+  writesEnabled: boolean
+  transport: boolean
+  scopeMismatch: boolean
+}): boolean {
+  return input.writesEnabled && input.transport && !input.scopeMismatch
+}
+
 export function CommitStatusPill({ sessionId }: CommitStatusProps) {
   const [status, setStatus] = useState<CommitStatus | null>(null)
   const [tasks, setTasks] = useState<CommitTask[]>([])
@@ -96,6 +108,13 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
   // captured under); the mismatch banner explains how to switch back.
   const sessionScope = useSessionScope(sessionId ?? '')
   const scopeMismatch = sessionScope.payload?.mismatch === true
+  // v0.9 review B3: a switch must force-refetch the session-scope facts; the
+  // previous answer is scope-dependent state.
+  const scopeKey = scope.scope?.identity.fingerprint ?? ''
+  useEffect(() => {
+    if (!sessionId) return
+    void ensureSessionScope(sessionId, true)
+  }, [sessionId, scopeKey])
   const [selected, setSelected] = useState<string | null>(null)
   /** How many commit records to fetch counts for; the popover widens this on demand. */
   const [summaryLimit, setSummaryLimit] = useState(TIMELINE_DEFAULT)
@@ -107,7 +126,6 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
 
   useEffect(() => {
     if (!sessionId) return
-    void ensureSessionScope(sessionId)
     const id = sessionId
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -322,7 +340,11 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
                 {t('native.openSessionInCockpit')}
               </button>
             ) : null}
-            {scope.scope !== null && scope.scope.writes.enabled && scope.scope.writes.transport && !scopeMismatch ? (
+            {forceCommitEnabled({
+              writesEnabled: scope.scope !== null && scope.scope.writes.enabled,
+              transport: scope.scope !== null && scope.scope.writes.transport,
+              scopeMismatch,
+            }) ? (
               <button
                 type="button"
                 className="ove-diff-action"

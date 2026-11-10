@@ -36,7 +36,9 @@ import {
   ensureScopes,
   isScopeBannerEnabled,
   isScopeSwitcherEnabled,
+  refreshScope,
   refreshScopes,
+  scopeSwitchBlockedMessage,
   scopeSwitchBlockedReason,
   switchIdentity,
   switchProfile,
@@ -101,6 +103,8 @@ function IdentityEditor({ scopes, onClose }: { scopes: ScopesPayload; onClose: (
   const [peer, setPeer] = useState(scopes.overrides.peer ?? '')
   const [note, setNote] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  // Review S12: no identity apply while another switch is in flight.
+  const switching = scope.switching
   useEffect(() => {
     setAccount(fieldValue(scopes.overrides.account, active.account))
     setUser(fieldValue(scopes.overrides.user, active.user))
@@ -108,6 +112,10 @@ function IdentityEditor({ scopes, onClose }: { scopes: ScopesPayload; onClose: (
   }, [scopes, active.account, active.user])
   const identityEnabled = allowed.account && allowed.user
   const apply = useCallback(async () => {
+    if (switching) {
+      setNote(t('scope.switchInFlight'))
+      return
+    }
     setNote(null)
     const request: ScopeIdentityRequest = {}
     if (identityEnabled) {
@@ -124,15 +132,19 @@ function IdentityEditor({ scopes, onClose }: { scopes: ScopesPayload; onClose: (
     setBusy(false)
     if (!result.ok) setNote(result.error)
     else onClose()
-  }, [account, user, peer, identityEnabled, allowed.peer, onClose])
+  }, [account, user, peer, identityEnabled, allowed.peer, onClose, switching])
   const clear = useCallback(async () => {
+    if (switching) {
+      setNote(t('scope.switchInFlight'))
+      return
+    }
     setNote(null)
     setBusy(true)
     const result = await switchIdentity({ clear: ['account', 'user', 'peer'] })
     setBusy(false)
     if (!result.ok) setNote(result.error)
     else onClose()
-  }, [onClose])
+  }, [onClose, switching])
   const disabledReason = allowed.reason === null ? null : t(`scope.identity.reason.${allowed.reason}`)
   return (
     <div className="ove-scope-identity" role="group" aria-label={t('scope.identity.title')}>
@@ -168,10 +180,10 @@ function IdentityEditor({ scopes, onClose }: { scopes: ScopesPayload; onClose: (
       {disabledReason !== null && <p className="ove-scope-hint">{disabledReason}</p>}
       <p className="ove-scope-hint">{t('scope.identity.peerHint')}</p>
       <div className="ove-scope-actions">
-        <button type="button" className="ove-preview-button ove-scope-primary" disabled={busy} onClick={() => void apply()}>
+        <button type="button" className="ove-preview-button ove-scope-primary" disabled={busy || switching} onClick={() => void apply()}>
           {busy ? t('scope.identity.applying') : t('scope.identity.apply')}
         </button>
-        <button type="button" className="ove-preview-button" disabled={busy} onClick={() => void clear()}>
+        <button type="button" className="ove-preview-button" disabled={busy || switching} onClick={() => void clear()}>
           {t('scope.identity.clear')}
         </button>
       </div>
@@ -219,7 +231,12 @@ function ScopeRow({ row, onSwitch, busy }: { row: ScopeListEntry; onSwitch: (row
         <span className="ove-scope-row-caps">{capabilitySummary}</span>
       </span>
       <span className="ove-scope-row-side">
-        {row.hasApiKey && <span className="ove-scope-key-pill">{t('scope.keyBoundPill')}</span>}
+        {row.authMode === 'api_key' && <span className="ove-scope-key-pill">{t('scope.keyBoundPill')}</span>}
+        {row.hasApiKey && row.authMode !== 'api_key' && (
+          <span className="ove-scope-hint" title={t('scope.hasKeyNotBound')}>
+            🔑
+          </span>
+        )}
         {glyph !== null && (
           <span
             className="ove-scope-warn-glyph"
@@ -249,13 +266,22 @@ export function ScopeMenu({ onClose }: ScopeMenuProps) {
   const state = useScope()
   const [busy, setBusy] = useState(false)
   const [testNote, setTestNote] = useState<string | null>(null)
+  // Review (smaller items): the blocked reason is recomputed on render, and the
+  // cooldown clears itself with a short timer instead of needing a new event.
+  const [, setTick] = useState(0)
   const scopes = state.scopes
   const blocked = scopeSwitchBlockedReason()
   useEffect(() => {
     void ensureScopes()
   }, [])
+  useEffect(() => {
+    if (blocked !== 'scope.switchCooldown') return
+    const timer = setTimeout(() => setTick((value) => value + 1), 1_100)
+    return () => clearTimeout(timer)
+  }, [blocked])
   const activeScope = state.scope
-  const profileAllowsSwitch = !isScopeSwitcherEnabled() ? false : true
+  // Review S12: no switch control may act while any switch is in flight.
+  const profileAllowsSwitch = isScopeSwitcherEnabled() && !state.switching
   const switchRow = useCallback(
     async (row: ScopeListEntry) => {
       if (row.isActive || busy) return
@@ -333,7 +359,7 @@ export function ScopeMenu({ onClose }: ScopeMenuProps) {
       {official !== null && !official.known && (
         <p className="ove-scope-hint">{t('scope.officialUnknown')}</p>
       )}
-      {blocked !== null && <p className="ove-scope-warn">{t('scope.switchBlockedOps')}</p>}
+      {blocked !== null && <p className="ove-scope-warn">{scopeSwitchBlockedMessage(blocked)}</p>}
       {scopes === null ? (
         <p className="ove-scope-hint">{state.scopesError ?? t('scope.menu.loading')}</p>
       ) : (
@@ -383,21 +409,48 @@ export function ScopeBanner(props: { className?: string; showMenu?: boolean }) {
   const [open, setOpen] = useState(false)
   useEffect(() => {
     void ensureScope()
-    void ensureScopes()
+    // Review S9: do not probe every configured server just because a banner
+    // mounted; the list is only fetched for the switcher.
+    if (isScopeSwitcherEnabled()) void ensureScopes()
   }, [])
   if (!isScopeBannerEnabled()) return null
+  const className = `ove-scope ove-scope-banner${props.className === undefined ? '' : ` ${props.className}`}`
+  // Review B1: never keep rendering the previous label after a failed refresh —
+  // the host may already be on another scope.
+  if (state.status === 'error') {
+    return (
+      <div className={className} role="status">
+        <span className="ove-scope-warn-glyph" aria-hidden="true">⚠</span>
+        <span className="ove-scope-warn">{t('scope.unavailableReload')}</span>
+        <button
+          type="button"
+          className="ove-scope-menu-button"
+          onClick={() => {
+            void refreshScope()
+            if (isScopeSwitcherEnabled()) void refreshScopes()
+          }}
+        >
+          {t('scope.reload')}
+        </button>
+      </div>
+    )
+  }
   if (state.scope === null) {
     return (
-      <span className={`ove-scope ove-scope-banner ove-scope-loading${props.className === undefined ? '' : ` ${props.className}`}`}>
+      <div className={`${className} ove-scope-loading`} role="status">
         {t('scope.loading')}
-      </span>
+      </div>
     )
   }
   const scope = state.scope
   const label = scope.identity.profileLabel ?? t('scope.legacyMode')
-  const warning = scopeWarning(scope)
+  // Review S11: surface the /scope warnings themselves, not only endpoint/auth
+  // glyphs — a missing profile, ignored overrides or a corrupt state file must be
+  // visible on the banner without opening the menu.
+  const scopeNotices = scopeWarnings(scope)
+  const warning = scopeWarning(scope) ?? scopeNotices[0] ?? null
   return (
-    <span className={`ove-scope ove-scope-banner${props.className === undefined ? '' : ` ${props.className}`}`}>
+    <div className={className} role="status">
       <span className="ove-scope-dot" aria-hidden="true" />
       <span className="ove-scope-label">{label}</span>
       <span className="ove-empty">{endpointHost(scope.identity.endpoint)}</span>
@@ -406,17 +459,22 @@ export function ScopeBanner(props: { className?: string; showMenu?: boolean }) {
         {scope.identity.peer === null ? '' : ` · ${scope.identity.peer}`}
       </span>
       {warning !== null && (
-        <span className="ove-scope-warn-glyph" title={warning} aria-label={warning}>
+        <span
+          className="ove-scope-warn-glyph"
+          title={[scopeWarning(scope), ...scopeNotices].filter((text): text is string => text !== null).join(' · ')}
+          aria-label={warning}
+        >
           ⚠
         </span>
       )}
+      {scopeNotices.length > 0 && <span className="ove-scope-warn ove-scope-banner-warn">{scopeNotices[0]}</span>}
       {props.showMenu !== false && isScopeSwitcherEnabled() && (
         <button type="button" className="ove-scope-menu-button" onClick={() => setOpen((current) => !current)}>
           {t('scope.menu.open')}
         </button>
       )}
       {open && <ScopeMenu onClose={() => setOpen(false)} />}
-    </span>
+    </div>
   )
 }
 
@@ -448,6 +506,14 @@ export function scopeWarning(scope: {
   if (scope.identity.authMode === 'api_key') return t('scope.warnKeyBound')
   if (scope.writes.reason === 'profile-unhealthy') return t('scope.warnUnhealthy')
   return null
+}
+
+/** Localized text for the `/scope` payload's own warning codes (review S11). */
+export function scopeWarnings(scope: {
+  warnings?: Array<{ code: string; params?: Record<string, string | number> }>
+}): string[] {
+  const notices = scope.warnings ?? []
+  return notices.map((notice) => noticeKeyText(notice.code, notice.params)).filter((text) => text.length > 0)
 }
 
 function LegacyScopeDetail({
@@ -527,7 +593,7 @@ export function ScopeChip({ compact = false }: ScopeChipProps) {
   const label = scope.identity.profileLabel ?? t('scope.legacyMode')
   const peer = scope.identity.peer === null ? '' : ` · ${scope.identity.peer}`
   return (
-    <span className={`ove-scope${compact ? ' ove-scope-compact' : ''}`}>
+    <div className={`ove-scope${compact ? ' ove-scope-compact' : ''}`}>
       <button
         type="button"
         className="ove-scope-chip"
@@ -553,6 +619,6 @@ export function ScopeChip({ compact = false }: ScopeChipProps) {
         ) : (
           <LegacyScopeDetail onClose={() => setOpen(false)} />
         ))}
-    </span>
+    </div>
   )
 }

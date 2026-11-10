@@ -359,14 +359,31 @@ dsh plugin --profile web remove dsh-openviking-enhance
 隔离契约：每个插件请求携带 `x-dsh-openviking-scope: <作用域指纹>`（由配置档 + 端点 +
 探测到的认证模式 + 生效的账户/用户/peer 组成的 `sha256:` 身份指纹，无密钥）；宿主
 在开始任何工作前比对该值，不一致即 `scope-changed`。每个响应都标注当前作用域指纹。
-切换会清空缓存（逐作用域缓存策略的已批准简化兜底；文档上限是最多保留两个作用域集）、
+切换会清空缓存（逐作用域策略的已批准简化兜底：**切换即清空，不保留任何作用域缓存集**）、
 能力矩阵逐作用域、ACL 报表逐作用域缓存并在切换时丢弃；界面不提供「搜索所有作用域」。
+`/scopes` 的健康探测以有界并发（4）加一个总截止时间运行，不会因一批不可达配置档而
+卡住菜单。损坏的 `scope-state.json` 在启动时**保持原样**（回退到 profile 头部/旧连接
+链），并通过作用域警告与 Doctor 的配置源健康上报——不会被静默覆盖。通过
+`scope-state.json` 激活的配置档同样不能删除（检查的是解析后的当前作用域，而不是运行时
+表单值），每次删除配置档都会重新解析过期状态指针。
+
+发现（discovery）路由：`/scope` 与 `/scopes` 允许请求携带的仍是旧作用域指纹（宿主
+可能已经切换），并以当前作用域作答（带标注）。客户端因此能完成整个切换链；其它读取
+对过期指纹一律 `scope-changed`。改变作用域的变更（身份覆写、配置档 CRUD）直接返回新的
+作用域载荷，由客户端采纳。
+
+会话作用域写边界：某个 DSH 会话在另一身份下被观察到时会显示不一致横幅；宿主**同时**
+对 `/write/prepare`（以及 execute/undo）返回稳定的 `session-scope-mismatch`，因此即使
+界面残留旧按钮也不会发生跨作用域写入。横幅显示记录的身份；同配置档的「切回」一次恢复
+完整的账户/用户/peer 覆写。
 
 身份切换规则（F12 补全）：`dev`/`trusted` 配置档允许账户/用户请求头覆写（trusted 需要
 两者同时提供；**插件从不设置 role 请求头**）；`api_key` 由密钥绑定身份，账户/用户字段
-禁用并给出原因，peer 仍是读取视角；`oidc`/`ldap` 不支持；不可达服务器禁用切换。Peer
-**只读**：仅用于无会话读取（浏览/预览/ACL）的 `X-OpenViking-Actor-Peer`；写入与会话
-级调用仍使用官方记忆插件记录的 actor peer。
+禁用并给出原因，peer 仍是读取视角；`oidc`/`ldap` 不支持；不可达服务器禁用切换；此外
+切换还要求**已知健康**的探测结果（首次探测前覆写字段以 `scope-health-unprobed` 原因
+禁用，但已存储的覆写仍可解析）。Peer **只读**：仅用于无会话读取（浏览/预览/ACL/会话
+浏览器）的 `X-OpenViking-Actor-Peer`；写入准备阶段的读取与所有变更都不发送它（只有
+存在时使用官方插件记录的会话 actor peer）——这正是 v0.5 README 承诺的划分。
 
 ### 时限与上限
 
@@ -451,8 +468,9 @@ dsh plugin --profile web remove dsh-openviking-enhance
 | EVIDENCE_LOOKUP_DEADLINE_MS | 15000 |
 | TASK_EVIDENCE_CORRELATION_MAX | 20 |
 | SCOPE_STATE_VERSION | 1 |
-| SCOPE_MAX_RETAINED_CACHES | 2 |
 | SCOPE_PROBE_TTL_MS | 10000 |
+| SCOPE_PROBES_CONCURRENCY | 4 |
+| SCOPE_PROBES_DEADLINE_MS | 8000 |
 | SCOPE_SWITCH_COOLDOWN_MS | 1000 |
 | SESSION_SCOPE_MAP_MAX | 64 |
 | SCOPE_KEY_MAX_CHARS | 200 |
@@ -479,9 +497,9 @@ dsh plugin --profile web remove dsh-openviking-enhance
 | 操作动作（v0.8） | `enableOps` **且** 认证传输 **且** 健康探测身份 **且** 运行时能力/角色探测 **且** 共享单一变更闸门 | DSH 0.2.2-rc.1+；由能力探测决定（快照路由、compile `configured && can_create`、pack 导出探针） | 只读仍可用；所有动作以 `ops-disabled`/`compile-not-configured`/`pack-export-unavailable`/… fail closed；不存在重试 |
 | 任务证据 / 可观测性 | 按请求的只读、按需 | OpenViking 0.5.1.1+（仅当 `/console/audit` 可达时读取服务端请求日志） | 证据会警告 `server-request-log-unavailable`；每张可观测性卡片独立降级；从不探测 `/metrics` |
 | Activity 任务/指标 | `GET /tasks` 与逐卡片探测 | 路由存在 | 逐卡片「不可用」；`/metrics` 从不探测 |
-| ACL / 访问标签页（v0.9） | 对用户选中的 `viking://resources/**` 条目一次 `GET /acl` | 服务端路由存在**且**该身份有 `manage` | 四种明确状态；403 报为 `denied-no-manage` 并同时说明两种可能（「ACL 未启用」与「缺少 manage」），插件从不擅自判断；不存在任何 ACL 编辑 |
+| ACL / 访问标签页（v0.9） | 对用户选中的 `viking://resources/**` 条目一次 `GET /acl`（跟随 peer 读取选择器） | 服务端路由存在**且**该身份有 `manage` | 四种明确状态；401/403 都归为 `denied-no-manage`（认证/权限细节分开），400 为 `only-resources`，404/5xx/网络为 `unsupported` 且各有细节——403 从不声称「ACL 未启用」或「缺少 manage」；缺少 `acl_mode` 时按未知上报（绝不猜 `inherit`）；不存在任何 ACL 编辑 |
 | 作用域切换器 / 作用域列表（v0.9） | 对每个已配置配置档的便宜 `/health` + 当前作用域能力探测 | 总是可用 | 不可达行显示健康错误；旧连接作为作用域列出；缺失配置档以警告行显示，绝不自动删除 |
-| 身份覆写 / 会话作用域保护（v0.9） | 探测到的认证模式 + 健康 + 共享变更闸门 | `dev`/`trusted` 允许账户/用户；多数模式允许 peer 读取 | 字段禁用并说明原因；会话上次在其它作用域下使用时显示不一致横幅，并禁用其召回/写入动作直到切回 |
+| 身份覆写 / 会话作用域保护（v0.9） | 探测到的认证模式 + **已知健康**探测 + 共享变更闸门；写入另看会话→作用域记录 | `dev`/`trusted` 允许账户/用户；多数模式允许 peer 读取 | 字段禁用并说明原因；会话上次在另一身份下使用时显示不一致横幅，召回/写入动作禁用，宿主对 prepare/execute/undo 返回 `session-scope-mismatch` 直到切回 |
 | Studio | `endpoint + studioPath` 的 iframe | 服务端提供 `/studio/` | 新标签页/浏览器兜底；X-Frame-Options/CSP 拒绝会如实显示 |
 
 ### 不适用（由官方记忆插件承担）
@@ -521,6 +539,9 @@ dsh plugin --profile web remove dsh-openviking-enhance
   Doctor/diagnostics。
 - **日志里没有对话或记忆正文**：本地审计文件只记录动作/身份/URI/结果，从不记录正文。
   冒烟脚本默认脱敏（`SMOKE_VERBOSE=1` 是仅供本机调试的显式开关）。
+- **二进制/下载例外（明确写出）。** 一次性 OVPack 下载与任务证据附件是原始流：响应头
+  标注当前作用域，但无法在流中途返回 JSON `scope-changed`。Pack 令牌绑定身份指纹且
+  broker 在切换时关闭，因此过期下载不会被提供；证据附件在正文里带 identity 块。
 - **插件持久化的内容**：`profiles.json`（0600）、`audit.jsonl`（0600，1 MiB 轮转、
   保留 2 份）、`onboarding.json`（0600，原子写）、`scope-state.json`（0600，原子写）与
   `session-scopes.json`（0600，原子写，最多 64 条 LRU），都在

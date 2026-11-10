@@ -1344,6 +1344,25 @@ const zh: Record<string, string> = {
   'notice.overridesIgnored': '身份覆写未生效（{reason}）。',
   'notice.scopeStateProfileMissing': 'scope-state.json 指向的配置档 {id} 已不存在，已回退。',
   'notice.profileHeaderMissing': 'profiles.json 头部指向的配置档 {id} 已不存在，已回退。',
+  // ---- v0.9 review round 1：切换链 / 会话写入边界 / ACL ---------------------
+  'scope.switchInFlight': '正在切换作用域，请稍候。',
+  'scope.unavailableReload': '作用域不可用：可能与宿主已不一致。',
+  'scope.reload': '重新读取',
+  'scope.hasKeyNotBound': '已保存密钥，但身份不由该密钥绑定（dev/trusted 可切换身份）。',
+  'scope.identity.reason.scope-health-unprobed': '尚未获得健康的服务端探测结果：先刷新作用域列表再切换身份。',
+  'scope.session.recordedIdentity': '记录的身份：{identity}',
+  'scope.session.recordedIdentityHint': '这是上次观察到的身份；同配置档时"切回"会恢复完整身份覆写，跨配置档需先切档再手动应用。',
+  'scope.session.switchBackHint': '切回该配置档会先重置它的身份覆写；横幅会继续显示需要手动恢复的账户/用户/peer。',
+  'scope.notice.scopeStateCorrupt': 'scope-state.json 已损坏：本次回退到 profile 头部/旧连接，未自动覆盖该文件（Doctor 会保留证据）。',
+  'scope.notice.scopeStatePersistFailed': '作用域状态写入失败：本次切换对当前进程有效，但重启后可能回退。',
+  'acl.detail.acl-auth-required': '认证失败（401）：密钥/身份无效，不能据此判断该服务端是否支持 ACL。',
+  'acl.detail.acl-manage-required': '需要 manage 权限（403）：也可能 ACL 未启用；服务端无法区分，这里不做猜测。',
+  'acl.detail.acl-resources-only': '仅支持 viking://resources/** 路径（400）。',
+  'acl.detail.acl-unreachable': '服务端不可达：无法读取 ACL。',
+  'acl.detail.acl-unsupported': '此服务端构建没有 ACL 路由（404）。',
+  'acl.detail.acl-server-error': '服务端错误（5xx）：ACL 状态未知。',
+  'acl.detail.acl-request-failed': 'ACL 请求失败：状态未知。',
+  'wcode.session-scope-mismatch': '该 DSH 会话上次在另一个作用域下使用；请先切回再写入。',
 }
 
 const en: Record<string, string> = {
@@ -2663,6 +2682,25 @@ const en: Record<string, string> = {
   'notice.overridesIgnored': 'Identity overrides are inactive ({reason}).',
   'notice.scopeStateProfileMissing': 'scope-state.json names the missing profile {id}; fell back.',
   'notice.profileHeaderMissing': 'The profiles.json header names the missing profile {id}; fell back.',
+  // ---- v0.9 review round 1: switch chain / session write boundary / ACL ----
+  'scope.switchInFlight': 'A scope switch is in flight; wait for it to settle.',
+  'scope.unavailableReload': 'Scope unavailable: it may already differ from the host.',
+  'scope.reload': 'Reload',
+  'scope.hasKeyNotBound': 'A secret is stored, but the identity is not bound to it (dev/trusted can switch identity).',
+  'scope.identity.reason.scope-health-unprobed': 'No known-healthy probe yet: refresh the scope list before switching the identity.',
+  'scope.session.recordedIdentity': 'Recorded identity: {identity}',
+  'scope.session.recordedIdentityHint': 'This is the last observed identity; "switch back" restores the full override on the same profile — another profile must be switched first, then adjusted.',
+  'scope.session.switchBackHint': 'Switching that profile resets its identity override; the banner keeps showing the account/user/peer to restore manually.',
+  'scope.notice.scopeStateCorrupt': 'scope-state.json is corrupt: this boot fell back to the profile header/legacy connection and did not overwrite the file (the Doctor keeps the evidence).',
+  'scope.notice.scopeStatePersistFailed': 'The scope state could not be persisted: this switch applies to the running process but may revert after a restart.',
+  'acl.detail.acl-auth-required': 'Authentication failed (401): the key/identity is invalid, so nothing can be said about this server’s ACL support.',
+  'acl.detail.acl-manage-required': 'manage permission required (403): ACL may also be disabled; the server cannot distinguish, so this panel does not guess.',
+  'acl.detail.acl-resources-only': 'resources-only route (400): viking://resources/** is the only accepted family.',
+  'acl.detail.acl-unreachable': 'The server is unreachable: the ACL state is unknown.',
+  'acl.detail.acl-unsupported': 'This server build has no ACL route (404).',
+  'acl.detail.acl-server-error': 'Server error (5xx): the ACL state is unknown.',
+  'acl.detail.acl-request-failed': 'The ACL request failed: the state is unknown.',
+  'wcode.session-scope-mismatch': 'This DSH session was last used under another scope; switch back before writing to it.',
 }
 
 /** Every key the plugin ships, per language. */

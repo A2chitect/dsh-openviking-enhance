@@ -182,6 +182,21 @@ them before merge (the README/CHANGELOG describe both changes):
   `NOT_FOUND`, and the server's own source writes experiences under
   `memories/experiences/`).
 
+### What the v0.9 review round 1 fixed (and how)
+
+- Five blockers + material suggestions addressed; the full list is in
+  `CHANGELOG.md` under "v0.9 — review round 1 fixes". Evidence: full `pnpm test`
+  (typecheck + build + packaging/independence + unit + client/host smoke) green;
+  new `test/v09-client-scope` integration suite drives the real `scopedFetch` /
+  store (identity round-trip, host-side switch discovery, ConfigForm switch,
+  in-flight-read abort); the v0.9 route suite gained sessionless-write peer,
+  session-scope-mismatch write refusal, scope-scoped Activity metrics, ACL
+  401/500/no-mode, corrupt-scope-state boot, discovery-route and active-profile
+  deletion cases; the component suite gained the banner error state, warnings
+  rendering, blocked-reason copy, recorded session identity and the
+  preview/force-commit gating predicates. No real OpenViking store was written;
+  the fake servers remain the only mutation targets.
+
 ### What the v0.9 local run proved (scope layer)
 
 1. `pnpm run typecheck` / `pnpm run build` stay green with the new host modules

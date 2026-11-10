@@ -44,7 +44,12 @@ import type {
   ScopeListEntry,
   ScopeOverridesPayload,
 } from '../shared/protocol.ts'
-import { SCOPE_PROBE_TTL_MS } from '../shared/limits.ts'
+import {
+  SCOPE_PROBE_TTL_MS,
+  SCOPE_PROBES_CONCURRENCY,
+  SCOPE_PROBES_DEADLINE_MS,
+  SCOPE_SWITCH_COOLDOWN_MS,
+} from '../shared/limits.ts'
 import {
   identityFingerprint,
   resolveConnectionForProfile,
@@ -106,8 +111,21 @@ export interface ScopeServiceOptions {
   configOverrides: () => ConnectionOverrides
   /** The probed auth mode of the active scope (null = not probed yet). */
   probedAuthMode: () => string | null
-  /** Whether the last capability snapshot says the active server is healthy. */
+  /**
+   * Whether the last capability snapshot says the active server is healthy.
+   *
+   * This is the **permissive** flag used to resolve an already-stored override
+   * (so a saved identity survives a boot before the first probe). Switching must
+   * use `knownHealthy` instead (review S8): no new identity may be applied while
+   * the server state is unknown.
+   */
   healthy: () => boolean
+  /**
+   * v0.9 review S8: `true` only when a capability snapshot exists **and** says
+   * healthy. Unknown/unreachable must disable switching even though a stored
+   * override can still be resolved.
+   */
+  knownHealthy: () => boolean
   /** Cheap `/health` probe for one profile (the scope menu's rows). */
   probe: (profile: Profile) => Promise<ScopeHealthInfo>
   /** The active scope's capability matrix (only the active scope is probed live). */
@@ -176,24 +194,25 @@ export class ScopeService {
   activeProfileSelection(): { id: string; source: ScopeSource; warning: PluginNotice | null } {
     const configId = this.options.configActiveProfile().trim()
     if (configId.length > 0) return { id: configId, source: 'config', warning: null }
+    const profiles = this.options.profiles.read().file.profiles
     const stateRead = this.options.state.read()
     const stateId = stateRead.file.activeProfileId
-    if (stateId.length > 0) {
-      const exists = this.options.profiles.read().file.profiles.some((profile) => profile.id === stateId)
-      if (exists) return { id: stateId, source: 'state', warning: null }
-      return {
-        id: '',
-        source: 'legacy',
-        warning: { code: 'scopeStateProfileMissing', params: { id: stateId } },
-      }
-    }
+    // The documented chain is state → profiles header → legacy. A state pointer
+    // at a deleted profile must continue down that chain (review round 1,
+    // smaller items), not skip straight to legacy while `profiles.json` still
+    // names a live header profile.
+    const stateMissing: PluginNotice | null =
+      stateId.length > 0 && !profiles.some((profile) => profile.id === stateId)
+        ? { code: 'scopeStateProfileMissing', params: { id: stateId } }
+        : null
+    if (stateId.length > 0 && stateMissing === null) return { id: stateId, source: 'state', warning: null }
     const headerId = this.options.profiles.read().file.activeProfileId
     if (headerId.length > 0) {
-      const exists = this.options.profiles.read().file.profiles.some((profile) => profile.id === headerId)
-      if (exists) return { id: headerId, source: 'profile-header', warning: null }
-      return { id: '', source: 'legacy', warning: { code: 'profileHeaderMissing', params: { id: headerId } } }
+      const exists = profiles.some((profile) => profile.id === headerId)
+      if (exists) return { id: headerId, source: 'profile-header', warning: stateMissing }
+      return { id: '', source: 'legacy', warning: stateMissing ?? { code: 'profileHeaderMissing', params: { id: headerId } } }
     }
-    return { id: '', source: 'legacy', warning: null }
+    return { id: '', source: 'legacy', warning: stateMissing }
   }
 
   /** The profile selected by the boot precedence, or null for legacy resolution. */
@@ -318,13 +337,25 @@ export class ScopeService {
     return identityRules(this.options.probedAuthMode(), this.options.healthy())
   }
 
+  /**
+   * The rules a **new** switch may use (review S8): known-healthy required.
+   * Resolving an already-stored override keeps the permissive path above.
+   */
+  switchRules(): ScopeIdentityRules {
+    const authMode = this.options.probedAuthMode()
+    if (!this.options.knownHealthy()) {
+      return { account: false, user: false, peer: false, reason: 'scope-health-unprobed', authMode }
+    }
+    return identityRules(authMode, true)
+  }
+
   /** The overrides/identity block `/scopes` returns. */
   overridesPayload(resolved: ResolvedScope): ScopeOverridesPayload {
     return {
       account: resolved.overrides.stored?.account ?? null,
       user: resolved.overrides.stored?.user ?? null,
       peer: resolved.overrides.stored?.peer ?? null,
-      allowed: identityRules(resolved.connection.authMode ?? null, this.options.healthy()),
+      allowed: this.switchRules(),
       overrides: resolved.overrides.active,
     }
   }
@@ -344,16 +375,41 @@ export class ScopeService {
     }
   }
 
-  /** The switch guard: a switch is refused while anything mutation-shaped is pending. */
+  /**
+   * The switch guard: a switch is refused while a switch is already in flight,
+   * while anything mutation-shaped is pending, and during the documented
+   * double-click cooldown (`SCOPE_SWITCH_COOLDOWN_MS`, wired in review S10).
+   */
   guardState(): ScopeSwitchGuard {
+    if (this.switching) return { blocked: true, reason: 'switch-in-flight', pending: 0 }
     const guard = this.options.guard()
     if (guard.busy) return { blocked: true, reason: 'mutation-in-flight', pending: guard.pending }
     if (guard.pending > 0) return { blocked: true, reason: 'confirmation-pending', pending: guard.pending }
     const last = guard.lastSwitchAt ?? this.lastSwitchAt
-    if (last !== null && this.now() - last < 1_000) {
+    if (last !== null && this.now() - last < SCOPE_SWITCH_COOLDOWN_MS) {
       return { blocked: true, reason: 'cooldown', pending: 0 }
     }
     return { blocked: false, reason: null, pending: 0 }
+  }
+
+  /** v0.9 review S12: host-side switching mutex, owned by the caller. */
+  private switching = false
+
+  /** Claim the switching mutex; false when another switch is in flight. */
+  beginSwitch(): boolean {
+    if (this.switching) return false
+    this.switching = true
+    return true
+  }
+
+  /** Release the switching mutex (always from a `finally`). */
+  endSwitch(): void {
+    this.switching = false
+  }
+
+  /** Whether a switch is currently in flight (diagnostics/tests). */
+  get switchingNow(): boolean {
+    return this.switching
   }
 
   /** Record a switch (the caller audits it); also feeds the cooldown. */
@@ -384,7 +440,17 @@ export class ScopeService {
     if (profile === null) {
       return { ok: false, code: 'profile-missing', message: 'Create a named profile before switching the in-server identity.' }
     }
-    const rules = identityRules(resolved.connection.authMode ?? null, this.options.healthy())
+    // v0.9 review S8: switching requires a *known-healthy* probe; a stored
+    // override may still resolve under unknown health, but a new identity may not
+    // be applied then.
+    if (!this.options.knownHealthy()) {
+      return {
+        ok: false,
+        code: 'identity-not-switchable',
+        message: 'The active server health is not known yet; refresh /scopes before switching the identity.',
+      }
+    }
+    const rules = identityRules(resolved.connection.authMode ?? null, true)
     const clear = new Set(request.clear ?? [])
     const text = (value: unknown): string | null => {
       if (typeof value !== 'string') return null
@@ -505,6 +571,42 @@ export class ScopeService {
   }
 
   /**
+   * Probe every configured profile's `/health` with bounded concurrency and one
+   * overall deadline (review S9). Late/missing answers fall back to the cached
+   * row (the menu shows "timeout", never a guessed healthy).
+   */
+  private async probeAll(
+    profiles: Profile[],
+    fresh: boolean,
+    activeId: string | null,
+  ): Promise<Map<string, ScopeHealthInfo>> {
+    const result = new Map<string, ScopeHealthInfo>()
+    const queue = [...profiles]
+    let deadlineHit = false
+    const deadline = new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        deadlineHit = true
+        resolve()
+      }, SCOPE_PROBES_DEADLINE_MS)
+      // Do not keep a test/CLI process alive for the deadline timer.
+      timer.unref?.()
+    })
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const profile = queue.shift()
+        if (profile === undefined || deadlineHit) return
+        const health = profile.id === activeId ? await this.activeHealth(profile, fresh) : await this.healthFor(profile, fresh)
+        result.set(profile.id, health)
+      }
+    }
+    await Promise.race([
+      Promise.all(Array.from({ length: Math.min(SCOPE_PROBES_CONCURRENCY, Math.max(queue.length, 1)) }, () => worker())),
+      deadline,
+    ])
+    return result
+  }
+
+  /**
    * The scope list the switcher renders.
    *
    * Health probes are cheap `/health` reads (no credentials beyond the profile's
@@ -519,11 +621,18 @@ export class ScopeService {
     const profiles = profileFile.profiles
     if (resolved.profile !== null) this.rememberCapabilities(resolved.profile.id, this.options.activeCapabilities())
     const rows: ScopeListEntry[] = []
+    // v0.9 review S9: bounded concurrency (4) and one overall deadline, so 20
+    // unreachable profiles cannot make the menu wait 80 s. A profile whose probe
+    // does not answer in the deadline keeps its cached health (or "timeout").
+    const healthByProfile = await this.probeAll(profiles, fresh, resolved.profile?.id ?? null)
     for (const profile of profiles) {
       const isActive = resolved.profile?.id === profile.id
-      const health = isActive
-        ? await this.activeHealth(profile, fresh)
-        : await this.healthFor(profile, fresh)
+      const health: ScopeHealthInfo = healthByProfile.get(profile.id) ?? {
+        ok: false,
+        version: null,
+        latencyMs: null,
+        error: 'probe-timeout',
+      }
       const capabilities = isActive
         ? this.options.activeCapabilities()
         : (this.capabilityCache.get(profile.id) ?? {})

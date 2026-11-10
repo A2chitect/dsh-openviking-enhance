@@ -35,6 +35,14 @@ function stateDetail(acl: AclPayload): string {
   return ''
 }
 
+/** Localized copy for a stable ACL detail code (never a raw English code). */
+export function aclDetailText(detail: string | null): string | null {
+  if (detail === null) return null
+  const key = `acl.detail.${detail}`
+  const text = t(key)
+  return text === key ? detail : text
+}
+
 /** The visibility classification's localized label. */
 function visibilityLabel(visibility: AclPayload['visibility']): string {
   return t(`acl.visibility.${visibility}`)
@@ -86,7 +94,11 @@ export function AccessPanel({ uri, refreshKey }: AccessPanelProps) {
     const controller = new AbortController()
     setLoading(true)
     setError(null)
-    void fetchAcl(uri, refreshKey > 0).then((answer) => {
+    // Review S3: clear the previous resource's principals immediately — they are
+    // another resource's identity data and must not be shown while the new answer
+    // is in flight. The AbortController really cancels the request now.
+    setAcl(null)
+    void fetchAcl(uri, { fresh: refreshKey > 0, signal: controller.signal }).then((answer) => {
       if (cancelled) return
       setLoading(false)
       if (answer.ok) {
@@ -116,7 +128,7 @@ export function AccessPanel({ uri, refreshKey }: AccessPanelProps) {
       {stateDetail(acl) !== '' && <p className="ove-preview-hint">{stateDetail(acl)}</p>}
       {acl.detail !== null && acl.state !== 'available' && (
         <p className="ove-preview-hint" title={acl.detail}>
-          {acl.detail}
+          {aclDetailText(acl.detail)}
         </p>
       )}
       {acl.state === 'available' && (

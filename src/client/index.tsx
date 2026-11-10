@@ -59,13 +59,13 @@ import { setRightTabOpener } from './tab-store.ts'
 import { OnboardingSetupSection } from './onboarding-card.tsx'
 import { CommitStatusPill } from './commit-status.tsx'
 // Exported for the server-rendered component tests; the shell only reads apply/inject.
-export { DiffEntry, DiffView } from './commit-status.tsx'
-export { PreviewPanel, previewUriParam } from './preview-panel.tsx'
+export { DiffEntry, DiffView, forceCommitEnabled } from './commit-status.tsx'
+export { curationActionsReady, PreviewPanel, previewUriParam } from './preview-panel.tsx'
 export { ExplorePanel } from './explore-panel.tsx'
 export { VikingUriLink } from './viking-uri-link.tsx'
 export { getPreviewTarget, openPreview, resetPreviewStore, setPreviewTarget } from './preview-store.ts'
 export { ScopeBanner, ScopeChip, ScopeMenu, ScopeSwitchNoticeLine } from './scope-chip.tsx'
-export { SessionScopeBanner } from './session-scope.tsx'
+export { SessionScopeBanner, sessionScopeMismatch } from './session-scope.tsx'
 export { AccessPanel } from './access-panel.tsx'
 export { setOpsPending, hasPendingOps } from './ops-store.ts'
 export { ActivityPanel } from './activity-panel.tsx'
@@ -113,6 +113,7 @@ import { PluginHealthSection } from './plugin-health.tsx'
 import { PreviewPanel } from './preview-panel.tsx'
 import { ExplorePanel } from './explore-panel.tsx'
 import { setPreviewOpener } from './preview-store.ts'
+import { resetSessionScopes } from './session-scope.tsx'
 import { ConfigPage } from './config-page.tsx'
 import { ScopeChip } from './scope-chip.tsx'
 import { ActivityPanel } from './activity-panel.tsx'
@@ -995,6 +996,9 @@ export function apply(context: ClientContext): void {
         try {
           resetToOverview()
           closePluginPages()
+          // Review B3: mismatch flags are scope-dependent state; drop every
+          // cached answer so the session surfaces re-fetch under the new scope.
+          resetSessionScopes()
         } catch (error) {
           report(context, error)
         }

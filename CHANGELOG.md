@@ -53,9 +53,10 @@ dependency, no AGPL code, no new shell seat; every mutation path is unchanged
 - **Isolation.** `x-dsh-openviking-scope` on every request; the host refuses
   mismatches with `scope-changed` before any work and labels every response;
   composed reads that finish after a switch answer `scope-changed` instead of a
-  stale payload; caches are cleared on a switch (the approved simple fallback for
-  the per-scope policy, bounded at two retained sets) with capability matrices and
-  ACL reports per scope; no federated/cross-server search; search result URIs are
+  stale payload; caches are cleared on a switch (the approved clear-all fallback
+  for the per-scope policy — no scope cache set is retained) with capability
+  matrices and ACL reports per scope; no federated/cross-server search; search
+  result URIs are
   validated against the active readable roots and out-of-scope hits are dropped
   with one warning.
 - **Session and pipeline guards.** A bounded best-effort local
@@ -97,6 +98,102 @@ dependency, no AGPL code, no new shell seat; every mutation path is unchanged
   compatibility warning is an allowlisted, advisory projection only.
 - The ACL view is resources-only and read-only; a 403 is reported as the
   documented ambiguity, not as "ACL disabled".
+
+### v0.9 — review round 1 fixes (PR #7)
+
+The automated review's five blockers and the material suggestions. No API shape
+changed for v0.7/v0.8 surfaces; the scope layer's own contract got stricter, and
+every claim the docs made is now either implemented or downgraded.
+
+#### Fixed (blockers)
+
+- **B1 — the client switch chain works.** `/scope` and `/scopes` are now
+  **discovery routes**: they accept a request that still carries the previous
+  scope key (the host may already have moved) and answer with the current scope,
+  labelled; every other route keeps refusing stale keys with `scope-changed`.
+  Scope-changing mutations (`POST /scope/identity`, profile CRUD) reply with the
+  full new scope payload, and the client adopts it instead of rejecting the
+  response as stale. The banner shows "scope unavailable / reload" on a failed
+  re-read instead of keeping the previous label. New `test/v09-client-scope`
+  integration suite drives the real `scopedFetch` + store (the route tests bypass
+  it): identity round-trip, host-side switch discovery, ConfigForm profile
+  switch, in-flight-read abort/drop.
+- **B2 — the peer read selector no longer leaks into writes.** `readPeer` now
+  defaults to `false`; Browse/Preview/Sessions/ACL opt in explicitly as
+  sessionless reads. Write preparation (revision/tags/verification reads) and
+  every mutation send only the official plugin's session actor peer when one
+  exists. A test asserts a sessionless prepare sends no
+  `X-OpenViking-Actor-Peer` to its reads.
+- **B3 — session-scope mismatch actually stops writes.** The host enforces it in
+  `WriteService.prepare`/`execute`/`undo` with the stable
+  `session-scope-mismatch` code (no cross-scope write even for a stale button);
+  the mismatch comparison is the identity tuple (profile/account/user/peer), not
+  the key that embeds the lazily probed auth mode; the observation is recorded
+  only after a successful read. The preview Edit/Tags/Delete buttons and the
+  commit pill gate on the mismatch; commit-status refetches on every scope
+  change and the cached per-session answers reset on switch. Tests: "after
+  switch, prepare is refused with `session-scope-mismatch`", the two gating
+  predicates and the mismatch guard.
+- **B4 — expired tokens no longer block switching.** `WriteService` and
+  `OpsService` `unresolvedCount()` purge expired tokens first and count only
+  pending (unexpired) / executing records; a fake-clock test advances past the
+  TTL and asserts switching is not blocked.
+- **B5 — the Activity metrics cache is scope-scoped.** `ActivityService` gained
+  `resetCaches()`, called from `applyActiveScope`; a route test proves a switch
+  re-fetches and returns the new server's aggregates (111 → 222) instead of the
+  cached previous ones.
+
+#### Fixed (suggestions and smaller items)
+
+- **S1** ACL follows the peer read selector (`GET /acl` sends it; route test).
+  Recall-content reads are deliberately URI-addressed without a peer (no session
+  id on that route) and that is documented.
+- **S2** ACL failures are classified honestly: 401/403 → `denied-no-manage`
+  (auth vs manage detail), 400 → `only-resources`, 404/5xx/network →
+  `unsupported` with distinct details; a missing `acl_mode` stays `null` instead
+  of guessing `inherit`.
+- **S3** Access tab clears the previous resource's principals before loading,
+  passes its `AbortController` to `fetchAcl`, localizes detail codes, and the
+  Browse preview tab resets to Preview on a new selection/refresh.
+- **S4** the mismatch banner shows the recorded account/user/peer; "switch back"
+  restores the full identity tuple in one action when the profile already
+  matches (a profile switch still resets overrides — the banner keeps showing the
+  tuple to restore manually, documented).
+- **S5** session observations are recorded only after a successful read and are
+  compared by identity tuple (auth-mode-independent).
+- **S6** profile deletion is guarded on the resolved scope (a profile activated
+  through `scope-state.json` cannot be deleted) and re-resolves a stale state
+  pointer after a deletion.
+- **S7** `persistProfile` failures are surfaced (`scopeStatePersistFailed`
+  warning) instead of swallowed; a corrupt `scope-state.json` found at boot is
+  **not** overwritten and keeps its Doctor/config-source evidence
+  (`scopeStateCorrupt` warning; route test).
+- **S8** switching requires a known-healthy probe (`scope-health-unprobed`
+  reason) while an already-stored override still resolves before the first
+  probe — the two concerns are separate.
+- **S9** `/scopes` health probes run with bounded concurrency
+  (`SCOPE_PROBES_CONCURRENCY = 4`) under one overall deadline
+  (`SCOPE_PROBES_DEADLINE_MS = 8000`); the banner no longer probes the scope list
+  when the switcher is hidden.
+- **S10** `SCOPE_SWITCH_COOLDOWN_MS` and `SCOPE_KEY_MAX_CHARS` are wired
+  (host admission rejects an over-long scope header with `invalid-scope`; both
+  halves use the documented cooldown constant). `SCOPE_MAX_RETAINED_CACHES` was
+  removed together with the docs claim: v0.9 ships the approved clear-all-on-
+  switch fallback and retains no per-scope cache set.
+- **S11** `/scope` warnings render in the chip/banner (not only in the menu); the
+  "key-bound" pill is only shown for `authMode === 'api_key'` (a stored key on a
+  `dev` profile is shown as "stored, not bound").
+- **S12** switching has a host-side mutex (nested switches refused with
+  `switch-in-flight`) and a client-side global flag that disables every switch
+  control while a switch is in flight.
+- Smaller: the pack download/task evidence attachments carry the scope response
+  label (documented binary exception: a stream cannot answer a JSON
+  `scope-changed` mid-stream; the pack token is identity-bound and the broker
+  closes on switch); `ScopeChip`/`ScopeBanner` no longer nest a `div` inside a
+  `span`; the blocked-switch message names the real reason and the cooldown
+  clears itself; the session-map comment/sort matches the code and its write
+  result is checked; the boot chain is state → profiles header → legacy (a
+  deleted state pointer continues to the header instead of skipping to legacy).
 
 ### v0.8 — Operate: controlled actions on the native cockpit (PR #6)
 

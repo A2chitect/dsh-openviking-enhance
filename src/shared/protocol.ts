@@ -1443,6 +1443,8 @@ export const WRITE_ERROR_CODES = [
   'token-used',
   'token-mismatch',
   'identity-changed',
+  /** v0.9: this DSH session was captured under a different scope (no cross-scope writes). */
+  'session-scope-mismatch',
   'rate-limited',
   'too-many-pending',
   'write-in-flight',

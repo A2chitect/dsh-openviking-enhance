@@ -239,6 +239,8 @@ export class BrowseService {
       includeTags: true,
       absLimit: BROWSE_ABSTRACT_MAX_CHARS,
       timeoutMs: FS_TIMEOUT_MS,
+      // v0.9: browse is a sessionless read and follows the peer READ selector.
+      readPeer: true,
       ...(signal === undefined ? {} : { signal }),
     })
     if (signal?.aborted === true) throw new BrowseFailure('aborted', 'aborted')
@@ -285,6 +287,8 @@ export class BrowseService {
       levels,
       nodes,
       timeoutMs: FS_TIMEOUT_MS,
+      // v0.9: the subtree view is a sessionless read too (peer lens applies).
+      readPeer: true,
       ...(options.signal === undefined ? {} : { signal: options.signal }),
     })
     if (options.signal?.aborted === true) throw new BrowseFailure('aborted', 'aborted')

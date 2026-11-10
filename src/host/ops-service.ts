@@ -155,9 +155,14 @@ export class OpsService {
    * (the scope-switch guard counts these alongside curation writes).
    */
   unresolvedCount(): number {
+    // v0.9 review B4: purge expired tokens first — an abandoned dialog must not
+    // block scope switching after the TTL.
+    this.tokens.purge()
     let count = 0
+    const now = this.now()
     for (const record of this.tokens.values()) {
-      if (record.status === 'pending' || record.status === 'executing') count += 1
+      if (record.status === 'executing') count += 1
+      else if (record.status === 'pending' && record.expiresAt > now) count += 1
     }
     return count
   }

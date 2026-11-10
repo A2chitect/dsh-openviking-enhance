@@ -17,6 +17,11 @@ import { ProfileStore } from '../src/host/profiles.ts'
 import { ScopeStateStore, parseScopeState } from '../src/host/scope-state.ts'
 import { ScopeService, identityRules } from '../src/host/scope-service.ts'
 import { SessionScopeMap, parseSessionScopeMap } from '../src/host/session-scope-map.ts'
+import { WriteService } from '../src/host/write-service.ts'
+import { OpsService } from '../src/host/ops-service.ts'
+import { MutationGate } from '../src/host/confirmation-store.ts'
+import { AuditLog } from '../src/host/audit.ts'
+import { WRITE_TOKEN_TTL_MS } from '../src/shared/limits.ts'
 import { AclService, classifyVisibility, isAclSupportedUri } from '../src/host/acl-service.ts'
 import {
   compareOfficialPluginFacts,
@@ -60,12 +65,14 @@ function makeService(dir, options = {}) {
     configOverrides: options.configOverrides ?? (() => ({})),
     probedAuthMode: options.probedAuthMode ?? (() => 'dev'),
     healthy: options.healthy ?? (() => true),
+    knownHealthy: options.knownHealthy ?? (() => true),
     probe: async (profile) => {
       probeCalls.push(profile.id)
       return options.probe?.(profile) ?? { ok: true, version: '0.5.3', latencyMs: 12, error: null }
     },
     activeCapabilities: options.activeCapabilities ?? (() => ({ health: { available: true, detail: null } })),
     guard: options.guard ?? (() => ({ pending: 0, busy: false, lastSwitchAt: null })),
+    ...(options.now === undefined ? {} : { now: options.now }),
   })
   return { service, state, profileStore, probeCalls }
 }
@@ -149,15 +156,27 @@ test('boot precedence: no profile anywhere is the legacy scope, still listed as 
   assert.equal(rows[0].isActive, true)
 })
 
-test('a scope-state profile that no longer exists falls back with a warning (never silently)', () => {
-  const dir = tempDir('missing')
-  seedProfiles(dir, [makeProfile({ id: 'alpha' })])
+test('a scope-state profile that no longer exists continues the state → header → legacy chain', () => {
+  // Header names a live profile: the chain must reach it (review round 1), not
+  // skip straight to legacy.
+  const dir = tempDir('missing-header')
+  seedProfiles(dir, [makeProfile({ id: 'alpha' })], 'alpha')
   new ScopeStateStore({ dir }).write('deleted-profile', null)
-  const { service } = makeService(dir)
-  const resolved = service.resolveActive()
-  assert.equal(resolved.profileId, null, 'falls back to legacy resolution')
-  assert.equal(resolved.source, 'legacy')
-  assert.equal(resolved.warnings.some((warning) => warning.code === 'scopeStateProfileMissing'), true)
+  const withHeader = makeService(dir)
+  const viaHeader = withHeader.service.resolveActive()
+  assert.equal(viaHeader.profileId, 'alpha')
+  assert.equal(viaHeader.source, 'profile-header')
+  assert.equal(viaHeader.warnings.some((warning) => warning.code === 'scopeStateProfileMissing'), true)
+
+  // No header either: legacy, still with the warning (never silent).
+  const dir2 = tempDir('missing-legacy')
+  seedProfiles(dir2, [makeProfile({ id: 'alpha' })], '')
+  new ScopeStateStore({ dir: dir2 }).write('deleted-profile', null)
+  const legacyService = makeService(dir2).service
+  const legacy = legacyService.resolveActive()
+  assert.equal(legacy.profileId, null)
+  assert.equal(legacy.source, 'legacy')
+  assert.equal(legacy.warnings.some((warning) => warning.code === 'scopeStateProfileMissing'), true)
 })
 
 /* ---- identity rules per auth mode -------------------------------------- */
@@ -232,6 +251,27 @@ test('a Config profile override does not inherit another profile’s identity ov
 })
 
 /* ---- switching --------------------------------------------------------- */
+
+test('unknown health disables switching but still resolves an already-stored override (S8)', () => {
+  const dir = tempDir('unknown-health')
+  seedProfiles(dir, [makeProfile({ id: 'alpha', account: 'acct', user: 'usr' })], 'alpha')
+  new ScopeStateStore({ dir }).write('alpha', { account: 'acct2', user: 'usr2', peer: null })
+  const { service } = makeService(dir, {
+    probedAuthMode: () => null,
+    knownHealthy: () => false,
+    healthy: () => true,
+  })
+  const resolved = service.resolveActive()
+  assert.equal(resolved.connection.account, 'acct2', 'a stored override still resolves before the probe')
+  const rules = service.switchRules()
+  assert.equal(rules.account, false)
+  assert.equal(rules.reason, 'scope-health-unprobed')
+  const refused = service.switchIdentity({ account: 'x', user: 'y' }, resolved)
+  assert.equal(refused.ok, false)
+  assert.equal(refused.code, 'identity-not-switchable')
+  const payload = service.overridesPayload(resolved)
+  assert.equal(payload.allowed.reason, 'scope-health-unprobed')
+})
 
 test('switchIdentity writes the state file, validates rules and refuses while a mutation is pending', () => {
   const dir = tempDir('switch')
@@ -315,6 +355,140 @@ test('listScopes sums per-server health/capabilities and marks only the active r
   assert.equal(rows[1].warnings.includes('remote-endpoint'), true)
   assert.equal(rows[1].warnings.includes('unreachable'), true)
   assert.deepEqual(probeCalls.sort(), ['alpha', 'beta'])
+})
+
+test('the scope list probes with bounded concurrency and an overall deadline (S9)', async () => {
+  const dir = tempDir('concurrency')
+  const profiles = []
+  for (let index = 0; index < 12; index += 1) {
+    profiles.push(makeProfile({ id: `p${index}`, label: `Profile ${index}`, endpoint: `http://127.0.0.1:${2000 + index}` }))
+  }
+  seedProfiles(dir, profiles, 'p0')
+  let inFlight = 0
+  let peak = 0
+  const { service } = makeService(dir, {
+    probe: async () => {
+      inFlight += 1
+      peak = Math.max(peak, inFlight)
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      inFlight -= 1
+      return { ok: true, version: '0.5.3', latencyMs: 10, error: null }
+    },
+  })
+  const rows = await service.listScopes()
+  assert.equal(rows.length, 12)
+  assert.ok(peak <= 4, `at most 4 probes in flight (saw ${peak})`)
+  assert.ok(peak > 1, 'the probes actually ran concurrently')
+})
+
+test('the switch cooldown is the documented limit constant (S10)', async () => {
+  let now = 1_000
+  const dir = tempDir('cooldown')
+  seedProfiles(dir, [makeProfile({ id: 'alpha' })], 'alpha')
+  const { service } = makeService(dir, { now: () => now })
+  const resolved = service.resolveActive()
+  assert.equal((await service.switchIdentity({ peer: 'p1' }, resolved)).ok, true)
+  service.noteSwitch()
+  const blocked = service.guardState()
+  assert.equal(blocked.reason, 'cooldown')
+  now += 1_001
+  assert.equal(service.guardState().blocked, false)
+})
+
+/* ---- v0.9 review B4: expired tokens must not block switching ------------ */
+
+function fakeWriteDependencies(now) {
+  const identity = {
+    profileId: 'alpha',
+    profileLabel: 'Alpha',
+    endpoint: 'http://127.0.0.1:1933',
+    authMode: 'dev',
+    account: 'default',
+    user: 'alice',
+    peer: null,
+    fingerprint: 'sha256:write-token-test',
+  }
+  const api = {
+    async fsAttrs() {
+      return { ok: true, status: 200, result: { uri: 'x', attrs: { tags: [] } }, error: null }
+    },
+    async snapshotCommit() {
+      return { ok: true, status: 200, result: { result: 'created', commit_oid: 'pre-commit-1', changed: 1 }, error: null }
+    },
+  }
+  const capabilities = {
+    async probe() {
+      return {
+        observedAt: 0,
+        health: { ok: true, version: '0.5.3', authMode: 'dev', role: null, accountId: null, userId: null, latencyMs: 1, error: null },
+        snapshot: { available: true, detail: null, kind: 'history' },
+        tasks: { available: true, detail: null },
+        rules: { available: true, detail: null, kind: 'validation' },
+        compile: { available: true, detail: null, configured: true, canCreate: true, reason: null, kind: 'capabilities' },
+        versions: { available: true, detail: null },
+        diffPaths: { available: true, detail: null },
+      }
+    },
+  }
+  const sessions = { async facts() { return null } }
+  const audit = { append() {} }
+  return { api, capabilities, sessions, audit, identity: () => identity }
+}
+
+test('expired pending write tokens stop blocking the switch guard (B4)', async () => {
+  let now = 1_000
+  const deps = fakeWriteDependencies(() => now)
+  const service = new WriteService({
+    api: deps.api,
+    capabilities: deps.capabilities,
+    sessions: deps.sessions,
+    audit: deps.audit,
+    identity: deps.identity,
+    writesEnabled: () => true,
+    transport: () => true,
+    gate: new MutationGate(),
+    now: () => now,
+    randomToken: () => 'token-1',
+  })
+  const prepared = await service.prepare({
+    action: 'set-tags',
+    target: 'viking://user/default/memories/preferences/tools.md',
+    tags: ['priority=high'],
+    tagMode: 'replace',
+    origin: 'overlay',
+  })
+  assert.equal(prepared.ok, true, JSON.stringify(prepared))
+  assert.equal(service.unresolvedCount(), 1)
+  // Still inside the TTL: the switch guard would see a pending token.
+  now += WRITE_TOKEN_TTL_MS - 100
+  assert.equal(service.unresolvedCount(), 1)
+  // Past the TTL: the abandoned dialog's token must not block switching.
+  now += 200
+  assert.equal(service.unresolvedCount(), 0)
+})
+
+test('expired pending ops tokens stop blocking the switch guard (B4)', () => {
+  let now = 1_000
+  const service = new OpsService({
+    capabilities: { async probe() { return {} } },
+    snapshot: {},
+    compile: {},
+    packs: {},
+    audit: { append() {} },
+    identity: () => ({ profileId: null, profileLabel: null, endpoint: 'http://x', authMode: 'dev', account: 'a', user: 'u', peer: null, fingerprint: 'sha256:ops' }),
+    opsEnabled: () => true,
+    transport: () => true,
+    gate: new MutationGate(),
+    activeUser: () => 'u',
+    now: () => now,
+    randomToken: () => 'ops-token',
+  })
+  // Seed the bounded token store directly: this test is about the purge-aware
+  // counter, not about a particular ops action's prepare path.
+  service.tokens.set({ token: 'ops-token', status: 'pending', createdAt: now, expiresAt: now + 100, settledAt: null, action: 'pack-export', target: 'viking://x', identityFingerprint: 'sha256:ops' })
+  assert.equal(service.unresolvedCount(), 1)
+  now += 101
+  assert.equal(service.unresolvedCount(), 0)
 })
 
 /* ---- session-scope map ------------------------------------------------- */

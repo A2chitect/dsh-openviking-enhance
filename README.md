@@ -279,7 +279,8 @@ is bound to the identity that performed the write, and switching identity while 
 confirmation is pending is guarded — the UI blocks the switch, and if a settings
 save races a pending token the host fails closed with `identity-changed`. In `dev`/`trusted` mode the plugin sends the
 identity headers; in `api_key` mode the key itself determines the identity and no
-headers are sent. ACL is shown only as an explicit "not enabled" state, with no
+headers are sent. ACL is shown as the v0.9 four-state read-only Access report (never as a guessed
+"enabled/disabled"), with no
 admin enumeration.
 
 ![The rich confirmation card for a write command](assets/v05-after-command-confirm.png)
@@ -480,23 +481,49 @@ previous scope is dropped; a slow host read that finishes after a switch answers
 `409 scope-changed` instead of a stale payload. A profile switch persists the new
 active profile in `scope-state.json` and **resets the identity overrides**.
 
+Discovery routes: `/scope` and `/scopes` intentionally accept a request that
+still names the previous scope key (the host may already have moved) and answer
+with the current scope, labelled. This is how the client completes a switch
+chain; every other read refuses a stale key with `scope-changed`. The
+scope-changing mutations (identity override, profile CRUD) reply with the new
+scope payload, which the client adopts directly.
+
 Isolation contract: every plugin request carries
 `x-dsh-openviking-scope: <scope key>` (the secret-free `sha256:` identity
 fingerprint over profile + endpoint + probed auth mode + effective
 account/user/peer); the host compares it with the active key and refuses
 mismatches with `scope-changed` before any work. Every response is labelled with
 the active key. Caches are cleared on a switch (the approved simple fallback for
-the per-scope policy; at most two scope sets are the documented bound), capability
-matrices are per scope, ACL reports are cached per scope and dropped on switch,
-and the page never offers an all-scopes search.
+the per-scope policy: **clear all caches on a switch**, no scope set is retained),
+capability matrices are per scope, ACL reports are cached per scope and dropped on switch,
+and the page never offers an all-scopes search. The scope list's `/health`
+probes run with bounded concurrency (4) under one overall deadline, so a desk of
+unreachable profiles cannot stall the menu. A corrupt `scope-state.json` is kept
+as-is at boot (falling back to the profiles header/legacy chain) and reported
+through the scope warnings and the Doctor's config-source health — it is not
+silently overwritten. The active profile cannot be deleted (the resolved scope,
+not just the runtime form value, is checked), and every profile deletion
+re-resolves a stale state pointer.
+
+Session-scope write boundary: a DSH session observed under another identity shows
+the mismatch banner; the host **also refuses** `/write/prepare` (and execute/undo)
+for that session with the stable `session-scope-mismatch` code, so no cross-scope
+write can happen even if a stale button were clicked. The recorded identity is
+shown in the banner and a same-profile "switch back" restores the full
+account/user/peer override in one action.
 
 Identity switching rules (F12 completion): `dev`/`trusted` profiles allow
 account/user header overrides (trusted needs both; **the plugin never sets a role
 header**); `api_key` is key-bound, so account/user are disabled with that reason
 while the peer selector stays a read lens; `oidc`/`ldap` are out; an unreachable
-server disables switching. The peer is **read-only**: it is sent as
-`X-OpenViking-Actor-Peer` only for sessionless reads (browse/preview/ACL), while
-writes and session-scoped calls keep the official memory plugin's actor peer.
+server disables switching, and a switch additionally requires a **known-healthy**
+probe (before the first probe the overwrite fields stay disabled with the
+`scope-health-unprobed` reason, while an already-stored override still resolves).
+The peer is **read-only**: it is sent as `X-OpenViking-Actor-Peer` only for
+sessionless reads (browse, preview, ACL, sessions browser), while write
+preparation reads and all mutations never send it (they use only the official
+plugin's session actor peer, when one exists) — the exact split the v0.5 README
+promised.
 
 ### Timeouts and limits
 
@@ -582,8 +609,9 @@ from the code. Times are milliseconds; sizes are bytes unless marked.
 | EVIDENCE_LOOKUP_DEADLINE_MS | 15000 |
 | TASK_EVIDENCE_CORRELATION_MAX | 20 |
 | SCOPE_STATE_VERSION | 1 |
-| SCOPE_MAX_RETAINED_CACHES | 2 |
 | SCOPE_PROBE_TTL_MS | 10000 |
+| SCOPE_PROBES_CONCURRENCY | 4 |
+| SCOPE_PROBES_DEADLINE_MS | 8000 |
 | SCOPE_SWITCH_COOLDOWN_MS | 1000 |
 | SESSION_SCOPE_MAP_MAX | 64 |
 | SCOPE_KEY_MAX_CHARS | 200 |
@@ -614,9 +642,9 @@ rules and 20 scenarios, and an L2 preview page returns at most 1 000 lines.
 | Operate actions (v0.8) | `enableOps` **and** authenticated transport **and** healthy probed identity **and** runtime capability/role probe **and** the shared single-mutation gate | DSH 0.2.2-rc.1+; capability answer decides (snapshot route, compile `configured && can_create`, pack export probe) | reads stay available; every action fails closed with `ops-disabled`/`compile-not-configured`/`pack-export-unavailable`/…; no Retry exists |
 | Task evidence / Observability | per-request read, on demand | OpenViking 0.5.1.1+ (server request log only when `/console/audit` is reachable) | evidence warns `server-request-log-unavailable`; each observability card degrades alone; `/metrics` never probed |
 | Activity tasks/metrics | `GET /tasks` and per-card probes | route present | per-card "not available"; `/metrics` is never probed |
-| ACL / Access tab (v0.9) | one `GET /acl` for a user-selected `viking://resources/**` URI | server route present **and** the identity has `manage` | four explicit states; a 403 is reported as `denied-no-manage` with both possible explanations ("ACL disabled" vs "missing manage") — the plugin never claims which; no ACL edits exist |
+| ACL / Access tab (v0.9) | one `GET /acl` for a user-selected `viking://resources/**` URI (follows the peer READ selector) | server route present **and** the identity has `manage` | four explicit states; 401/403 are `denied-no-manage` (auth vs manage detail kept distinct), 400 is `only-resources`, 404/5xx/network are `unsupported` with their own detail — a 403 never claims "ACL disabled" vs "missing manage"; a missing `acl_mode` is reported as unknown (never guessed "inherit"); no ACL edits exist |
 | Scope switcher / scope list (v0.9) | cheap `/health` per configured profile + the active scope's capability probe | always | unreachable rows show the health error; the legacy connection is listed as a scope; missing profiles are warning rows, never auto-deleted |
-| Identity override / session-scope guards (v0.9) | probed auth mode + health + the shared mutation gate | `dev`/`trusted` for account/user; peer for reads in most modes | disabled fields with a stated reason; a session last seen under another scope shows a mismatch banner and its recall/write actions are disabled until the user switches back |
+| Identity override / session-scope guards (v0.9) | probed auth mode + **known-healthy** probe + the shared mutation gate; the session→scope map for writes | `dev`/`trusted` for account/user; peer for reads in most modes | disabled fields with a stated reason; a session last seen under another identity shows a mismatch banner, its recall/write actions are disabled, and the host refuses prepare/execute/undo with `session-scope-mismatch` until the user switches back |
 | Native views | DSH `main`/`sidebar.panellist` slots (since v0.3) | always; `showNativeViews` (default true) | off = the exact v0.6 Studio page |
 | Browse / Sessions / Commits | per-request HTTP result of `fs/ls` | OpenViking 0.5.1.1+ | per-view "unavailable on this server" state; a 404 directory is an empty page, not an error |
 | Deep links (`ctx.layout.selectPanel`) | structural `get('layout')` + `typeof selectPanel === 'function'` | DSH 0.2.2-rc.1 (verified types) | Preview-tab fallback plus a toolbar note on older generations |
@@ -694,6 +722,12 @@ rules and 20 scenarios, and an L2 preview page returns at most 1 000 lines.
 - **ACL principals are server-side identity data.** They are shown only for the
   user-selected resource in the Access tab, bounded (`ACL_ENTRIES_MAX`), cached in
   memory per scope only, and never written to the audit file, evidence or logs.
+- **Binary/download exception, stated.** The one-time OVPack download and the
+  task-evidence attachment are raw streams: they carry the current scope label as
+  a response header, but they cannot answer a JSON `scope-changed` envelope
+  mid-stream. The pack token is identity-fingerprint-bound and the broker closes
+  on any switch, so a stale download cannot be served; the evidence attachment
+  carries the identity block in its body.
 - **The scope layer is not a security boundary.** Scope keys, banners and
   per-scope caches stop *this plugin* from mixing scopes; the server's auth/ACL
   remains the real boundary. Two profiles pointing at the same endpoint+identity

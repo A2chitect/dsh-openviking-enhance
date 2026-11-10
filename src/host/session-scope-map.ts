@@ -138,15 +138,17 @@ export class SessionScopeMap {
     if (existing !== undefined && existing.scopeKey === sanitized.scopeKey) return false
     entries.delete(sanitized.sessionId)
     entries.set(sanitized.sessionId, sanitized)
-    // LRU by observedAt (the file order is not trusted): newest first, keep
-    // `maxEntries`, rewrite in insertion order.
+    // Bounded LRU by observedAt (the file order is not trusted): sort
+    // **ascending** (oldest first), drop from the front until the map fits, then
+    // rewrite in the same oldest→newest order. A failed write is reported as
+    // false so the caller never believes a record was kept.
     const ordered = [...entries.values()].sort((a, b) => (a.observedAt < b.observedAt ? -1 : a.observedAt > b.observedAt ? 1 : 0))
     while (ordered.length > this.maxEntries) ordered.shift()
     const file: SessionScopeMapFile = {
       version: SESSION_SCOPE_MAP_VERSION,
       entries: Object.fromEntries(ordered.map((entry) => [entry.sessionId, entry])),
     }
-    writePrivateFile(this.path, `${JSON.stringify(file, null, 2)}\n`)
-    return true
+    const written = writePrivateFile(this.path, `${JSON.stringify(file, null, 2)}\n`)
+    return written.ok
   }
 }

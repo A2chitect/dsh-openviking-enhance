@@ -303,7 +303,7 @@ export class OpenVikingApi {
   async readText(uri: string, options: RequestOptions = {}): Promise<OvResult<string>> {
     const response = await this.request<unknown>(
       `/api/v1/content/read?uri=${encodeURIComponent(uri)}`,
-      { timeoutMs: FS_TIMEOUT_MS, readPeer: true, ...options },
+      { timeoutMs: FS_TIMEOUT_MS, ...options },
     )
     if (!response.ok) return response as OvResult<string>
     return { ...response, result: typeof response.result === 'string' ? response.result : null }
@@ -326,7 +326,7 @@ export class OpenVikingApi {
     if (page.limit !== undefined && Number.isFinite(page.limit)) params.set('limit', String(Math.max(1, Math.trunc(page.limit))))
     const response = await this.request<unknown>(
       `/api/v1/content/read?${params.toString()}`,
-      { timeoutMs: FS_TIMEOUT_MS, readPeer: true, ...options },
+      { timeoutMs: FS_TIMEOUT_MS, ...options },
     )
     if (!response.ok) return response as OvResult<string>
     return { ...response, result: typeof response.result === 'string' ? response.result : null }
@@ -431,7 +431,6 @@ export class OpenVikingApi {
   async fsStat(uri: string, options: RequestOptions = {}): Promise<OvResult<OvFsStat>> {
     return this.request<OvFsStat>(`/api/v1/fs/stat?uri=${encodeURIComponent(uri)}`, {
       timeoutMs: STATUS_TIMEOUT_MS,
-      readPeer: true,
       ...options,
     })
   }
@@ -450,7 +449,7 @@ export class OpenVikingApi {
   ): Promise<OvResult<string>> {
     const response = await this.request<unknown>(
       `/api/v1/content/${tier}?uri=${encodeURIComponent(uri)}`,
-      { timeoutMs: FS_TIMEOUT_MS, readPeer: true, ...options },
+      { timeoutMs: FS_TIMEOUT_MS, ...options },
     )
     if (!response.ok) return response as OvResult<string>
     return { ...response, result: typeof response.result === 'string' ? response.result : null }
@@ -460,7 +459,6 @@ export class OpenVikingApi {
   async fsAttrs(uri: string, options: RequestOptions = {}): Promise<OvResult<OvFsAttrs>> {
     return this.request<OvFsAttrs>(`/api/v1/fs/attrs?uri=${encodeURIComponent(uri)}`, {
       timeoutMs: STATUS_TIMEOUT_MS,
-      readPeer: true,
       ...options,
     })
   }
@@ -469,7 +467,7 @@ export class OpenVikingApi {
   async listDirectory(uri: string, options: RequestOptions = {}): Promise<OvResult<OvFsListEntry[]>> {
     const response = await this.request<OvFsListEntry[] | { items?: OvFsListEntry[] }>(
       `/api/v1/fs/ls?uri=${encodeURIComponent(uri)}`,
-      { timeoutMs: STATUS_TIMEOUT_MS, readPeer: true, ...options },
+      { timeoutMs: STATUS_TIMEOUT_MS, ...options },
     )
     if (!response.ok) return response as OvResult<OvFsListEntry[]>
     const raw = response.result
@@ -513,7 +511,6 @@ export class OpenVikingApi {
     if (options.sortOrder !== undefined) params.set('sort_order', options.sortOrder)
     const response = await this.request<OvFsListPageBody>(`/api/v1/fs/ls?${params.toString()}`, {
       timeoutMs: FS_TIMEOUT_MS,
-      readPeer: true,
       ...options,
     })
     if (!response.ok) return response as unknown as OvResult<OvDirectoryPage>
@@ -550,7 +547,6 @@ export class OpenVikingApi {
     params.set('include_abstract', 'true')
     const response = await this.request<OvFsTreePageBody>(`/api/v1/fs/tree?${params.toString()}`, {
       timeoutMs: FS_TIMEOUT_MS,
-      readPeer: true,
       ...options,
     })
     if (!response.ok) return response as unknown as OvResult<OvFsTreePage>
@@ -776,10 +772,17 @@ export class OpenVikingApi {
 
   /* ---- v0.5: ACL read (read-only "not enabled" state only) --------------- */
 
-  /** The ACL report for a resource URI; resources only, and inert by default. */
+  /**
+   * The ACL report for a resource URI; resources only, and inert by default.
+   *
+   * v0.9 review S1: ACL is a **sessionless read**, so it follows the peer READ
+   * selector like Browse/Preview — the plan omitted it and the Access tab then
+   * reported the default peer's ACL while Browse showed the override peer's tree.
+   */
   async getAcl(uri: string, options: RequestOptions = {}): Promise<OvResult<OvAclReport>> {
     return this.request<OvAclReport>(`/api/v1/acl?uri=${encodeURIComponent(uri)}`, {
       timeoutMs: STATUS_TIMEOUT_MS,
+      readPeer: true,
       ...options,
     })
   }

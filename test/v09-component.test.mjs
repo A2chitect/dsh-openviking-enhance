@@ -283,3 +283,136 @@ test('the v0.9 components speak both languages', () => {
   assert.ok(markup.includes('服务端身份'), 'the identity section is translated')
   assert.ok(markup.includes('切换'), 'the switch copy is translated')
 })
+
+/* ========================================================================
+ * Review round 1 component regressions (B1/B3/S4/S11)
+ * ===================================================================== */
+
+test('the banner never renders the previous label after a failed refresh (B1)', () => {
+  const client = loadBundle('en')
+  client.__resetScopeForTests()
+  // A failed re-read keeps the old scope payload around in the store; the banner
+  // must show the error/reload state instead of the stale identity label.
+  client.__setScopeStateForTests({
+    status: 'error',
+    scope: SCOPE,
+    error: 'scope-changed',
+  })
+  const markup = render(createElement(client.ScopeBanner, {}))
+  assert.ok(markup.includes('Scope unavailable'), 'the failure is visible')
+  assert.ok(markup.includes('Reload'), 'a reload affordance is offered')
+  assert.equal(markup.includes('Alpha dev'), false, 'the stale identity label is not shown')
+})
+
+test('the banner surfaces the /scope warnings without opening the menu (S11)', () => {
+  const client = loadBundle('en')
+  client.__resetScopeForTests()
+  client.__setScopeStateForTests({
+    status: 'ready',
+    scope: { ...SCOPE, warnings: [{ code: 'profileNotFound', params: { id: 'ghost' } }] },
+    scopes: SCOPES,
+    scopesStatus: 'ready',
+  })
+  const markup = render(createElement(client.ScopeBanner, {}))
+  assert.ok(markup.includes('Profile ghost does not exist.'), 'the profile warning is rendered')
+})
+
+test('a stored key on a dev profile is labelled "stored", not "key-bound" (S11)', () => {
+  const client = loadBundle('en')
+  client.__resetScopeForTests()
+  const devWithKey = {
+    ...SCOPES,
+    scopes: [
+      SCOPES.scopes[0],
+      {
+        ...SCOPES.scopes[1],
+        label: 'Dev with stored key',
+        authMode: 'dev',
+        hasApiKey: true,
+        warnings: [],
+        health: { ok: true, version: '0.5.3', latencyMs: 3, error: null },
+      },
+    ],
+  }
+  client.__setScopeStateForTests({ status: 'ready', scope: SCOPE, scopes: devWithKey, scopesStatus: 'ready' })
+  const markup = render(createElement(client.ScopeMenu, { onClose: () => {} }))
+  assert.ok(markup.includes('Dev with stored key'))
+  assert.equal(markup.includes('key-bound'), false, 'hasApiKey alone is not key-bound identity')
+})
+
+test('the blocked switch message names the real reason, not always "ops"', () => {
+  const client = loadBundle('en')
+  client.__resetScopeForTests()
+  client.__setScopeStateForTests({ status: 'ready', scope: SCOPE, scopes: SCOPES, scopesStatus: 'ready' })
+  client.__setWriteStateForTests({ confirm: { token: 'pending-token' }, plan: null, notice: null, busy: false })
+  try {
+    const markup = render(createElement(client.ScopeMenu, { onClose: () => {} }))
+    assert.ok(markup.includes('A confirmation is pending'), 'the curation-confirmation reason is shown')
+    assert.equal(markup.includes('operational confirmation'), false, 'not the ops wording')
+  } finally {
+    client.__setWriteStateForTests({ confirm: null, plan: null, notice: null, busy: false })
+  }
+})
+
+test('the session mismatch banner shows the recorded account/user/peer (S4)', () => {
+  const client = loadBundle('en')
+  client.__setSessionScopeForTests('s4', {
+    status: 'ready',
+    payload: {
+      sessionId: 's4',
+      record: {
+        sessionId: 's4',
+        scopeKey: 'sha256:recorded',
+        profileId: 'alpha',
+        label: 'Alpha dev',
+        account: 'acme',
+        user: 'bob',
+        peer: 'peer-9',
+        observedAt: '2026-11-10T00:00:00.000Z',
+      },
+      active: SCOPES.active,
+      mismatch: true,
+      officialPlugin: null,
+      pipelineMismatch: false,
+      warnings: [],
+      observedAt: '2026-11-10T00:00:00.000Z',
+    },
+  })
+  const markup = render(createElement(client.SessionScopeBanner, { sessionId: 's4' }))
+  assert.ok(markup.includes('acme/bob'))
+  assert.ok(markup.includes('peer-9'))
+  assert.ok(markup.includes('Switch back'))
+})
+
+test('B3: the session-scope mismatch gates preview curation and force-commit', () => {
+  const client = loadBundle('en')
+  // The predicates the real buttons consult.
+  assert.equal(
+    client.curationActionsReady({ writesEnabled: true, transport: true, scopeMismatch: true }),
+    false,
+    'preview curation is disabled under a scope mismatch',
+  )
+  assert.equal(client.curationActionsReady({ writesEnabled: true, transport: true, scopeMismatch: false }), true)
+  assert.equal(
+    client.forceCommitEnabled({ writesEnabled: true, transport: true, scopeMismatch: true }),
+    false,
+    'force-commit is disabled after a switch',
+  )
+  assert.equal(client.forceCommitEnabled({ writesEnabled: true, transport: true, scopeMismatch: false }), true)
+  // And the synchronous guard the panels read reports the mismatch.
+  client.__setSessionScopeForTests('s5', {
+    status: 'ready',
+    payload: {
+      sessionId: 's5',
+      record: null,
+      active: SCOPES.active,
+      mismatch: true,
+      officialPlugin: null,
+      pipelineMismatch: false,
+      warnings: [],
+      observedAt: '2026-11-10T00:00:00.000Z',
+    },
+  })
+  assert.equal(client.sessionScopeMismatch('s5'), true)
+  assert.equal(client.sessionScopeMismatch('never-known'), false, 'unknown is never a mismatch')
+})

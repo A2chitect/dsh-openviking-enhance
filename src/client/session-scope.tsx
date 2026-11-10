@@ -19,7 +19,7 @@ import { useSyncExternalStore } from 'react'
 import type { SessionScopePayload } from '../shared/protocol.ts'
 import { fetchSessionScope } from './host-api.ts'
 import { t } from './locale.ts'
-import { switchProfile } from './scope-store.ts'
+import { switchIdentity, switchProfile } from './scope-store.ts'
 
 export interface SessionScopeState {
   status: 'idle' | 'loading' | 'ready' | 'error'
@@ -101,6 +101,20 @@ export function sessionScopeMismatch(sessionId: string): boolean {
   return state?.payload?.mismatch === true
 }
 
+/**
+ * v0.9 review B3: drop every cached session-scope answer on a scope switch.
+ *
+ * The mismatch is scope-dependent state: keeping a previous answer would let the
+ * commit pill keep `mismatch=false` after a switch. Surfaces re-fetch when their
+ * scope dependency changes; this reset also wakes them immediately.
+ */
+export function resetSessionScopes(): void {
+  for (const [sessionId, current] of [...states]) {
+    emit(sessionId, { ...EMPTY, status: current.status === 'idle' ? 'idle' : 'idle' })
+  }
+  states.clear()
+}
+
 /** Test seam: install a known session-scope answer (component tests, no host). */
 export function __setSessionScopeForTests(sessionId: string, next: Partial<SessionScopeState>): void {
   emit(sessionId, { ...(states.get(sessionId) ?? EMPTY), ...next })
@@ -120,23 +134,47 @@ export function SessionScopeBanner({ sessionId, className }: SessionScopeBannerP
   const payload = state.payload
   const classes = className === undefined ? 'ove-scope-session-banner' : `ove-scope-session-banner ${className}`
   if (payload === null) return null
+  const record = payload.record
+  // Review S4: show the recorded identity tuple so a manual fix is possible, and
+  // restore it in one click when the profile already matches (the full tuple is
+  // an identity override); a profile switch itself resets overrides, so that path
+  // stays a switch-then-adjust with the tuple visible.
+  const recordedIdentity =
+    record === null ? null : `${record.account}/${record.user}${record.peer === null ? '' : ` · ${record.peer}`}`
+  const sameProfile = record !== null && record.profileId === payload.active.profileId
   const switchBack = (): void => {
-    if (payload.record?.profileId === null || payload.record?.profileId === undefined) return
-    void switchProfile(payload.record.profileId)
+    if (record === null || record.profileId === null) return
+    if (sameProfile) {
+      void switchIdentity({
+        account: record.account,
+        user: record.user,
+        peer: record.peer ?? '',
+      })
+      return
+    }
+    void switchProfile(record.profileId)
   }
   if (payload.mismatch) {
     return (
       <div className={`${classes} ove-scope-session-mismatch`} role="alert">
         <span>
           {t('scope.session.mismatch', {
-            label: payload.record?.label ?? t('scope.unknown'),
+            label: record?.label ?? t('scope.unknown'),
             active: payload.active.label ?? t('scope.legacyMode'),
           })}
         </span>
-        {payload.record?.profileId !== null && payload.record?.profileId !== undefined && (
+        {recordedIdentity !== null && (
+          <span className="ove-scope-hint" title={t('scope.session.recordedIdentityHint')}>
+            {t('scope.session.recordedIdentity', { identity: recordedIdentity })}
+          </span>
+        )}
+        {record !== null && record.profileId !== null && (
           <button type="button" className="ove-preview-button" onClick={switchBack}>
             {t('scope.session.switchBack')}
           </button>
+        )}
+        {record !== null && record.profileId !== null && !sameProfile && (
+          <span className="ove-scope-hint">{t('scope.session.switchBackHint')}</span>
         )}
         <span className="ove-scope-hint">{t('scope.session.actionsDisabled')}</span>
       </div>

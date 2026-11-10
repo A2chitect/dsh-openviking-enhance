@@ -39,6 +39,7 @@ import {
   registerScopeTransport,
   switchScopeIdentity,
 } from './host-api.ts'
+import { SCOPE_SWITCH_COOLDOWN_MS } from '../shared/limits.ts'
 import { hasPendingOps } from './ops-store.ts'
 import { hasPendingWrite } from './write-store.ts'
 import { t } from './locale.ts'
@@ -64,6 +65,11 @@ export interface ScopeState {
   scopesError: string | null
   /** The last successful switch, cleared after the notice is shown/dismissed. */
   switchNotice: ScopeSwitchNotice | null
+  /**
+   * v0.9 review S12: a switch is in flight. Every switch control is disabled
+   * while true (profile pick and identity apply cannot interleave).
+   */
+  switching: boolean
 }
 
 let state: ScopeState = {
@@ -75,6 +81,7 @@ let state: ScopeState = {
   scopesStatus: 'idle',
   scopesError: null,
   switchNotice: null,
+  switching: false,
 }
 let inflight: Promise<void> | null = null
 let scopesInflight: Promise<void> | null = null
@@ -266,9 +273,11 @@ function handleHostScopeChanged(): void {
  * client store, so `ops-store.ts` tracks whether one is open or executing.
  */
 export function scopeSwitchBlockedReason(): string | null {
+  if (state.switching) return 'scope.switchInFlight'
   if (hasPendingWrite()) return 'scope.switchBlocked'
   if (hasPendingOps()) return 'scope.switchBlockedOps'
-  if (lastSwitchAt > 0 && Date.now() - lastSwitchAt < 1_000) return 'scope.switchCooldown'
+  // Review S10: the wire constant, not a duplicated literal.
+  if (lastSwitchAt > 0 && Date.now() - lastSwitchAt < SCOPE_SWITCH_COOLDOWN_MS) return 'scope.switchCooldown'
   return null
 }
 
@@ -276,6 +285,7 @@ export function scopeSwitchBlockedReason(): string | null {
 export function scopeSwitchBlockedMessage(reason: string): string {
   if (reason === 'scope.switchBlockedOps') return t('scope.switchBlockedOps')
   if (reason === 'scope.switchCooldown') return t('scope.switchCooldown')
+  if (reason === 'scope.switchInFlight') return t('scope.switchInFlight')
   return t('scope.switchBlocked')
 }
 
@@ -297,25 +307,33 @@ export interface ScopeSwitchOptions {
  * override mutation go through it, so the two can never drift.
  */
 async function runSwitch(
-  perform: () => Promise<{ ok: true } | { ok: false; error: string }>,
+  perform: () => Promise<{ ok: true; adopt?: Partial<ScopeState> } | { ok: false; error: string }>,
   options: ScopeSwitchOptions = {},
 ): Promise<{ ok: boolean; error: string | null }> {
   const blocked = scopeSwitchBlockedReason()
   if (blocked !== null) return { ok: false, error: scopeSwitchBlockedMessage(blocked) }
   const fromLabel = options.fromLabel ?? currentLabel()
+  emit({ switching: true, switchError: null })
   generation += 1
   abortScopedReads()
-  emit({ switchError: null })
   try {
     const result = await perform()
     if (!result.ok) {
       emit({ switchError: result.error })
+      // The host may still have moved (e.g. a profile switch that committed):
+      // discovery reads are tolerant and tell us the truth.
       void refreshScope()
       return { ok: false, error: result.error }
     }
     lastSwitchAt = Date.now()
-    await refreshScope()
-    await refreshScopes()
+    if (result.adopt !== undefined) {
+      // Review B1: the scope-changing mutation replied with the authoritative
+      // new scope payload — adopt it instead of re-sending the stale key.
+      emit({ status: 'ready', error: null, ...result.adopt })
+    } else {
+      await refreshScope()
+      await refreshScopes()
+    }
     const notice: ScopeSwitchNotice = { seq: (noticeSeq += 1), fromLabel, toLabel: currentLabel(), at: lastSwitchAt }
     emit({ switchNotice: notice, switchError: null })
     notifySwitchHandlers(notice)
@@ -324,6 +342,8 @@ async function runSwitch(
     const message = error instanceof Error ? error.message : String(error)
     emit({ switchError: message })
     return { ok: false, error: message }
+  } finally {
+    emit({ switching: false })
   }
 }
 
@@ -347,7 +367,9 @@ export async function switchIdentity(
   return runSwitch(async () => {
     const answer = await switchScopeIdentity(request)
     if (!answer.ok) return { ok: false as const, error: scopeErrorText(answer.error.code) }
-    return { ok: true as const }
+    // Review B1: adopt the replied scope/scopes; do not re-read `/scope` with the
+    // key the switch just invalidated.
+    return { ok: true as const, adopt: { scope: answer.scope, scopes: answer.scopes } }
   })
 }
 
@@ -381,6 +403,7 @@ export function __resetScopeForTests(): void {
     scopesStatus: 'idle',
     scopesError: null,
     switchNotice: null,
+    switching: false,
   }
   generation = 0
   lastSwitchAt = 0

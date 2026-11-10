@@ -22,6 +22,7 @@ import { ScopeChip } from './scope-chip.tsx'
 import { ensureScope, useScope } from './scope-store.ts'
 import { canSelectPanel, openNative } from './native-store.ts'
 import { notifyWriteSettled, openWriteConfirm, useWriteStore } from './write-store.ts'
+import { ensureSessionScope, useSessionScope } from './session-scope.tsx'
 
 /**
  * The slice of the framework's per-tab information this panel reads.
@@ -73,6 +74,21 @@ function LinkGlyph() {
   )
 }
 
+/**
+ * v0.9 review B3: whether the curation actions may be offered.
+ *
+ * Extracted so a test can pin the boundary without a DOM: writes must be enabled,
+ * the transport present, **and** the session must not be observed under another
+ * scope (a cross-scope write is never allowed).
+ */
+export function curationActionsReady(input: {
+  writesEnabled: boolean
+  transport: boolean
+  scopeMismatch: boolean
+}): boolean {
+  return input.writesEnabled && input.transport && !input.scopeMismatch
+}
+
 export function PreviewPanel(props: PreviewPanelProps) {
   // Params-first: the live sidebar hands the target through `openTab`, which is
   // also how a re-open of the same page re-targets it. The store is the fallback
@@ -87,6 +103,15 @@ export function PreviewPanel(props: PreviewPanelProps) {
   const [actionError, setActionError] = useState<string | null>(null)
   const scope = useScope()
   const writeState = useWriteStore()
+  // v0.9 review B3: the buttons must honour the session-scope mismatch, not only
+  // the write master switch (a mismatched session must not write cross-scope).
+  const sessionScope = useSessionScope(props.sessionId ?? '')
+  const scopeMismatch = sessionScope.payload?.mismatch === true
+  // Review B3: re-fetch the session scope on every scope change (and clear the
+  // stale answer first — the switch handler resets the store).
+  useEffect(() => {
+    void ensureSessionScope(props.sessionId ?? '', true)
+  }, [props.sessionId, scope.scope?.identity.fingerprint])
 
   useEffect(() => {
     setDraft(targetUri ?? '')
@@ -130,7 +155,11 @@ export function PreviewPanel(props: PreviewPanelProps) {
     (payload: PreviewPayload): ReactNode => {
       const classification = classifyCuratableUri(payload.uri)
       const curatable = classification !== null && classification.ok && payload.stat?.isDir === false
-      const writesReady = scope.scope !== null && scope.scope.writes.enabled && scope.scope.writes.transport
+      const writesReady = curationActionsReady({
+        writesEnabled: scope.scope !== null && scope.scope.writes.enabled,
+        transport: scope.scope !== null && scope.scope.writes.transport,
+        scopeMismatch,
+      })
       const prepareAction = async (action: 'edit-memory' | 'delete-memory' | 'set-tags'): Promise<void> => {
         setActionError(null)
         const answer = await prepareWrite({
@@ -143,7 +172,7 @@ export function PreviewPanel(props: PreviewPanelProps) {
       }
       if (payload.stat?.isDir !== false) return null
       if (curatable) {
-        return writesReady ? (
+        return writesReady && !scopeMismatch ? (
           <div className="ove-preview-actions">
             <span className="ove-preview-actions-title">{t('write.actionsTitle')}</span>
             <button type="button" className="ove-preview-button" onClick={() => void prepareAction('edit-memory')}>
@@ -163,7 +192,9 @@ export function PreviewPanel(props: PreviewPanelProps) {
           </div>
         ) : (
           <p className="ove-preview-hint">
-            {t('write.actionsDisabled', { reason: scope.scope?.writes.reason ?? 'writes-disabled' })}
+            {scopeMismatch
+              ? t('scope.session.actionsDisabled')
+              : t('write.actionsDisabled', { reason: scope.scope?.writes.reason ?? 'writes-disabled' })}
           </p>
         )
       }
@@ -173,7 +204,7 @@ export function PreviewPanel(props: PreviewPanelProps) {
         </p>
       )
     },
-    [props.sessionId, scope.scope, actionError],
+    [props.sessionId, scope.scope, scopeMismatch, actionError],
   )
 
   /**

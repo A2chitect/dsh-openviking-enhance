@@ -208,13 +208,17 @@ export const EVIDENCE_LOOKUP_DEADLINE_MS = 15_000
 /** The `scope-state.json` schema version (the header `version` field). */
 export const SCOPE_STATE_VERSION = 1
 /**
- * Per-scope cache sets retained in memory. v0.9 ships the approved fallback
- * (clear all caches on a switch); this constant bounds the design and is what
- * the Doctor reports, so a future per-scope LRU cannot grow unbounded.
+ * v0.9 ships the approved **clear-all-on-switch** cache policy: no per-scope
+ * cache set is retained after a scope switch, so there is no retained-set bound
+ * to advertise. (The design allowed a two-set LRU as the faster alternative; it
+ * was not implemented, and the docs no longer claim it.)
  */
-export const SCOPE_MAX_RETAINED_CACHES = 2
 /** How long one scope health/capability summary is trusted in the menu. */
 export const SCOPE_PROBE_TTL_MS = 10_000
+/** `/scopes` probes at most this many configured servers concurrently (S9). */
+export const SCOPE_PROBES_CONCURRENCY = 4
+/** Overall deadline for one `/scopes` probe pass; late answers keep cached rows. */
+export const SCOPE_PROBES_DEADLINE_MS = 8_000
 /** A second switch in this window is refused as a double-click. */
 export const SCOPE_SWITCH_COOLDOWN_MS = 1_000
 /** Bounded local DSH-session → scope map entries (LRU). */

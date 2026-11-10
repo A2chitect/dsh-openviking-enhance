@@ -54,11 +54,13 @@ import {
   type ScopesPayload,
   type SearchPayload,
   type SessionScopePayload,
+  type SessionScopeRecord,
   type ScopeCapability,
 } from '../shared/protocol.ts'
 import {
   ACL_URI_MAX_CHARS,
   FILE_VERSIONS_PAGE,
+  SCOPE_KEY_MAX_CHARS,
   OBSERVABILITY_MAX_DAYS,
   SNAPSHOT_DIFF_PATHS_PAGE,
   SNAPSHOT_LOG_MAX,
@@ -577,6 +579,14 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
   let capabilityServiceRef: CapabilityService | null = null
   let scopePendingCount = (): number => 0
   let scopeBusy = (): boolean => false
+  /**
+   * v0.9 review S7: state-file problems that must reach the user instead of being
+   * silently overwritten — a failed persist after a switch, and a corrupt
+   * `scope-state.json` found at boot (which is *not* rewritten automatically so
+   * the Doctor keeps the evidence).
+   */
+  let scopePersistenceWarning: PluginNotice | null = null
+  let scopeStateCorruptAtBoot = false
 
   /**
    * v0.9: the active-scope authority — boot precedence, identity rules,
@@ -589,6 +599,9 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
     configOverrides: connectionOverrides,
     probedAuthMode: () => capabilityServiceRef?.lastSnapshot()?.health.authMode ?? null,
     healthy: () => capabilityServiceRef?.lastSnapshot()?.health.ok ?? true,
+    // Review S8: switching needs a *known* healthy snapshot; resolution of an
+    // already-stored override keeps the permissive flag above.
+    knownHealthy: () => capabilityServiceRef?.lastSnapshot()?.health.ok === true,
     // The scope menu probes each configured server's `/health` only: a cheap
     // liveness read with that profile's own credentials, never `/admin`.
     probe: async (profile) => {
@@ -700,6 +713,26 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
     } catch {
       // Best effort by design: a full/slow disk must not fail a read.
     }
+  }
+
+  /**
+   * v0.9 review S5: compare the **identity tuple** recorded for a session, not
+   * the raw scope key. The key embeds the lazily probed auth mode, so a record
+   * taken before the first probe could otherwise "mismatch" the same identity
+   * after a successful probe. The tuple (profile id + effective account/user +
+   * peer) is exactly what a person selected.
+   */
+  const sessionScopeMatches = (record: SessionScopeRecord): boolean =>
+    record.profileId === resolvedScope.profileId &&
+    record.account === connection.account &&
+    record.user === connection.user &&
+    record.peer === resolvedScope.peerId
+
+  /** Whether this DSH session was last observed under a different identity. */
+  const sessionScopeMismatched = (sessionId: string | undefined): boolean => {
+    if (sessionId === undefined || sessionId.trim().length === 0) return false
+    const record = sessionScopes.get(sessionId)
+    return record !== null && !sessionScopeMatches(record)
   }
 
   /**
@@ -857,6 +890,8 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
     gate: mutationGate,
     actorPeer: (sessionId) =>
       sessionId === undefined || sessionId.length === 0 ? undefined : service.actorPeer(sessionId),
+    // Review B3: the host must enforce the session-scope boundary, not just the UI.
+    sessionScopeMismatch: (sessionId) => sessionScopeMismatched(sessionId),
   })
 
   /* ---- v0.8 Operate services -------------------------------------------- */
@@ -904,6 +939,21 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
    * cache can serve the previous scope's data after the client re-reads `/scope`.
    */
   const applyActiveScope = (): void => {
+    // Review S12: one switch at a time; a nested/interleaved switch is refused
+    // rather than writing `scope-state.json` from two resolutions.
+    if (!scopeService.beginSwitch()) {
+      logger?.warn?.('[openviking-enhance] ignored a scope change while another switch was in flight')
+      return
+    }
+    try {
+      applyActiveScopeLocked()
+    } finally {
+      scopeService.endSwitch()
+    }
+  }
+
+  /** The body of `applyActiveScope`, called while the switching mutex is held. */
+  const applyActiveScopeLocked = (): void => {
     const previousKey = resolvedScope.scopeKey
     const previousLabel = resolvedScope.profileLabel
     const next = scopeService.resolveActive()
@@ -924,13 +974,23 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
     observability.resetCaches()
     // ACL reports carry principal ids: never cached across scopes.
     aclService.clear()
+    // Review B5: the Activity metrics cache holds account-wide aggregates.
+    activity.resetCaches()
     // One-time pack downloads are bound to an identity fingerprint.
     packBroker.close()
     // Persist the last scope. `persistProfile` writes `scope-state.json` and
     // resets the identity overrides when the profile actually changed.
+    // Review S7: a failed persist must be visible, not swallowed — otherwise a
+    // switch looks successful while the next boot falls back to the old scope.
+    scopePersistenceWarning = null
     try {
-      scopeService.persistProfile(resolvedScope.profile?.id ?? '')
+      const persisted = scopeService.persistProfile(resolvedScope.profile?.id ?? '')
+      if (!persisted.ok) {
+        scopePersistenceWarning = { code: 'scopeStatePersistFailed' }
+        logger?.warn?.(`[openviking-enhance] could not persist the active scope: ${persisted.error ?? 'unknown error'}`)
+      }
     } catch (error) {
+      scopePersistenceWarning = { code: 'scopeStatePersistFailed' }
       logger?.warn?.('[openviking-enhance] could not persist the active scope', error)
     }
     // The double-click cooldown starts here (the client guard reads the clock
@@ -980,10 +1040,26 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
   }
   recordIdentitySwitch = auditIdentitySwitch
   // Boot: remember the resolved last scope and record the activation identity.
-  try {
-    scopeService.persistProfile(resolvedScope.profile?.id ?? '')
-  } catch (error) {
-    logger?.warn?.('[openviking-enhance] could not persist the initial scope', error)
+  //
+  // Review S7: a malformed/wrong-shape `scope-state.json` must NOT be overwritten
+  // on boot. Rewriting it would make the Doctor's config-source health report
+  // "ok" and destroy the evidence the README promises. The warning rides the
+  // scope payload instead; a deliberate user switch may still replace the file.
+  const bootStateHealth = scopeState.sourceHealth()
+  if (bootStateHealth.state === 'malformed' || bootStateHealth.state === 'wrong-shape') {
+    scopeStateCorruptAtBoot = true
+    logger?.warn?.(`[openviking-enhance] scope-state.json is ${bootStateHealth.state}; keeping it for the Doctor and falling back`)
+  } else {
+    try {
+      const persisted = scopeService.persistProfile(resolvedScope.profile?.id ?? '')
+      if (!persisted.ok) {
+        scopePersistenceWarning = { code: 'scopeStatePersistFailed' }
+        logger?.warn?.(`[openviking-enhance] could not persist the initial scope: ${persisted.error ?? 'unknown error'}`)
+      }
+    } catch (error) {
+      scopePersistenceWarning = { code: 'scopeStatePersistFailed' }
+      logger?.warn?.('[openviking-enhance] could not persist the initial scope', error)
+    }
   }
   auditIdentitySwitch()
 
@@ -1176,10 +1252,11 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
           writeJson(res, 400, { ok: false, error: 'sessionId is required' } satisfies ApiResult<never>)
           return
         }
-        // v0.9: record which scope first observed this session (best effort).
-        observeSessionScope(sessionId)
         try {
           const status = await service.status(sessionId, { fresh: query(req).get('fresh') === '1' })
+          // v0.9 review S5: record only after a successful read — a failed read
+          // must not claim this scope observed the session.
+          observeSessionScope(sessionId)
           writeJson(res, 200, { ok: true, status })
         } catch (error) {
           writeJson(res, 200, { ok: false, error: message(error) })
@@ -1196,7 +1273,6 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
           writeJson(res, 400, { ok: false, error: 'sessionId is required' } satisfies ApiResult<never>)
           return
         }
-        observeSessionScope(sessionId)
         try {
           // `summaries` bounds the timeline's fan-out: the popover asks for
           // TIMELINE_DEFAULT on its poll and for more only when the user expands.
@@ -1206,6 +1282,7 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
           // skips the short status cache; ordinary polling keeps it.
           const fresh = query(req).get('fresh') === '1'
           const { status, tasks, summaries } = await service.commits(sessionId, limit, { fresh })
+          observeSessionScope(sessionId)
           writeJson(res, 200, { ok: true, status, tasks, summaries })
         } catch (error) {
           writeJson(res, 200, { ok: false, error: message(error) })
@@ -1224,7 +1301,6 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
           writeJson(res, 400, { ok: false, error: 'sessionId and archive are required' } satisfies ApiResult<never>)
           return
         }
-        observeSessionScope(sessionId)
         const ovSessionId = service.ovSessionId(sessionId)
         if (!isArchiveUriForSession(archiveUri, ovSessionId)) {
           writeJson(res, 400, { ok: false, error: 'archive is not part of this session history' } satisfies ApiResult<never>)
@@ -1232,6 +1308,7 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
         }
         try {
           const diff = await service.diff(sessionId, archiveUri)
+          observeSessionScope(sessionId)
           if (!diff) {
             // Not an error: the archive exists but extraction has not written
             // the diff yet. The UI shows this as "extracting…".
@@ -1255,7 +1332,6 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
           writeJson(res, 400, { ok: false, error: 'sessionId is required' } satisfies ApiResult<never>)
           return
         }
-        observeSessionScope(sessionId)
         try {
           // `query` is absent for the session's own last prompt; `limit` bounds
           // each bucket, so a crafted request cannot ask for the whole library.
@@ -1264,6 +1340,7 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
           const payload = await recall.recall(sessionId, params.get('query') ?? undefined, limit, {
             fresh: params.get('fresh') === '1',
           })
+          observeSessionScope(sessionId)
           writeJson(res, 200, { ok: true, recall: payload })
         } catch (error) {
           writeJson(res, 200, { ok: false, error: message(error) })
@@ -1281,7 +1358,6 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
           writeJson(res, 400, { ok: false, error: 'sessionId is required' } satisfies ApiResult<never>)
           return
         }
-        observeSessionScope(sessionId)
         const requested = params.get('source')
         const source =
           requested === 'turn' || requested === 'session' || requested === 'manual' ? requested : undefined
@@ -1290,6 +1366,7 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
             fresh: params.get('fresh') === '1',
             ...(source === undefined ? {} : { source }),
           })
+          observeSessionScope(sessionId)
           writeJson(res, 200, { ok: true, explanation })
         } catch (error) {
           writeJson(res, 200, { ok: false, error: message(error) })
@@ -1307,9 +1384,9 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
           writeJson(res, 400, { ok: false, error: 'sessionId is required' } satisfies ApiResult<never>)
           return
         }
-        observeSessionScope(sessionId)
         try {
           const log = await sessionLog.log(sessionId, { fresh: params.get('fresh') === '1' })
+          observeSessionScope(sessionId)
           writeJson(res, 200, { ok: true, log })
         } catch (error) {
           writeJson(res, 200, { ok: false, error: message(error) })
@@ -1519,6 +1596,8 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
     if (configuredProfile.length > 0 && profileStore.find(configuredProfile) === null) {
       warnings.push({ code: 'profileNotFound', params: { id: configuredProfile } })
     }
+    if (scopeStateCorruptAtBoot) warnings.push({ code: 'scopeStateCorrupt' })
+    if (scopePersistenceWarning !== null) warnings.push(scopePersistenceWarning)
     const reason = !writesEnabled
       ? 'writes-disabled'
       : !transport
@@ -1568,6 +1647,8 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
     const scope = identityScope()
     const official = officialPluginComparison()
     const warnings: PluginNotice[] = [...resolvedScope.warnings]
+    if (scopeStateCorruptAtBoot) warnings.push({ code: 'scopeStateCorrupt' })
+    if (scopePersistenceWarning !== null) warnings.push(scopePersistenceWarning)
     if (!official.pipelineMismatch && official.facts === null) {
       warnings.push({ code: 'officialPluginUnknown' })
     }
@@ -1590,10 +1671,13 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
    * no cross-scope writes and no silent rebind.
    */
   const sessionScopePayload = (sessionId: string): SessionScopePayload => {
-    const active = identityScope()
+    identityScope()
     const record = sessionScopes.get(sessionId)
     const official = officialPluginComparison()
-    const mismatch = record !== null && record.scopeKey !== active.fingerprint
+    // Review S5: compare the identity tuple, not the key (the key embeds the
+    // lazily probed auth mode). A record taken before the probe cannot "mismatch"
+    // the same identity once the probe lands.
+    const mismatch = record !== null && !sessionScopeMatches(record)
     const warnings: PluginNotice[] = []
     if (mismatch) warnings.push({ code: 'sessionScopeMismatch', params: { label: record.label ?? 'unknown' } })
     if (official.pipelineMismatch) warnings.push({ code: 'officialPluginMismatch', params: { host: official.facts?.endpointHost ?? 'unknown' } })
@@ -1717,6 +1801,8 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
             'content-disposition': `attachment; filename="${exported.fileName}"`,
             'cache-control': 'no-store',
             'content-length': Buffer.byteLength(body),
+            // v0.9: attachments are labelled too (they are on the fenced GET path).
+            'x-dsh-openviking-scope': scopeKeyNow(),
           })
           res.end(body)
         } catch (error) {
@@ -1726,11 +1812,12 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
     },
     readRoute(`${API_PREFIX}/metrics`, async (params) => {
       const sessionId = (params.get('sessionId') ?? '').trim()
-      observeSessionScope(sessionId)
       const metrics = await activity.metrics({
         ...(sessionId.length === 0 ? {} : { sessionId, ovSessionId: service.ovSessionId(sessionId) }),
         fresh: params.get('fresh') === '1',
       })
+      // Review S5: only a successful metrics read records the observation.
+      observeSessionScope(sessionId)
       return { ok: true, metrics }
     }),
     {
@@ -1764,8 +1851,8 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
     readRoute(`${API_PREFIX}/session-control`, async (params) => {
       const sessionId = (params.get('sessionId') ?? '').trim()
       if (sessionId.length === 0) return { ok: false, error: { code: 'invalid-request', message: 'sessionId is required' } }
-      observeSessionScope(sessionId)
       const payload: SessionControlPayload = await sessionControl.read(sessionId)
+      observeSessionScope(sessionId)
       return { ok: true, ...payload }
     }),
   ]
@@ -2207,6 +2294,10 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
             'content-length': file.size,
             'content-disposition': `attachment; filename="${download.fileName}"`,
             'cache-control': 'no-store',
+            // Documented binary exception: the stream is labelled but cannot
+            // answer a JSON `scope-changed` envelope mid-stream; the one-time
+            // token is identity-bound and the broker closes on a switch.
+            'x-dsh-openviking-scope': scopeKeyNow(),
           })
           const stream = createReadStream(download.filePath)
           // Delete the one-time temp file exactly once, and only once the
@@ -2620,7 +2711,9 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
           changed: false,
           from: before.fingerprint,
           to: before.fingerprint,
-          scope: before,
+          // Review B1: hand back the full scope payload so the client can adopt
+          // the host's answer instead of re-reading `/scope` with a stale key.
+          scope: await scopePayload(false),
           scopes: await scopesPayload(false),
           warnings: outcome.warnings,
         }
@@ -2634,7 +2727,7 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
         changed: true,
         from: before.fingerprint,
         to: after.fingerprint,
-        scope: after,
+        scope: await scopePayload(false),
         scopes: await scopesPayload(false),
         warnings: outcome.warnings,
       }
@@ -2663,7 +2756,10 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
     add(`${API_PREFIX}/profiles/delete`, async (body) => {
       const id = stringField(body, 'id') ?? ''
       if (id.length === 0) return { ok: false, error: { code: 'invalid-request', message: 'id is required.' } }
-      if (id === activeProfileId()) {
+      // Review S6: the runtime Config may be empty while the active profile comes
+      // from `scope-state.json`/the profiles header — guard on the *resolved*
+      // scope, or deleting it leaves the live connection pointing at nothing.
+      if (id === resolvedScope.profileId) {
         return {
           ok: false,
           error: { code: 'invalid-request', message: 'Switch to another profile before deleting this one.' },
@@ -2675,6 +2771,10 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
         return { ok: false, error: { code: outcome.code, message: outcome.message } }
       }
       auditProfile('delete-profile', id, 'ok', null)
+      // Deleting the active profile is refused above; deleting a stale state
+      // pointer (state says A, live resolution is legacy because A vanished)
+      // still re-resolves so `scope-state.json` and the live scope agree again.
+      if (scopeState.read().file.activeProfileId === id) applyActiveScope()
       return { ok: true, profiles: outcome.profiles }
     }, { allowScopeChange: true })
     add(`${API_PREFIX}/profiles/test`, async (body) => {
@@ -2746,13 +2846,33 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
    * `writeJson`: a composed read that started under scope A and finishes after a
    * switch to B answers `scope-changed` instead of A's payload.
    */
+  /**
+   * v0.9 review B1: the two **discovery** routes must stay readable with a stale
+   * key. The host may already be on a new scope (identity switch, profile switch,
+   * another tab) while the client still holds the old key; refusing `/scope`
+   * itself with `scope-changed` made the switch chain impossible to complete.
+   * They still emit the response label and the regular stale-response guard.
+   */
+  const SCOPE_DISCOVERY_ROUTES: ReadonlySet<string> = new Set([`${API_PREFIX}/scope`, `${API_PREFIX}/scopes`])
   const scopeAdmitted = (route: WebRoute): WebRoute => ({
     ...route,
     handler: async (req, res) => {
       const active = scopeKeyNow()
       const raw = req.headers[SCOPE_HEADER]
       const requested = Array.isArray(raw) ? raw[0] : raw
-      if (typeof requested === 'string' && requested.trim().length > 0 && requested.trim() !== active) {
+      const requestedKey = typeof requested === 'string' ? requested.trim() : ''
+      // Review S10: `SCOPE_KEY_MAX_CHARS` is wired here — an over-long header is a
+      // caller error, not a scope mismatch to parse.
+      if (requestedKey.length > SCOPE_KEY_MAX_CHARS) {
+        if (typeof res.setHeader === 'function') res.setHeader(SCOPE_RESPONSE_HEADER, active)
+        writeJson(res, 400, {
+          ok: false,
+          error: { code: 'invalid-scope', message: `The scope header exceeds ${SCOPE_KEY_MAX_CHARS} characters.` },
+        } satisfies OveResult<never>)
+        return
+      }
+      const discovery = SCOPE_DISCOVERY_ROUTES.has(route.path)
+      if (!discovery && requestedKey.length > 0 && requestedKey !== active) {
         const current = scopeKeyNow()
         if (typeof res.setHeader === 'function') res.setHeader(SCOPE_RESPONSE_HEADER, current)
         writeJson(res, 409, {

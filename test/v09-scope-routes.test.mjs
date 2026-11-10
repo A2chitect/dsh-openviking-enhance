@@ -190,6 +190,23 @@ class FakeServer {
       ok({ result: 'created', commit_oid: `commit-${this.data.label}`, changed: 1 })
       return
     }
+    /* ---- Activity tab metric sources (scope cache test B5) -------------- */
+    if (path === '/api/v1/console/dashboard/summary') {
+      ok({ context_counts: { files: this.data.memories, skills: 0, memories: this.data.memories, total: this.data.memories }, today_tokens: { total: this.data.memories }, today_retrievals: { total: 1 } })
+      return
+    }
+    if (path === '/api/v1/observer/queue') {
+      ok({ status: { queues: [] } })
+      return
+    }
+    if (path === '/api/v1/stats/memories') {
+      ok({ total_memories: this.data.memories, by_category: {}, hotness_distribution: {}, staleness: {} })
+      return
+    }
+    if (path.startsWith('/api/v1/stats/sessions/')) {
+      ok({ session_id: path.split('/').pop(), total_turns: 1, memories_extracted: this.data.memories })
+      return
+    }
     /* ---- ACL: the four states ------------------------------------------- */
     if (path === '/api/v1/acl') {
       const uri = url.searchParams.get('uri') ?? ''
@@ -208,6 +225,20 @@ class FakeServer {
       }
       if (uri === 'viking://resources/denied') {
         reply(403, failure('PERMISSION_DENIED', 'ACL management denied: manage permission required'))
+        return
+      }
+      if (uri === 'viking://resources/auth') {
+        reply(401, failure('UNAUTHORIZED', 'invalid api key'))
+        return
+      }
+      if (uri === 'viking://resources/boom') {
+        reply(500, failure('INTERNAL', 'boom'))
+        return
+      }
+      if (uri === 'viking://resources/no-mode') {
+        // A build that answers the report but omits acl_mode: the plugin must
+        // report "unknown", never guess "inherit" (review S2).
+        ok({ uri, direct_entries: [], inherited_entries: [], effective_entries: [] })
         return
       }
       reply(404, failure('NOT_FOUND', 'no ACL route on this build'))
@@ -240,9 +271,9 @@ async function boot(options = {}) {
   process.env.DSH_HOME = stateHome
   process.env.OPENVIKING_HOME = ovHome
 
-  const serverA = new FakeServer({ label: 'a', data: { label: 'alpha', version: '0.5.3' } })
-  const serverB = new FakeServer({ label: 'b', data: { label: 'beta', version: '0.5.2' } })
-  const serverC = new FakeServer({ label: 'c', authMode: 'api_key', data: { label: 'gamma', version: '0.5.1.1' } })
+  const serverA = new FakeServer({ label: 'a', data: { label: 'alpha', version: '0.5.3', memories: 111 } })
+  const serverB = new FakeServer({ label: 'b', data: { label: 'beta', version: '0.5.2', memories: 222 } })
+  const serverC = new FakeServer({ label: 'c', authMode: 'api_key', data: { label: 'gamma', version: '0.5.1.1', memories: 333 } })
   await Promise.all([serverA.listen(), serverB.listen(), serverC.listen()])
 
   const profiles = [
@@ -278,6 +309,9 @@ async function boot(options = {}) {
     },
   ]
   seedState(stateHome, profiles, options.activeProfileId ?? 'alpha', options.identity ?? null)
+  if (options.corruptScopeState === true) {
+    writeFileSync(join(stateHome, STATE_DIR, 'scope-state.json'), '{broken json', { mode: 0o600 })
+  }
 
   const holder = { activeProfile: options.configActiveProfile ?? '' }
   const module = await import('../lib/index.js')
@@ -444,6 +478,22 @@ test('a request carrying a non-active scope key is refused with scope-changed be
     const bare = await app.get(`${API}/browse?uri=viking://user/default/memories`)
     assert.equal(bare.status, 200)
     assert.ok(bare.headers.get('x-dsh-openviking-scope')?.startsWith('sha256:'))
+    // Review B1: the two discovery routes handle the switch chain; a stale key on
+    // them is answered with the CURRENT scope (still labelled), never a 409.
+    for (const discovery of ['/scope', '/scopes']) {
+      const answer = await app.get(`${API}${discovery}`, {
+        'x-dsh-openviking-scope': `sha256:${'0'.repeat(64)}`,
+      })
+      assert.equal(answer.status, 200, `${discovery} must stay readable with a stale key`)
+      assert.equal(answer.body.ok, true)
+      assert.ok(answer.headers.get('x-dsh-openviking-scope')?.startsWith('sha256:'))
+    }
+    // Review S10: an over-long scope header is a caller error, not a mismatch.
+    const tooLong = await app.get(`${API}/browse?uri=viking://user/default/memories`, {
+      'x-dsh-openviking-scope': `sha256:${'a'.repeat(300)}`,
+    })
+    assert.equal(tooLong.status, 400)
+    assert.equal(tooLong.body.error.code, 'invalid-scope')
   } finally {
     await app.shutdown()
   }
@@ -486,9 +536,9 @@ test('a dev-mode identity override is applied to reads and changes the scope key
     assert.equal(switched.body.ok, true, JSON.stringify(switched.body))
     assert.equal(switched.body.changed, true)
     assert.notEqual(switched.body.to, switched.body.from)
-    assert.equal(switched.body.scope.account, 'acme')
-    assert.equal(switched.body.scope.user, 'alice')
-    assert.equal(switched.body.scope.peer, 'peer-7')
+    assert.equal(switched.body.scope.identity.account, 'acme')
+    assert.equal(switched.body.scope.identity.user, 'alice')
+    assert.equal(switched.body.scope.identity.peer, 'peer-7')
 
     const after = (await app.get(`${API}/scope`)).body.scope
     assert.equal(after.identity.fingerprint, switched.body.to)
@@ -752,6 +802,176 @@ test('no scope flow ever requests an admin/account/group endpoint or another ser
     const bListings = app.serverB.requests.filter((entry) => entry.path === '/api/v1/fs/ls').length
     assert.equal(aListings > 0, true)
     assert.equal(bListings, 0, 'no cross-scope/federated read')
+  } finally {
+    await app.shutdown()
+  }
+})
+
+/* ========================================================================
+ * Review round 1 regression tests (B2/B3/B5/S1/S2/S6/S7)
+ * ===================================================================== */
+
+test('B2: a sessionless prepare never sends the scope peer to its write reads', async () => {
+  const app = await boot({ identity: { account: null, user: null, peer: 'peer-scope' } })
+  try {
+    const scope = (await app.get(`${API}/scope`)).body.scope
+    assert.equal(scope.identity.peer, 'peer-scope')
+    const key = scope.identity.fingerprint
+    const baseline = app.serverA.requests.length
+    const prepared = await app.mutate(
+      `${API}/write/prepare`,
+      {
+        action: 'set-tags',
+        target: 'viking://user/default/memories/preferences/tools.md',
+        tags: ['priority=high'],
+        tagMode: 'replace',
+      },
+      { 'x-dsh-openviking-scope': key },
+    )
+    assert.equal(prepared.body.ok, true, JSON.stringify(prepared.body))
+    const during = app.serverA.requests.slice(baseline)
+    const readPaths = during.filter((entry) =>
+      ['/api/v1/fs/attrs', '/api/v1/fs/stat', '/api/v1/content/read'].includes(entry.path),
+    )
+    assert.ok(readPaths.length > 0, 'the prepare read the target (revision/tags)')
+    assert.equal(
+      readPaths.some((entry) => entry.headers['x-openviking-actor-peer'] !== undefined),
+      false,
+      'write preparation must not use the scope peer read selector',
+    )
+    // The peer READ selector still applies where documented (ACL, sessionless reads):
+    const acl = await app.get(`${API}/acl?uri=${encodeURIComponent('viking://resources/ok')}`, {
+      'x-dsh-openviking-scope': key,
+    })
+    assert.equal(acl.body.ok, true)
+    const aclRequest = [...app.serverA.requests].reverse().find((entry) => entry.path === '/api/v1/acl')
+    assert.equal(aclRequest.headers['x-openviking-actor-peer'], 'peer-scope', 'S1: ACL is a sessionless read')
+  } finally {
+    await app.shutdown()
+  }
+})
+
+test('B3: a session observed under another scope cannot prepare a write', async () => {
+  const app = await boot()
+  try {
+    const key = (await app.get(`${API}/scope`)).body.scope.identity.fingerprint
+    // A successful session read records the observation under this scope.
+    const metrics = await app.get(`${API}/metrics?sessionId=s1`, { 'x-dsh-openviking-scope': key })
+    assert.equal(metrics.body.ok, true)
+    const switched = await app.mutate(`${API}/scope/identity`, { peer: 'peer-moved' }, { 'x-dsh-openviking-scope': key })
+    assert.equal(switched.body.ok, true, JSON.stringify(switched.body))
+    const prepared = await app.mutate(
+      `${API}/write/prepare`,
+      {
+        action: 'set-tags',
+        target: 'viking://user/default/memories/preferences/tools.md',
+        tags: ['priority=high'],
+        tagMode: 'replace',
+        sessionId: 's1',
+      },
+      { 'x-dsh-openviking-scope': switched.body.to },
+    )
+    assert.equal(prepared.body.ok, false)
+    assert.equal(prepared.body.error.code, 'session-scope-mismatch')
+    // A sessionless target (no session id) is not affected by the boundary.
+    const sessionless = await app.mutate(
+      `${API}/write/prepare`,
+      {
+        action: 'set-tags',
+        target: 'viking://user/default/memories/preferences/tools.md',
+        tags: ['priority=high'],
+        tagMode: 'replace',
+      },
+      { 'x-dsh-openviking-scope': switched.body.to },
+    )
+    assert.equal(sessionless.body.ok, true, JSON.stringify(sessionless.body))
+  } finally {
+    await app.shutdown()
+  }
+})
+
+test('B5: Activity metrics are re-fetched after a scope switch (cache is scope-scoped)', async () => {
+  const app = await boot()
+  try {
+    const first = await app.get(`${API}/metrics?sessionId=s1`)
+    assert.equal(first.body.ok, true)
+    assert.equal(JSON.stringify(first.body.metrics).includes('111'), true, 'alpha aggregates')
+    app.holder.activeProfile = 'beta'
+    await app.emitVolatile()
+    const second = await app.get(`${API}/metrics?sessionId=s1`)
+    assert.equal(second.body.ok, true)
+    assert.equal(JSON.stringify(second.body.metrics).includes('222'), true, 'beta aggregates, not the cached alpha ones')
+    assert.equal(JSON.stringify(second.body.metrics).includes('111'), false)
+    assert.equal(
+      app.serverA.requests.filter((entry) => entry.path === '/api/v1/console/dashboard/summary').length,
+      1,
+      'the alpha source was called once',
+    )
+    assert.ok(
+      app.serverB.requests.some((entry) => entry.path === '/api/v1/console/dashboard/summary'),
+      'the beta source was actually queried after the switch',
+    )
+  } finally {
+    await app.shutdown()
+  }
+})
+
+test('S2: ACL 401/5xx are distinguished from "unsupported" and a missing mode is not guessed', async () => {
+  const app = await boot()
+  try {
+    const key = (await app.get(`${API}/scope`)).body.scope.identity.fingerprint
+    const headers = { 'x-dsh-openviking-scope': key }
+    const auth = await app.get(`${API}/acl?uri=${encodeURIComponent('viking://resources/auth')}`, headers)
+    assert.equal(auth.body.acl.state, 'denied-no-manage')
+    assert.equal(auth.body.acl.detail, 'acl-auth-required')
+    const boom = await app.get(`${API}/acl?uri=${encodeURIComponent('viking://resources/boom')}`, headers)
+    assert.equal(boom.body.acl.state, 'unsupported')
+    assert.equal(boom.body.acl.detail, 'acl-server-error')
+    const noMode = await app.get(`${API}/acl?uri=${encodeURIComponent('viking://resources/no-mode')}`, headers)
+    assert.equal(noMode.body.acl.state, 'available')
+    assert.equal(noMode.body.acl.aclMode, null, 'a missing acl_mode stays unknown (no "inherit" guessing)')
+  } finally {
+    await app.shutdown()
+  }
+})
+
+test('S6: a profile activated through scope-state.json cannot be deleted', async () => {
+  const app = await boot()
+  try {
+    const scope = (await app.get(`${API}/scope`)).body.scope
+    assert.equal(scope.identity.profileId, 'alpha')
+    const refused = await app.mutate(`${API}/profiles/delete`, { id: 'alpha' }, { 'x-dsh-openviking-scope': scope.identity.fingerprint })
+    assert.equal(refused.body.ok, false)
+    assert.equal(refused.body.error.code, 'invalid-request')
+    const profiles = await app.get(`${API}/profiles`)
+    assert.equal(profiles.body.profiles.profiles.some((profile) => profile.id === 'alpha'), true)
+  } finally {
+    await app.shutdown()
+  }
+})
+
+test('S7: a corrupt scope-state.json is kept (not overwritten) and reported at boot', async () => {
+  const app = await boot({ corruptScopeState: true })
+  try {
+    const scope = await app.get(`${API}/scope`)
+    assert.equal(scope.body.ok, true)
+    assert.equal(
+      scope.body.scope.warnings.some((warning) => warning.code === 'scopeStateCorrupt'),
+      true,
+      'the corrupt state is surfaced, not silently replaced',
+    )
+    assert.equal(
+      readFileSync(join(app.stateHome, STATE_DIR, 'scope-state.json'), 'utf8'),
+      '{broken json',
+      'the boot fallback leaves the file intact for the Doctor',
+    )
+    const health = await app.get(`${API}/doctor`)
+    const sources = health.body.report?.configSources ?? []
+    assert.equal(
+      sources.some((source) => source.source === 'scope-state.json' && source.state !== 'ok'),
+      true,
+      'the Doctor still sees the config-source health evidence',
+    )
   } finally {
     await app.shutdown()
   }
