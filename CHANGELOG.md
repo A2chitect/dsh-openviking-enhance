@@ -10,6 +10,101 @@ promotes to a dated section — see [RELEASING.md](RELEASING.md).
 
 ## Unreleased
 
+### v0.5 — Collaborate (this PR)
+
+Collaborate. v0.5 adds the first write-capable layer on top of the read-only
+cockpit: opt-in curation with typed confirmations and snapshot undo, forced
+commits, a fifth Activity tab, named identity profiles with a persistent scope
+banner, and `/viking` write commands confirmed in the transcript. Nothing
+writes unless `enableWrites` is turned on, and every write path is
+confirmed, verified after the write, snapshot-undoable where the server can undo
+it, and audited locally.
+
+### Added
+
+- **Opt-in memory curation (F9).** With `enableWrites` on, a curatable preview
+  gains an action bar for **Edit**, **Tags** and **Delete**. Allowed targets are
+  memory bodies under `viking://user/<u>/memories/{entities,events,preferences}/…`
+  (plus visible peer equivalents); sidecars, rules, session archives, resources,
+  skills and the root profile/identity/soul files are excluded. Edits show the
+  current revision (hash/size/mtime) and an optional diff, take a pre-write
+  snapshot, write, verify the read-back and take a post-write snapshot — the
+  conflict detection OpenViking 0.5.3 needs because content writes have no
+  compare-and-swap. Deletes require typing the file name. Tags replace, append
+  or clear. Undo runs a snapshot restore dry run filtered to the action's paths,
+  asking for a second confirmation when unrelated changes are in the plan; it
+  fails closed without the pre-write snapshot and after an identity switch.
+- **Forced commit and honest capture/failure diagnosis (F10).** *Commit now*
+  (composer pill, Activity tab, `/viking commit`) reads the session first, is
+  single-flight, always confirmed, runs asynchronously and is followable in
+  Activity. The capture state from the official memory plugin is displayed;
+  pausing/resuming capture is explicitly not shipped (no runtime API upstream —
+  `runtime.setCaptureEnabled(session, boolean)` would be needed). Failed
+  extractions show the server error, archive URI and an exportable task, with no
+  retry button because the tested server builds (0.5.1.1–0.5.3) have no retry
+  endpoint.
+- **An Activity tab (F11).** A fifth right-sidebar tab: background tasks with
+  type/status filters and cursor paging, a detail view with execution events,
+  cooperative cancel (no rollback of completed writes), JSON export of safe
+  fields, four independently degradable metric cards (dashboard summary, write
+  queue, memory stats, session stats) and the recent audited actions. `/metrics`
+  is never probed; ACL is shown only as an explicit "not enabled" state.
+- **Identity profiles and a persistent scope banner (F12).** Named profiles
+  (label, endpoint, auth mode, API key, account, user, peer) live in a
+  plugin-owned 0600 `profiles.json` under
+  `${DSH_HOME:-~/.dsh}/state/dsh-openviking-enhance/`; the API key is write-only
+  and never logged. An active profile wins over the legacy fields/env/`ovcli.conf`
+  (which keep working with no profile active). The scope chip shows endpoint,
+  auth mode, account, user, peer and an identity fingerprint, and warns for
+  remote endpoints; identity headers are only sent in dev/trusted mode (in
+  `api_key` mode the key determines the identity). Writes are refused when the
+  identity is ambiguous, undo is bound to the writing identity, and switching is
+  guarded while a confirmation is pending.
+- **`/viking` write commands.** `edit`, `forget`, `tag`, `commit`, `undo` and
+  `audit` prepare an action and return either a rich `conversation.chat.commandview`
+  card with Confirm/Cancel (typed delete, tag chips, commit warning) or, on
+  clients without it, a two-line plain fallback naming `--confirm <token>`.
+  Tokens are single-use, 120 s, bound to identity/action/target, with 8 pending
+  and 3 prepares/minute, one write in flight, and denied attempts audited.
+- **Four new settings**: `enableWrites` (`false`), `enableActivity` (`true`),
+  `showScopeBanner` (`true`), `activeProfile` (`''`), wired end-to-end with
+  English and Chinese copy.
+- **Local state and audit**, both 0600 under
+  `${DSH_HOME:-~/.dsh}/state/dsh-openviking-enhance/`: `profiles.json` and a
+  rotating `audit.jsonl` (1 MiB, two old files) carrying time, action, URIs,
+  identity fingerprint, request id, result and undo handle — never memory
+  bodies, tokens or secrets.
+- **Tests**: 49 new host unit tests and 5 end-to-end route tests (fake
+  `connection.fetch` + fake OpenViking server: edit→verify→post-commit→audit→
+  undo, typed delete, tags undo, force commit, task cancel, profile
+  save/delete/test, 0600 audit, no body leakage, fail-closed paths), plus client
+  render/smoke coverage for the new surfaces; 226 unit tests in total.
+
+### Changed
+
+- **Mutations only on the framework-authenticated transport.** Writes ride
+  `ctx.connection.fetch`; the plugin exposes no raw loopback POST write route.
+  Where that service is absent (DSH older than 0.2.2-rc.1) writes are disabled
+  with an explicit reason while every read surface keeps working.
+- Identity headers follow the server's auth mode: only `dev`/`trusted` requests
+  carry account/user headers; `api_key` requests do not (the key determines the
+  identity), matching the official plugin.
+- The manifest/README support wording now distinguishes reads (DSH 0.2.0-rc.2+)
+  from writes (DSH 0.2.2-rc.1+).
+
+### Verified
+
+- `pnpm test`: typecheck, build, packaging contract, **226** unit tests, client
+  smoke and host smoke all green; the host smoke exercises the read-only live
+  server paths plus every fail-closed write path.
+- Unit and end-to-end tests never touch a real memory store: the write paths run
+  against a fake OpenViking HTTP server and a fake `connection.fetch`.
+- The browser evidence is in the PR: released v0.4 baseline (branch head at
+  capture time) vs this branch, same scratch DSH 0.2.2-rc.1 web profile, light
+  theme 1440×900 @2x, against the stateful stand-in server; invented data only.
+
+### v0.4 — Act I (this PR)
+
 Act I. v0.4 makes the read-only cockpit *operable*: a URI preview with deep
 links, a read-only `/viking` command, and one Explore page for unified search,
 rules, skills and Experience. Nothing in this version writes to OpenViking.

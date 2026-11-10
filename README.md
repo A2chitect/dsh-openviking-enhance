@@ -4,16 +4,19 @@ English | [中文](README.zh.md)
 
 **v0.3.0** · [Changelog](CHANGELOG.md) · [Roadmap](ROADMAP.md)
 
-> The v0.4 Act features below are under `Unreleased`; the version line and
-> package stay at 0.3.0 until `pnpm run release 0.4.0` promotes and tags them.
+> The v0.4 Act and v0.5 Collaborate feature sets below are under `Unreleased`;
+> the version line and package stay at 0.3.0 until the release script promotes
+> them.
 
 Brings your local [OpenViking](https://docs.openviking.ai) memory server into the
 DeepSeek Harness (DSH) Web GUI: a Studio panel in the left sidebar, a commit
 status pill and diff browser under the message box, a per-turn explanation of
 what the memory plugin retrieved, a Memory health tab that answers "why is this
-memory session not working?", and — new in v0.4 — a `viking://` preview, a
-read-only `/viking` command and an Explore page that searches the library and
-explains the rules that constrain it.
+memory session not working?", a `viking://` preview, a `/viking` command and an
+Explore page that searches the library and explains the rules that constrain it.
+v0.5 adds the collaboration layer on top: **opt-in** memory curation with typed
+confirmations and snapshot undo, forced commits, a fifth *Activity* tab, and
+named identity profiles with a persistent scope banner.
 
 Nothing needs to be patched in DSH or in the OpenViking plugin — it mounts as an
 ordinary DSH bundle.
@@ -129,9 +132,9 @@ the panel, or paste a `viking://` path into its address bar.
 version, identity, the mounted memory plugin, the DSH version and the current
 session's commit state; `/viking doctor` prints the Doctor's checks; `/viking
 recall <query>` runs this session's retrieval and lists the scored hits; `/viking
-open <uri>` prints metadata and bounded L0/L1. The command is read-only — this
-version has no commit, remember, forget or pause verb — and `enableCommands`
-turns it off.
+open <uri>` prints metadata and bounded L0/L1. These read verbs leave the library
+untouched; v0.5 adds the write verbs below, behind `enableWrites`.
+`enableCommands` turns the whole command off.
 
 ![The Explore tab with unified search results](assets/v04-after-explore-search.png)
 
@@ -148,6 +151,89 @@ distribution of the Agent Evolution experience files. Rules need OpenViking
 than broken. Search is semantic-only: the live server rejects keyword-mode
 search, so there is no toggle.
 
+![The preview action bar with opt-in curation](assets/v05-after-preview-actions.png)
+
+**Curate a memory — opt-in.** Changing OpenViking data is off by default:
+`enableWrites` must be turned on explicitly, and with it off the plugin remains
+exactly the read-only viewer described above. When it is on, curatable memory
+files gain an action bar in the Preview tab — **Edit**, **Tags**, **Delete** —
+and the commit pill and Activity tab gain **Commit now**.
+
+- **Only memory bodies are curatable**, and only under
+  `viking://user/<u>/memories/{entities,events,preferences}/…` (plus the visible
+  peer equivalents). Directory sidecars, rules, session archives, resources,
+  skills and the root `profile.md`/`identity.md`/`soul.md` are excluded on
+  purpose.
+- **Edit** shows the current revision (hash, size, modified time), a character
+  count and an optional diff. Saving reads the file, takes a snapshot of that
+  path, writes, verifies the read-back, then takes a post-write snapshot.
+  OpenViking 0.5.3 has no compare-and-swap for content writes, so a concurrent
+  change is caught by that verification and reported as a conflict to reload.
+- **Delete** asks you to type the file name and says plainly that the server has
+  no recycle bin. **Tags** replaces, appends to or clears the tag list
+  (`key=value` grammar), and takes the same snapshot/undo path.
+- **Undo** is a toast action after the write: it builds a snapshot-restore dry
+  run filtered to the paths the action touched, and only if the plan would also
+  revert unrelated changes does it ask for a second confirmation. It fails
+  closed when the pre-write snapshot is missing and is refused after an identity
+  switch. There is no second copy of a memory body on disk.
+- **Every attempt is audited**, including refused ones, in
+  `${DSH_HOME:-~/.dsh}/state/dsh-openviking-enhance/audit.jsonl` (mode 0600,
+  rotated at 1 MiB, two old files): time, action, URIs, identity fingerprint,
+  request id, result and the undo handle — no memory bodies, tokens or secrets.
+
+![The edit dialog with revision and diff](assets/v05-after-edit.png)
+
+**Commit now — and what capture control cannot do.** *Commit now* asks the
+server to archive the session's uncommitted messages and extract memories. It is
+single-flight, shows pending tokens / live messages / commits first, always asks
+for confirmation, runs asynchronously and can be followed in the Activity tab.
+Extraction itself cannot be rolled back. The same panel shows the capture state
+the official memory plugin reports (capture on, auto-commit, threshold), but
+**pausing or resuming capture is not shipped**: the plugin exposes no runtime
+API for it yet (`runtime.setCaptureEnabled(session, boolean)` would be the
+upstream change). Failed extractions are diagnosed with the server error, the
+archive URI and an exportable task, but there is **no retry button** — the
+OpenViking builds tested here (0.5.1.1–0.5.3) have no retry endpoint.
+
+![The Activity tab with tasks and metrics](assets/v05-after-activity.png)
+
+**Activity: tasks, metrics and recent actions.** A fifth right-sidebar tab lists
+background tasks with type/status filters and cursor paging; a task opens to its
+execution events, a cooperative cancel (which does not roll back completed
+writes) and a JSON export of the safe fields. Four independent metric cards cover
+the server dashboard, the write queue, memory statistics and this session's
+statistics, each degrading on its own. Recent audited actions are listed there
+too. `/metrics` is never probed: it is disabled on most servers.
+
+![Identity profiles and the persistent scope banner](assets/v05-after-scope.png)
+
+**Several servers, several identities.** Named profiles — label, endpoint, auth
+mode, API key, account, user and peer — live in a plugin-owned
+`${DSH_HOME:-~/.dsh}/state/dsh-openviking-enhance/profiles.json` (mode 0600), and
+the profile editor sits in the same **Configure** form. The key is write-only: it
+is never returned to the browser and never logged. An active profile wins over
+the legacy `endpoint`/`apiKey`/`account`/`user` fields, the environment and
+`ovcli.conf`; with no profile active the legacy values still work. A persistent
+scope chip shows endpoint, auth mode, account, user, peer and an identity
+fingerprint, and warns for remote endpoints; the write dialogs repeat the scope
+regardless of the chip. Writes are refused when the identity is ambiguous, undo
+is bound to the identity that performed the write, and switching identity while a
+confirmation is pending is guarded. In `dev`/`trusted` mode the plugin sends the
+identity headers; in `api_key` mode the key itself determines the identity and no
+headers are sent. ACL is shown only as an explicit "not enabled" state, with no
+admin enumeration.
+
+![The rich confirmation card for a write command](assets/v05-after-command-confirm.png)
+
+**Write commands from the composer.** `/viking edit <uri>`, `forget <uri>`,
+`tag <uri> …`, `commit`, `undo` and `audit` prepare an action and return a card
+in the transcript with Confirm/Cancel (typed file name for delete, tag chips,
+commit warning). Clients without the card get a two-line plain fallback naming
+`--confirm <token>`. Confirm tokens are single-use, valid for 120 seconds, bound
+to the identity/action/target, capped at 8 pending and 3 prepares per minute,
+with one write in flight; denied attempts are audited.
+
 ## Requirements
 
 | | |
@@ -155,6 +241,7 @@ search, so there is no toggle.
 | DSH | 0.2.0-rc.2 or newer (desktop or web profile; verified on 0.2.0-rc.2, 0.2.1-rc.5 and 0.2.2-rc.1) |
 | OpenViking | A local server; 0.5.1.1–0.5.3 tested (0.5.3 with the context face). Preview, search and skills work on 0.5.1.1+; the Experience routes are present in the same releases and verified on 0.5.3; **Rules need 0.5.3+**. Studio is served at `/studio/` on the same port |
 | Memory plugin | `@openviking/dsh-memory-plugin` recommended — it is what commits sessions. Without it the panel still works, but pending-token thresholds are unknown |
+| Writes | Opt-in (`enableWrites`, default off) and need **DSH 0.2.2-rc.1+** for the authenticated `ctx.connection.fetch` transport. Older generations keep every read surface and disable writes with a stated reason |
 
 ## Install
 
@@ -216,7 +303,11 @@ The same settings can still be written by hand in your profile's patch file
 | `showHealthPanel` | `true` | Interface switch: the Memory health tab and the Plugins-page health summary |
 | `showPreview` | `true` | Interface switch: the `viking://` preview tab in the right sidebar |
 | `showExplore` | `true` | Interface switch: the Explore tab (search, rules, skills, Experience) |
-| `enableCommands` | `true` | Host switch: the read-only `/viking` command |
+| `enableCommands` | `true` | Host switch: the `/viking` command (read and write verbs) |
+| `enableWrites` | `false` | Opt-in: curation (edit/delete/tags), forced commits and the write commands |
+| `enableActivity` | `true` | Interface switch: the Activity tab (tasks, metrics, recent actions) |
+| `showScopeBanner` | `true` | Interface switch: the persistent scope chip; write dialogs repeat the scope regardless |
+| `activeProfile` | `''` | Named credential/scope profile to use; empty = the legacy connection fields |
 
 ![The interface switches in the plugin's Configure form](assets/v04-after-settings.png)
 
@@ -228,10 +319,17 @@ entry also unmounts the Studio page (it loads fresh when shown again), and hidin
 the recall tab closes an open recall page as soon as the conversation is back
 on screen — a page that is open in a background pane has to be closed by hand,
 because the harness exposes no way to enumerate tabs. The two v0.4 tabs behave
-the same way; `enableCommands` is read by the host half, so it applies on the
-next plugin apply (a save that reloads the plugin, or a restart) and immediately
-where the Loader emits its volatile-config update, rather than by mounting
-anything. An older Loader without that event falls back to the next apply.
+the same way, as does the Activity tab. `enableCommands`, `enableWrites` and
+`activeProfile` are read by the host half, so they apply on the next plugin apply
+(a save that reloads the plugin, or a restart) and immediately where the Loader
+emits its volatile-config update; an older Loader without that event falls back to
+the next apply. They are not applied by mounting anything.
+
+**Profiles and secrets.** The profile editor on the same form writes
+`${DSH_HOME:-~/.dsh}/state/dsh-openviking-enhance/profiles.json` with mode 0600;
+API keys in it are write-only from the UI's point of view. The legacy fields
+above keep working when no profile is active. The local audit file lives in the
+same directory.
 
 ## Troubleshooting
 
@@ -245,6 +343,25 @@ the window (⌘R). If it is still missing, restart the app.
 Open **Plugins** → *dsh-openviking-enhance* → **Configure** on its row and switch
 it back on, then save. That form is always available, even with every
 surface hidden.
+
+**The curation controls are missing or say writes are off.**
+`enableWrites` is off by default; turn it on in **Configure**. Writes also need
+DSH 0.2.2-rc.1+ (the authenticated fetch transport) and a resolvable identity: if
+no profile is active the legacy fields/`ovcli.conf` decide, and when the server
+reports no auth mode the plugin refuses with an "identity ambiguous" reason.
+Reads keep working in all of those cases.
+
+**Undo is unavailable, or the undo plan mentions files I did not edit.**
+Undo only exists for the write window of the current plugin session and the
+identity that performed the write. Snapshot restore is directory-scoped, so the
+dry-run plan can include sibling paths; the dialog then asks for a second
+confirmation before applying.
+
+**Commit now did nothing / a forced commit failed.**
+One commit is allowed in flight per profile and the plugin does not retry. A
+"skipped" result means there were no uncommitted messages. Failed extractions
+show the server error and the archive; the plugin cannot retry them because the
+tested server builds expose no retry endpoint.
 
 **`/viking` is not recognised.**
 The command is registered by the host half and can be switched off with
@@ -303,25 +420,43 @@ half only after an app restart.
   this plugin's copy too; anything else falls back to English.
 - OpenViking cleans up its commit task records over time, so the failure list
   covers recent commits only. The archives themselves are permanent.
-- The plugin's internal read routes answer loopback requests only; the fence
+- The plugin's internal read routes answer loopback requests only; their fence
   checks the socket, the `Host` header and same-origin headers, and an
-  `Origin`-less local `curl` is deliberately admitted. The only POST routes are
-  the read-only search and rule-tester queries, and they additionally require a
-  JSON body of at most 64 KiB.
-- **v0.4 is read-only.** No route or command writes to OpenViking: there is no
-  commit, remember, forget, curate or capture-control action. Those are planned
-  for v0.5 and will need an explicit confirmation, a dry run and an audit trail
-  before they ship.
+  `Origin`-less local `curl` is deliberately admitted. The only POST routes reach
+  read-only search and rule-tester queries and require a JSON body of at most
+  64 KiB. Mutations never use these routes: they go through the framework-
+  authenticated `connection.fetch` service.
+- **Read-only by default, writes opt-in.** v0.4 and the read side of v0.5 never
+  change OpenViking data. With `enableWrites` on, the only writes are the
+  curation, force-commit and write-command paths described above; each one is
+  confirmed, verified after the write, snapshot-undoable (except extraction and
+  force commit, which the server cannot roll back) and audited locally. No write
+  leaves the machine except the OpenViking request itself.
+- **Writes need DSH 0.2.2-rc.1+.** They ride the framework-authenticated
+  `ctx.connection.fetch` service; the plugin never exposes a loopback POST write
+  route. Older DSH generations keep every read surface and show a reason why
+  writes are unavailable.
+- **Capture pause/resume and archive retry are not shipped.** The official
+  memory plugin exposes no runtime pause API, and the tested OpenViking builds
+  expose no archive-retry endpoint; the plugin says so instead of faking them.
+- Tested range: OpenViking 0.5.1.1–0.5.3 (0.5.2 unverified, 0.5.4 unprobed), DSH
+  0.2.0-rc.2+ for reads and 0.2.2-rc.1 for writes. The desktop carrier's write
+  parity is documented as verified in the web profile; treat desktop writes as
+  unproven until exercised there.
+- Undo restores from snapshots; it is not a body backup, so it is gone when the
+  snapshot is pruned or the plugin session ends. Force commit has no undo: the
+  extraction it triggers cannot be rolled back.
 - `/viking` output is short English plain text: the host half has no access to
   the app's locale, and the GUI renders command results without Markdown.
 - Rules are an OpenViking 0.5.3+ feature; on 0.5.1.1/0.5.2 the Rules segment
   says so. Unified search is semantic-only because the live backend rejects
   keyword mode.
 - The screenshots in `assets/` were captured against the stand-in server in
-  `scripts/screenshot-fixture.mjs` (which since v0.4 serves the new endpoints
-  too) and a mock model, with a light theme at a 1440×900 viewport. The
-  `v0*-before-*` images are the released previous build in the same DSH 0.2.2
-  web profile; no real memory data or account is involved.
+  `scripts/screenshot-fixture.mjs` (since v0.4 it serves the new read endpoints,
+  and since v0.5 it simulates the write paths statefully) and a mock model, with
+  a light theme at a 1440×900 viewport. The `v0*-before-*` images are the v0.4
+  branch head (unreleased at capture time) in the same DSH 0.2.2 web profile; no
+  real memory data or account is involved.
 
 ## Development
 
