@@ -64,6 +64,26 @@ const EMPTY_EXPERIENCES = process.env.OV_FIXTURE_EMPTY_EXPERIENCES === '1'
  */
 const LONG_L2 = process.env.OV_FIXTURE_LONG_L2 === '1'
 const RULES_STALL = process.env.OV_FIXTURE_RULES_STALL === '1'
+/**
+ * v0.7 evidence modes. `OV_FIXTURE_NATIVE=1` seeds the native cockpit's read
+ * data (session directories for Sessions/Commits, peer/personal browse roots);
+ * `OV_FIXTURE_STUDIO_BLOCKED=1` makes the mock Studio advertise an iframe
+ * refusal so the Studio-fallback view can be captured deterministically.
+ */
+const NATIVE = process.env.OV_FIXTURE_NATIVE === '1'
+const STUDIO_BLOCKED = process.env.OV_FIXTURE_STUDIO_BLOCKED === '1'
+/** DSH-shaped session keys whose first entry matches the seeded DSH session. */
+const NATIVE_DSH_SESSIONS = [
+  'session-47a8cdea-8bbd-42c5-8150-b8676f8b86e7',
+  '1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b',
+  '2a3b4c5d-6e7f-4a8b-9c0d-1e2f3a4b5c6d',
+  '3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f',
+  '4d5e6f7a-8b9c-4d0e-9f1a-2b3c4d5e6f7a',
+  '5e6f7a8b-9c0d-4e1f-8a2b-3c4d5e6f7a8b',
+  '6f7a8b9c-0d1e-4f2a-8b3c-4d5e6f7a8b9c',
+  '7a8b9c0d-1e2f-4a3b-9c4d-5e6f7a8b9c0d',
+  '8b9c0d1e-2f3a-4b4c-8d5e-6f7a8b9c0d1e',
+]
 /** The long body is paged by the v0.6 preview; 400 lines must fit the host's
  *  PREVIEW_MAX_CHARS cap, so every line stays short. */
 const longL2Uri = () => `${USER}/memories/entities/project/release-history.md`
@@ -825,6 +845,80 @@ if (RULES_STALL) {
       memory: { memory_type: 'rule' },
       text: rule.text,
     })
+  }
+}
+
+// v0.7 evidence-only data (behind OV_FIXTURE_NATIVE). New directories only:
+// no pre-v0.7 response changes, and the compat gate runs with the flag unset.
+if (NATIVE) {
+  const root = (uri, modTime) =>
+    STORE.set(uri, {
+      uri,
+      name: uri.slice(uri.lastIndexOf('/') + 1),
+      size: 0,
+      mode: 493,
+      modTime,
+      isDir: true,
+      count: 0,
+      contextType: 'memory',
+      tags: [],
+      memory: {},
+    })
+  const file = (uri, text, modTime, extra = {}) =>
+    STORE.set(uri, {
+      uri,
+      name: uri.slice(uri.lastIndexOf('/') + 1),
+      size: Buffer.byteLength(text),
+      mode: 420,
+      modTime,
+      isDir: false,
+      contextType: 'memory',
+      tags: extra.tags ?? [],
+      memory: extra.memory ?? { memory_type: 'entity' },
+      text,
+      abstract: extra.abstract ?? '',
+    })
+  const setOnce = (uri, modTime) => {
+    if (!STORE.has(uri)) root(uri, modTime)
+  }
+  // The sessions directory: 9 DSH sessions (newest first), one local-harness
+  // session and one unknown session, plus the released v0.3 dated directory.
+  setOnce(`${USER}/sessions`, '2026-11-10T09:00:00Z')
+  NATIVE_DSH_SESSIONS.forEach((sessionId, index) => {
+    const stamp = new Date(Date.UTC(2026, 10, 10, 9, 30 - index, 0)).toISOString().replace('.000Z', 'Z')
+    setOnce(`${USER}/sessions/dsh-${sessionId}`, stamp)
+  })
+  setOnce(`${USER}/sessions/local-studio-archived-9c8b7a`, '2026-11-10T08:10:00Z')
+  setOnce(`${USER}/sessions/peer-feedface-session`, '2026-11-10T08:05:00Z')
+  // Browse roots that the released fixture had no data for: peers and the
+  // personal resource/skill scopes.
+  setOnce(`${USER}/peers`, '2026-11-10T08:00:00Z')
+  setOnce(`${USER}/peers/demo-peer`, '2026-11-09T17:00:00Z')
+  if (!STORE.has(`${USER}/peers/demo-peer/peer-note.md`)) {
+    file(
+      `${USER}/peers/demo-peer/peer-note.md`,
+      '# Peer note\n\nShared memory read from a peer scope: the demo peer keeps its release notes here.',
+      '2026-11-09T17:00:00Z',
+      { tags: ['peer=demo', 'kind=note'], memory: { memory_type: 'entity', category: 'peers' }, abstract: 'Peer-scope note used by the v0.7 Browse evidence.' },
+    )
+  }
+  setOnce(`${USER}/resources`, '2026-11-10T08:00:00Z')
+  if (!STORE.has(`${USER}/resources/personal-checklist.md`)) {
+    file(
+      `${USER}/resources/personal-checklist.md`,
+      '# Personal resource\n\nA personal resource entry used by the v0.7 Browse evidence.',
+      '2026-11-08T12:00:00Z',
+      { tags: ['scope=personal'], memory: { memory_type: 'resource' }, abstract: 'Personal resource used by the v0.7 Browse evidence.' },
+    )
+  }
+  setOnce(`${USER}/skills`, '2026-11-10T08:00:00Z')
+  if (!STORE.has(`${USER}/skills/personal-skill.md`)) {
+    file(
+      `${USER}/skills/personal-skill.md`,
+      '# Personal skill\n\nA personal skill entry used by the v0.7 Browse evidence.',
+      '2026-11-08T11:00:00Z',
+      { tags: ['scope=personal'], memory: { memory_type: 'skill' }, abstract: 'Personal skill used by the v0.7 Browse evidence.' },
+    )
   }
 }
 
@@ -1846,6 +1940,35 @@ createServer((req, res) => {
     if (!STORE.has(uri) || STORE.get(uri).isDir !== true) {
       return jsonError(res, 404, 'NOT_FOUND', `Directory not found: ${uri}`, { type: 'directory', resource: uri })
     }
+    // v0.7 native tree/sessions pages call `fs/ls` with node_limit+offset; the
+    // released builds never sent those parameters, so this branch is additive.
+    if (url.searchParams.has('node_limit')) {
+      let children = childrenOf(uri)
+      if (url.searchParams.get('sort_by') === 'mtime') {
+        const direction = url.searchParams.get('sort_order') === 'asc' ? 1 : -1
+        children = [...children].sort((left, right) => {
+          const a = new Date(STORE.get(left)?.modTime ?? 0).getTime()
+          const b = new Date(STORE.get(right)?.modTime ?? 0).getTime()
+          if (a === b) return left.localeCompare(right)
+          return a < b ? -direction : direction
+        })
+      }
+      const limitRaw = Number(url.searchParams.get('node_limit'))
+      const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(Math.trunc(limitRaw), 1), 200) : 50
+      const offsetRaw = Number(url.searchParams.get('offset') ?? 0)
+      const offset = Number.isFinite(offsetRaw) ? Math.max(Math.trunc(offsetRaw), 0) : 0
+      const page = children.slice(offset, offset + limit)
+      const hasMore = offset + limit < children.length
+      return json(res, {
+        status: 'ok',
+        result: {
+          items: page.map(listingEntry),
+          has_more: hasMore,
+          offset,
+          next_offset: hasMore ? offset + page.length : null,
+        },
+      })
+    }
     return json(res, { status: 'ok', result: childrenOf(uri).map(listingEntry) })
   }
   if (path === '/api/v1/fs/tree') {
@@ -1986,7 +2109,12 @@ createServer((req, res) => {
     return
   }
   if (path === '/' || path.startsWith('/studio')) {
-    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+    const headers = { 'content-type': 'text/html; charset=utf-8' }
+    if (STUDIO_BLOCKED) {
+      headers['x-frame-options'] = 'DENY'
+      headers['content-security-policy'] = "frame-ancestors 'none'"
+    }
+    res.writeHead(200, headers)
     return res.end(STUDIO)
   }
   return json(res, { error: { message: `mock: no route for ${path}` } }, 404)

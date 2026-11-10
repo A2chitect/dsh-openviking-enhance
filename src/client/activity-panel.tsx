@@ -18,7 +18,7 @@
  *  - **Every render path refreshes from the server.** A cancel or export never
  *    mutates local rows optimistically; the next poll is the truth.
  */
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ACTIVITY_TASKS_DEFAULT_LIMIT,
   CANCELLABLE_TASK_TYPES,
@@ -43,6 +43,7 @@ import {
   type SessionControlResponse,
 } from './host-api.ts'
 import { t, writeErrorText } from './locale.ts'
+import { MetricCard, MetricsCards } from './metrics-view.tsx'
 import { nextPollDelay } from './poll-policy.ts'
 import { ScopeChip } from './scope-chip.tsx'
 import { useScope } from './scope-store.ts'
@@ -421,15 +422,6 @@ function TasksSection({ sessionId }: { sessionId: string }) {
 
 /* ---- Status -------------------------------------------------------------- */
 
-function MetricCard({ title, available, children }: { title: string; available: boolean; children: ReactNode }) {
-  return (
-    <div className="ove-act-card">
-      <span className="ove-act-card-title">{title}</span>
-      {available ? children : <span className="ove-act-note">{t('activity.metricsUnavailable')}</span>}
-    </div>
-  )
-}
-
 function CaptureCard({ control }: { control: SessionControlResponse | null }) {
   const capture: CaptureState | null = control?.capture ?? null
   const diagnosis: FailedArchiveDiagnosis | null = control?.failedArchive ?? null
@@ -523,82 +515,7 @@ function StatusSection({ sessionId }: { sessionId: string }) {
       </div>
       {error !== null && <p className="ove-act-error">{error}</p>}
       <div className="ove-act-cards">
-        <MetricCard title={t('activity.cardDashboard')} available={metrics?.dashboard.available === true}>
-          <dl className="ove-act-facts">
-            <div>
-              <dt>{t('activity.files')}</dt>
-              <dd>{metrics?.dashboard.files ?? '—'}</dd>
-            </div>
-            <div>
-              <dt>{t('activity.memoriesTotal')}</dt>
-              <dd>{metrics?.dashboard.memories ?? '—'}</dd>
-            </div>
-            <div>
-              <dt>{t('activity.todayTokens')}</dt>
-              <dd>{metrics?.dashboard.todayTokens ?? '—'}</dd>
-            </div>
-            <div>
-              <dt>{t('activity.todayRetrievals')}</dt>
-              <dd>{metrics?.dashboard.todayRetrievals ?? '—'}</dd>
-            </div>
-          </dl>
-        </MetricCard>
-        <MetricCard title={t('activity.cardQueue')} available={metrics?.queue.available === true}>
-          {(metrics?.queue.queues.length ?? 0) === 0 ? (
-            <span className="ove-act-note">{t('activity.queueEmpty')}</span>
-          ) : (
-            <table className="ove-act-table">
-              <thead>
-                <tr>
-                  <th>{t('activity.queueName')}</th>
-                  <th>{t('activity.queuePending')}</th>
-                  <th>{t('activity.queueErrors')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(metrics?.queue.queues ?? []).map((queue) => (
-                  <tr key={queue.queue}>
-                    <td>{queue.queue}</td>
-                    <td>{queue.pending + queue.inProgress}</td>
-                    <td className={queue.errors > 0 ? 'ove-act-error-inline' : ''}>{queue.errors}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </MetricCard>
-        <MetricCard title={t('activity.cardMemories')} available={metrics?.memories.available === true}>
-          <dl className="ove-act-facts">
-            <div>
-              <dt>{t('activity.memoriesTotal')}</dt>
-              <dd>{metrics?.memories.total ?? '—'}</dd>
-            </div>
-            <div>
-              <dt>{t('activity.stale7d')}</dt>
-              <dd>{metrics?.memories.stale7d ?? '—'}</dd>
-            </div>
-            <div>
-              <dt>{t('activity.stale30d')}</dt>
-              <dd>{metrics?.memories.stale30d ?? '—'}</dd>
-            </div>
-            <div>
-              <dt>{t('activity.oldestDays')}</dt>
-              <dd>{metrics?.memories.oldestDays ?? '—'}</dd>
-            </div>
-          </dl>
-        </MetricCard>
-        <MetricCard title={t('activity.cardSession')} available={metrics?.session.available === true}>
-          <dl className="ove-act-facts">
-            <div>
-              <dt>{t('activity.turns')}</dt>
-              <dd>{metrics?.session.totalTurns ?? '—'}</dd>
-            </div>
-            <div>
-              <dt>{t('activity.sessionMemories')}</dt>
-              <dd>{metrics?.session.memoriesExtracted ?? '—'}</dd>
-            </div>
-          </dl>
-        </MetricCard>
+        <MetricsCards metrics={metrics} />
         <CaptureCard control={control} />
         <div className="ove-act-card">
           <span className="ove-act-card-title">{t('activity.recentActions')}</span>

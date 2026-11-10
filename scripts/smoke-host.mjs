@@ -114,6 +114,7 @@ if (sessionId) {
 }
 
 await checkV05(base, sessionId)
+await checkV07(base)
 await checkFence(base)
 
 server.close()
@@ -203,6 +204,15 @@ async function checkDegraded(base) {
     ['metrics', `${prefix}/metrics?sessionId=probe`],
     ['audit', `${prefix}/audit?limit=5`],
     ['session-control', `${prefix}/session-control?sessionId=probe`],
+    // v0.7 reads: the composed overview, the identity-aware browse roots/pages,
+    // the sessions page, the bounded recent-commit fan-out and the Studio probe.
+    ['overview', `${prefix}/overview?fresh=1`],
+    ['browse roots', `${prefix}/browse/roots`],
+    ['browse page', `${prefix}/browse?uri=${encodeURIComponent('viking://user/default/memories')}`],
+    ['browse subtree', `${prefix}/browse/subtree?uri=${encodeURIComponent('viking://user/default/memories')}`],
+    ['sessions', `${prefix}/sessions?limit=2`],
+    ['recent commits', `${prefix}/recent-commits?limit=2`],
+    ['studio status', `${prefix}/studio-status`],
   ]
   for (const [label, path] of routes) {
     const body = await get(`${base}${path}`)
@@ -316,6 +326,95 @@ async function checkV05(base, sessionId) {
     const fetched = await rawStatus(base, `${prefix}${path}`)
     check(fetched === 405 || fetched === 404, `no read-shaped mutation route at ${path} (GET -> ${fetched})`)
   }
+}
+
+/**
+ * v0.7 native read routes and the local onboarding-state POST.
+ *
+ * The shape checks are server-independent (the values degrade with no OpenViking;
+ * the envelopes do not). The state POST checks are deliberately invalid-post-only
+ * and cross-origin-only: the smoke script verifies the guard without overwriting a
+ * developer's own dismissal/completion state.
+ */
+async function checkV07(base) {
+  const prefix = '/api/openviking-enhance'
+  const check = (ok, message) => {
+    console.log(`[v07] ${ok ? 'ok  ' : 'FAIL'} ${message}`)
+    if (!ok) process.exitCode = 1
+  }
+
+  const overview = await get(`${base}${prefix}/overview?fresh=1`)
+  check(
+    overview?.ok === true && typeof overview.overview?.parts === 'object' && typeof overview.overview?.observedAt === 'string',
+    'the composed overview answers one payload with per-part flags',
+  )
+  check(
+    Array.isArray(overview?.overview?.onboarding?.checks) && overview.overview.onboarding.checks.length === 6,
+    `the overview carries the six cheap onboarding checks (saw ${overview?.overview?.onboarding?.checks?.length ?? '?'})`,
+  )
+  check(
+    overview?.overview?.plugin !== undefined && typeof overview.overview.plugin.mounted === 'boolean',
+    'the overview reports the in-process memory-plugin facts',
+  )
+  const overviewText = JSON.stringify(overview)
+  check(!overviewText.includes('apiKey') && !overviewText.includes('Bearer'), 'the overview payload carries no secret')
+
+  const roots = await get(`${base}${prefix}/browse/roots`)
+  check(roots?.ok === true && Array.isArray(roots.roots) && roots.roots.length === 8, `the browse roots are resolved host-side (${roots?.roots?.length ?? '?'} roots)`)
+  check(
+    roots?.ok === true && roots.roots.every((root) => typeof root.uri === 'string' && root.uri.startsWith('viking://')),
+    'every root is a viking:// URI',
+  )
+
+  const refused = await rawStatus(base, `${prefix}/browse?uri=${encodeURIComponent('viking://queue/job-1')}`)
+  check(refused === 400, `the browse allowlist refuses an internal scope at the route (${refused}, expected 400)`)
+  // The personal tree is pinned to the active identity's user; account-level
+  // trees stay readable. A crafted cross-user URI must be refused at the route.
+  const crossUser = await rawStatus(base, `${prefix}/browse?uri=${encodeURIComponent('viking://user/not-the-active-user/memories')}`)
+  check(crossUser === 400, `browse refuses another user's personal tree (${crossUser}, expected 400)`)
+
+  const sessions = await get(`${base}${prefix}/sessions?limit=2`)
+  check(
+    sessions !== null && typeof sessions === 'object' && 'ok' in sessions,
+    'the sessions route answers an envelope (it degrades to ok:false without a server)',
+  )
+  const recent = await get(`${base}${prefix}/recent-commits?limit=2`)
+  check(
+    recent !== null && typeof recent === 'object' && 'ok' in recent,
+    'the recent-commits route answers an envelope',
+  )
+  if (recent?.ok === true) {
+    check(
+      typeof recent.recent?.partial === 'boolean' &&
+        typeof recent.recent?.progress?.sessionsScanned === 'number' &&
+        recent.recent.progress.deadlineMs === 10_000,
+      'recent commits report their bounded fan-out progress and 10 s deadline',
+    )
+    check(recent.recent?.progress?.sessionCap <= 8, 'the recent-commits session cap is at most eight')
+  }
+
+  const studio = await get(`${base}${prefix}/studio-status`)
+  check(
+    studio?.ok === true && ['yes', 'no', 'unknown'].includes(studio.studio?.frameable),
+    `the Studio probe classifies the answer host-side (${studio?.studio?.frameable ?? '?'})`,
+  )
+  check(
+    studio?.ok === true && typeof studio.studio?.reason === 'string' && !JSON.stringify(studio.studio ?? {}).includes('apiKey'),
+    'the Studio probe reports a reason and no credentials',
+  )
+
+  // The onboarding POST is a LOCAL state write. Verify the guard without writing:
+  // an invalid action must be refused, and a cross-origin page must be fenced.
+  const invalid = await postJson(`${base}${prefix}/onboarding/state`, { action: 'not-an-action' })
+  check(invalid?.ok === false, 'the local-state POST refuses an unknown action')
+  const crossOrigin = await rawStatus(base, `${prefix}/onboarding/state`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: 'http://evil.example.com' },
+    body: JSON.stringify({ action: 'dismiss' }),
+  })
+  check(crossOrigin === 403, `a cross-origin state POST is fenced (${crossOrigin}, expected 403)`)
+  const stateRead = await rawStatus(base, `${prefix}/onboarding/state`)
+  check(stateRead === 405, `the local-state route is POST-only (${stateRead}, expected 405)`)
 }
 
 /**

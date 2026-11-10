@@ -69,3 +69,51 @@ export const PREVIEW_BODY_MAX_LINES_RESPONSE = 1_000
 export const AUDIT_MAX_BYTES = 1024 * 1024
 /** How many rotated audit files are kept. */
 export const AUDIT_KEEP_ROTATIONS = 2
+
+/* ========================================================================
+ * v0.7 "Native I" — native read cockpit budgets
+ *
+ * These are the user-perceived speed/load contract for the native views: a
+ * directory page is 50 rows with 160-char abstracts and tags; sessions page 50
+ * at a time; the recent-commit fan-out is capped at 8 sessions, 4 in flight and
+ * a 10 s deadline; caches are short and explicit. `test/v06-docs.test.mjs`
+ * asserts every value below appears in both README limit tables.
+ * ===================================================================== */
+
+/** Tree page size: rows per `/browse` request (`fs/ls` node_limit). */
+export const BROWSE_PAGE_SIZE = 50
+/** Per-entry abstract cap in the tree (server `abs_limit`). */
+export const BROWSE_ABSTRACT_MAX_CHARS = 160
+/** The explicit "expand subtree" action never walks deeper than this. */
+export const BROWSE_SUBTREE_MAX_LEVELS = 2
+/** The explicit "expand subtree" action never returns more than this many nodes. */
+export const BROWSE_SUBTREE_MAX_NODES = 100
+/** One directory page is reused this long (in-flight requests are deduped). */
+export const BROWSE_CACHE_TTL_MS = 15_000
+/** At most this many directories are cached (LRU eviction after this). */
+export const BROWSE_CACHE_MAX_DIRECTORIES = 100
+
+/** Sessions browser page size (the server's `/sessions` list has no pagination). */
+export const SESSIONS_PAGE_SIZE = 50
+/** One sessions-directory page is reused this long (`fresh=1` bypasses it). */
+export const SESSION_LIST_CACHE_TTL_MS = 15_000
+
+/** How many sessions the recent-commits browser fans out over. */
+export const RECENT_COMMITS_SESSION_CAP = 8
+/** How many of that fan-out's reads may be in flight at once. */
+export const RECENT_COMMITS_CONCURRENCY = 4
+/** Total wall-clock budget for one recent-commits answer. */
+export const RECENT_COMMITS_DEADLINE_MS = 10_000
+/** One recent-commits answer is reused this long; the view is never polled. */
+export const RECENT_COMMITS_CACHE_TTL_MS = 30_000
+
+/** The composed `/overview` answer is reused this long. */
+export const OVERVIEW_CACHE_TTL_MS = 5_000
+
+/** The Studio frameability probe's request timeout. */
+export const STUDIO_STATUS_TIMEOUT_MS = 4_000
+/** One Studio frameability answer is reused this long. */
+export const STUDIO_STATUS_TTL_MS = 60_000
+
+/** In-panel navigation history is bounded to this many targets. */
+export const NATIVE_HISTORY_MAX = 20

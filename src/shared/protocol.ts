@@ -1305,7 +1305,16 @@ export interface MetricsPayload {
 
 /* ---- local audit trail (the plugin's JSONL file) ------------------------- */
 
-export type AuditKind = 'write' | 'commit' | 'undo' | 'switch' | 'denied' | 'profile' | 'cancel'
+export type AuditKind =
+  | 'write'
+  | 'commit'
+  | 'undo'
+  | 'switch'
+  | 'denied'
+  | 'profile'
+  | 'cancel'
+  /** v0.7: local onboarding-state actions (dismiss/reset/forget/…); never OpenViking. */
+  | 'onboarding'
 
 export interface AuditIdentity {
   profileId: string | null
@@ -1408,3 +1417,301 @@ export const WRITE_ERROR_CODES = [
   'forbidden',
 ] as const
 export type WriteErrorCode = (typeof WRITE_ERROR_CODES)[number]
+
+/* ========================================================================
+ * v0.7 "Native I — no iframe for reading"
+ *
+ * The native cockpit reads the server directly through the host: a lazy
+ * `viking://` tree, a paginated session browser, a bounded recent-commit
+ * fan-out, the metric cards the Activity tab already renders, a composed
+ * overview and the read-only onboarding checklist. Everything here is
+ * additive; every view is behind the `showNativeViews` switch and degrades per
+ * part instead of failing whole.
+ * ===================================================================== */
+
+/** The browse roots the host resolves from the active identity. */
+export type BrowseRootId =
+  | 'memories'
+  | 'peers'
+  | 'resources'
+  | 'myResources'
+  | 'skills'
+  | 'agentSkills'
+  | 'rules'
+  | 'sessions'
+
+/** The ownership scope a root belongs to, for the read-only/shared badge. */
+export type BrowseRootScope = 'user' | 'account' | 'agent' | 'peer'
+
+/**
+ * One root the Browse view can expand.
+ *
+ * Only the URI and label live here: the host resolves them from the identity, so
+ * the client never hardcodes `viking://user/<user>/…`. No listing happens here;
+ * each root is expanded lazily and shows its own empty state.
+ */
+export interface BrowseRoot {
+  id: BrowseRootId
+  uri: string
+  /** Locale key for the root label (never customer-specific copy). */
+  labelKey: string
+  scope: BrowseRootScope
+  /** True for a root that opens another view instead of expanding in place. */
+  shortcut?: boolean
+}
+
+export interface BrowseRootsPayload {
+  roots: BrowseRoot[]
+  warnings: PluginNotice[]
+  observedAt: string
+}
+
+/** What one tree row is, derived from its path by `viking-tree.ts`. */
+export type BrowseEntryKind =
+  | 'directory'
+  | 'memory'
+  | 'resource'
+  | 'skill'
+  | 'rule'
+  | 'session'
+  | 'archive'
+  | 'agent'
+  | 'file'
+  | 'unknown'
+
+/** One directory page: exactly the facts a lazy tree row renders. */
+export interface BrowseEntry {
+  uri: string
+  /** Last path segment (the row label). */
+  name: string
+  isDir: boolean
+  size: number | null
+  modifiedAt: string | null
+  /** Server abstract, capped to the documented 160 chars. */
+  abstract: string | null
+  tags: string[]
+  kind: BrowseEntryKind
+}
+
+export interface BrowsePayload {
+  uri: string
+  entries: BrowseEntry[]
+  hasMore: boolean
+  nextOffset: number | null
+  warnings: PluginNotice[]
+  observedAt: string
+}
+
+/** One flattened node of the explicitly requested bounded subtree. */
+export interface BrowseSubtreeEntry {
+  uri: string
+  /** Path relative to the requested root, as the server reported it. */
+  relPath: string
+  /** 0 for a direct child of the requested URI. */
+  depth: number
+  name: string
+  isDir: boolean
+  kind: BrowseEntryKind
+  size: number | null
+  modifiedAt: string | null
+}
+
+export interface BrowseSubtreePayload {
+  uri: string
+  entries: BrowseSubtreeEntry[]
+  /** True when the server's node cap stopped the flattened listing. */
+  truncated: boolean
+  levels: number
+  nodes: number
+  warnings: PluginNotice[]
+  observedAt: string
+}
+
+/** One row of the paginated session browser. */
+export interface SessionListRow {
+  /** OpenViking session key (the sessions directory entry name). */
+  ovSessionId: string
+  /**
+   * The DSH session id when the key names one (`dsh-*`); null for another
+   * harness's session, whose detail routes this plugin cannot address.
+   */
+  sessionId: string | null
+  /** `viking://…/sessions/<ovSessionId>` */
+  uri: string
+  modifiedAt: string | null
+  kind: 'dsh' | 'local' | 'other'
+}
+
+export interface SessionListPayload {
+  items: SessionListRow[]
+  hasMore: boolean
+  nextOffset: number | null
+  warnings: PluginNotice[]
+  observedAt: string
+}
+
+/** Why the bounded recent-commit fan-out stopped early. */
+export type RecentCommitsLimitedBy = 'deadline' | 'session-cap'
+
+export interface RecentCommitsProgress {
+  /** Sessions whose status read was attempted. */
+  sessionsScanned: number
+  elapsedMs: number
+  deadlineMs: number
+  sessionCap: number
+}
+
+/** One session's commit facts in the recent-commits browser. */
+export interface RecentCommitRow {
+  ovSessionId: string
+  sessionId: string | null
+  uri: string
+  modifiedAt: string | null
+  /** Null when the session is not addressable or its status read failed. */
+  status: CommitStatus | null
+  /** The newest 1–2 archives' extraction counts, newest first. */
+  summaries: ArchiveSummary[]
+  error: string | null
+}
+
+export interface RecentCommitsPayload {
+  items: RecentCommitRow[]
+  /** True when the list is usable but incomplete (deadline or session cap). */
+  partial: boolean
+  limitedBy: RecentCommitsLimitedBy | null
+  progress: RecentCommitsProgress
+  warnings: PluginNotice[]
+  observedAt: string
+}
+
+/**
+ * Whether the host-side probe believes Studio may be embedded.
+ *
+ * `unknown` is a real answer: the host deliberately does not know the GUI's own
+ * origin, so an explicit CSP `frame-ancestors` origin list cannot be compared
+ * against it. The Studio view keeps "open in a new tab" one click away.
+ */
+export type StudioFrameable = 'yes' | 'no' | 'unknown'
+
+export type StudioStatusReason =
+  | 'ok'
+  | 'x-frame-options'
+  | 'csp-frame-ancestors'
+  | 'http-error'
+  | 'auth-required'
+  | 'probe-failed'
+
+export interface StudioStatus {
+  /** The Studio URL the iframe would load. */
+  url: string
+  frameable: StudioFrameable
+  reason: StudioStatusReason
+  /** A short, secret-free explanation of the classification. */
+  detail: string | null
+  observedAt: string
+}
+
+/** The persisted onboarding progress. Contains no endpoint, identity or memory values. */
+export interface OnboardingState {
+  version: 1
+  /** ISO timestamp of the user's dismissal, or null while the card is shown. */
+  dismissedAt: string | null
+  /** Step ids the user marked done (there is no automatic completion). */
+  completedStepIds: string[]
+  /** When the native cockpit was last opened, for "first run" wording. */
+  lastOpenedAt: string | null
+  /** Counts from the last full Doctor check the user ran. */
+  lastFullCheck: { at: string; ok: number; warn: number; error: number } | null
+}
+
+export type OnboardingCheckStatus = 'ok' | 'warn' | 'error' | 'skipped' | 'unknown'
+
+/**
+ * One read-only setup check.
+ *
+ * `id` is stable (persisted step ids use it); `labelKey`/`hintKey` are locale
+ * keys so both languages are first-class; `detail` is a short server fact, never
+ * an endpoint, account, key or memory body.
+ */
+export interface OnboardingCheck {
+  id: string
+  status: OnboardingCheckStatus
+  labelKey: string
+  hintKey: string | null
+  detail: string | null
+}
+
+export interface OnboardingPayload {
+  state: OnboardingState
+  checks: OnboardingCheck[]
+}
+
+/** A per-part availability flag of the composed overview. */
+export interface OverviewPartState {
+  available: boolean
+  error: string | null
+}
+
+/**
+ * The mounted official memory plugin, as `/overview` reports it.
+ *
+ * Deliberately identity-free: the peer is a per-session runtime fact (the
+ * cockpit is root-scoped and has no session), so reporting "a peer" here would
+ * read as the identity's peer. The session-scoped tabs/Doctor own that display.
+ */
+export interface OverviewPluginFact {
+  mounted: boolean
+  version: string | null
+}
+
+/**
+ * One composed round trip for the default view.
+ *
+ * Every part except `parts`/`warnings`/`observedAt` may be null: one failing
+ * part degrades that card, never the page. `parts` says why.
+ */
+export interface OverviewPayload {
+  config: EnhanceConfig | null
+  scope: ScopePayload | null
+  metrics: MetricsPayload | null
+  plugin: OverviewPluginFact
+  studio: StudioStatus | null
+  onboarding: OnboardingPayload | null
+  parts: {
+    config: OverviewPartState
+    scope: OverviewPartState
+    metrics: OverviewPartState
+    plugin: OverviewPartState
+    studio: OverviewPartState
+    onboarding: OverviewPartState
+  }
+  warnings: PluginNotice[]
+  observedAt: string
+}
+
+/** The native cockpit's internal views. */
+export type NativeViewId = 'overview' | 'browse' | 'sessions' | 'commits' | 'stats' | 'studio'
+
+/** A deep-link target for the native cockpit (in-memory navigation history). */
+export interface NativeTarget {
+  view: NativeViewId
+  browse?: { uri?: string }
+  sessions?: { sessionId?: string; archiveUri?: string }
+  commits?: { sessionId?: string }
+  stats?: { sessionId?: string }
+}
+
+/** The actions the local onboarding-state route accepts. */
+export const ONBOARDING_ACTIONS = ['dismiss', 'reset', 'forget', 'complete-step', 'full-check'] as const
+export type OnboardingAction = (typeof ONBOARDING_ACTIONS)[number]
+
+/** The stable step ids the checklist renders (also the only ids `complete-step` accepts). */
+export const ONBOARDING_STEP_IDS = [
+  'endpoint',
+  'health',
+  'identity',
+  'memoryPlugin',
+  'capabilities',
+  'firstStep',
+] as const
+export type OnboardingStepId = (typeof ONBOARDING_STEP_IDS)[number]

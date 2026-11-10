@@ -39,6 +39,8 @@ const ALL_ON = {
   commands: true,
   activityPanel: true,
   scopeBanner: true,
+  nativeViews: true,
+  onboarding: true,
   // Writes are the one v0.5 switch whose absence means OFF (opt-in).
   writes: false,
 }
@@ -53,6 +55,8 @@ const ALL_OFF = {
   commands: false,
   activityPanel: false,
   scopeBanner: false,
+  nativeViews: false,
+  onboarding: false,
   writes: false,
 }
 
@@ -68,6 +72,8 @@ const FORM_ALL_ON = {
   enableCommands: true,
   enableActivity: true,
   showScopeBanner: true,
+  showNativeViews: true,
+  showOnboarding: true,
   enableWrites: true,
 }
 const FORM_ALL_OFF = {
@@ -81,6 +87,8 @@ const FORM_ALL_OFF = {
   enableCommands: false,
   enableActivity: false,
   showScopeBanner: false,
+  showNativeViews: false,
+  showOnboarding: false,
   enableWrites: false,
 }
 
@@ -103,6 +111,8 @@ test('each surface names the Config field that carries it', () => {
     activityPanel: 'enableActivity',
     scopeBanner: 'showScopeBanner',
     writes: 'enableWrites',
+    nativeViews: 'showNativeViews',
+    onboarding: 'showOnboarding',
   })
   // Mount order: the two v0.4 tabs follow the v0.3 surfaces. `commands` is the
   // host-owned switch and deliberately has no browser mount, so it is absent.
@@ -116,9 +126,11 @@ test('each surface names the Config field that carries it', () => {
     'explorePanel',
     'activityPanel',
     'scopeBanner',
+    'onboarding',
   ])
   assert.equal(FEATURE_ORDER.includes('commands'), false, 'the command switch has no client mount')
   assert.equal(FEATURE_ORDER.includes('writes'), false, 'writes gate buttons, not a mount')
+  assert.equal(FEATURE_ORDER.includes('nativeViews'), false, 'the native/Studio choice switches the panel body, not a mount')
 })
 
 test('only a literal boolean false hides a surface', () => {
@@ -144,6 +156,8 @@ test('only a literal boolean false hides a surface', () => {
       commands: false,
       activityPanel: true,
       scopeBanner: true,
+      nativeViews: true,
+      onboarding: true,
       writes: false,
     },
   )
@@ -183,6 +197,8 @@ test('a missing value, missing fields or a malformed container mean on', () => {
     commands: true,
     activityPanel: true,
     scopeBanner: true,
+    nativeViews: true,
+    onboarding: true,
     writes: false,
   })
 })
@@ -205,6 +221,8 @@ test('sameFeatureFlags compares surface by surface', () => {
   assert.equal(sameFeatureFlags(ALL_ON, { ...ALL_ON, commands: false }), false)
   assert.equal(sameFeatureFlags(ALL_ON, { ...ALL_ON, activityPanel: false }), false)
   assert.equal(sameFeatureFlags(ALL_ON, { ...ALL_ON, scopeBanner: false }), false)
+  assert.equal(sameFeatureFlags(ALL_ON, { ...ALL_ON, nativeViews: false }), false)
+  assert.equal(sameFeatureFlags(ALL_ON, { ...ALL_ON, onboarding: false }), false)
   assert.equal(sameFeatureFlags(ALL_ON, { ...ALL_ON, writes: true }), false)
   assert.equal(sameFeatureFlags(ALL_OFF, ALL_OFF), true)
 })
@@ -272,6 +290,8 @@ test('the watcher emits immediately from a ready snapshot and then on changes', 
       enableCommands: true,
       enableActivity: true,
       showScopeBanner: true,
+      showNativeViews: true,
+      showOnboarding: true,
       enableWrites: true,
     },
   })

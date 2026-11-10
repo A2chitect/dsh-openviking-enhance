@@ -4,8 +4,8 @@
 
 **v0.3.0** · [更新记录](CHANGELOG.md) · [路线图](ROADMAP.md)
 
-> 下面的 v0.4 Act、v0.5 Collaborate 与 v0.6 Trust and verify 变更位于
-> `Unreleased`；版本行与包版本保持 0.3.0，直到发布脚本将它们提升并打标签。
+> 下面的 v0.4 Act、v0.5 Collaborate、v0.6 Trust and verify 与 v0.7 Native 变更
+> 位于 `Unreleased`；版本行与包版本保持 0.3.0，直到发布脚本按版本逐个提升并打标签。
 
 把本地 [OpenViking](https://docs.openviking.ai) 记忆服务接进 DeepSeek Harness
 （DSH）的 Web 界面：左侧边栏的 OpenViking Studio 面板、输入框下方的 commit 状态
@@ -19,7 +19,26 @@
 
 ## 功能
 
-**在 DSH 里用 OpenViking Studio。** 左侧边栏最后一行点开，主区域直接加载
+**在 DSH 里直接读记忆。** 左侧边栏底部新增一行，打开一个**原生阅读面板**：概览、懒加载的 `viking://` 浏览树（带预览窗格）、分页会话浏览、有界最近提交浏览与统计。核心阅读任务不再需要 iframe；OpenViking 自带的 Studio 仍是一个显式视图（以及一个"在新标签页打开"），把 `showNativeViews` 设为 `false` 则精确回到 v0.6 的 Studio 页面。全部只读。
+
+### 原生阅读面板（v0.7）
+
+一行侧边栏入口、一个主面板、六个内部视图——不新增 shell 座位：
+
+| 视图 | 读取内容 | 说明 |
+| --- | --- | --- |
+| **概览** | 一次组合请求：配置、身份作用域、健康/版本、记忆总量、能力探测与 Studio 可嵌入性 | 默认视图；各部分独立降级 |
+| **浏览** | 按身份解析的根（记忆、peer、共享/个人资源、个人/Agent 技能、规则/会话快捷入口）加只读预览窗格 | 每展开一个目录一次 `fs/ls` 页（50 行、160 字符摘要、标签），按服务端游标翻页；还有更多页时目录计数显示 `N+`；显式「展开子树」最多 2 层 / 100 节点 |
+| **会话** | 会话目录，每页 50，按修改时间倒序 | 服务端会话列表没有分页；详情复用有界会话日志（状态、待提交 token、任务、归档时间线、逐归档 diff）——**不读消息正文** |
+| **提交** | 有界最近扇出：最新 8 个会话、并发 4、10 s 截止、30 s 缓存 | 服务端没有全局提交历史接口；不完整时会明确提示（"扫描 N 个会话后在 T ms 截止"），刷新重试。从不轮询 |
+| **统计** | 与「活动」tab 相同的 REST 控制台/观察者/统计接口，共用指标卡片 | 从不探测 Prometheus `/metrics` |
+| **Studio** | 原 v0.6 iframe，未改动 | 显式回退；宿主侧响应头探测会解释嵌入被拒，而不是让面板默默空白 |
+
+- **导航只在内存中。** 后退/前进走有界（20 条）历史；面板重开回到概览。DSH 没有主面板选择的 URL 路由 API，因此没有浏览器 URL 路由。
+- **深链不会抢占主栏。** 顺手的 `viking://` 点击仍打开右侧预览 tab；只有显式动作（预览 tab 里的"在原生面板中打开"、胶囊的会话上下文等）才通过结构化能力探测的 `ctx.layout.selectPanel('openviking')` 切换主面板；缺少该动作的旧 DSH 世代回退到预览 tab（面板工具栏会提示）。
+- **首次运行检查。** 只读 Setup 卡片出现在概览与插件页的第二个 section：端点/健康/身份/官方记忆插件/能力/建议第一步。"运行完整检查"复用 Doctor；收起/完成状态按 DSH home 存在 0600 本地文件（见隐私）；`showOnboarding` 关闭时不写入，"遗忘本地设置状态"会删除文件（动作记入审计）。
+- **右侧边栏的 tab 不变。** 召回、记忆健康、预览、探索、活动仍是会话上下文入口；原生面板是全局阅读入口，并链接到它们（规则/经验仍在探索 tab）。
+
 OpenViking 服务自带的 Studio 界面，浏览记忆、会话、检索都不用离开 DSH 或另开浏览器。
 
 **每个会话的 commit 状态。** OpenViking 是按「提交（commit）」写入记忆的：会话的
@@ -47,7 +66,7 @@ OpenViking 服务自带的 Studio 界面，浏览记忆、会话、检索都不�
 - **抽取失败**的时间、服务端错误和 task id（task 记录尚未被清理时），并可复制错误。
   比最新提交更早的失败仍会列在这里，但不会改变胶囊状态。
 
-面板和胶囊都只读——本插件不会向 OpenViking 提交、写入或删除任何东西。
+胶囊与面板只读。打开 `enableWrites`（v0.5+）后，只有上文描述的策展弹窗与写入命令路径会改动数据；这里不做任何写入。
 
 **这个会话检索到了什么。** 右侧边栏多一个「记忆召回」tab：显示当前会话会被
 OpenViking 拉进上下文的记忆——检索用的那句话（默认是本会话最近一次提问，也可以自己输入）、
@@ -242,18 +261,38 @@ dsh plugin --profile web remove dsh-openviking-enhance
 - **没有生命周期 hook、没有 MCP proxy、没有工具、没有 URI guard、没有 Skill 下发**
   （这些属于官方记忆插件，见下面的 N/A 矩阵）。唯一的可选命令 `/viking` 通过
   `ctx.commands` 注册。
-- **DSH web server 上的只读路由**：GET，加两个只读 POST（统一搜索、规则测试）。
-  只响应 loopback + 同源请求，JSON body 上限 64 KiB，且从不写入。
+- **DSH web server 上的路由**：只读 GET，加三个 POST——统一搜索与规则测试（只读查询），
+  以及插件自己的新手状态写入（只落一个 0600 本地 JSON 文件，**零** OpenViking 调用）。
+  只响应 loopback + 同源请求，JSON body 上限 64 KiB，且从不写入 OpenViking。
 - **变更只能走认证的 `ctx.connection.fetch` 传输**（DSH 0.2.2-rc.1+）；刻意不提供
-  loopback POST 写入通道。会话认证由该 DSH 传输负责，不由本插件负责；插件自己的 HTTP
-  服务端不暴露任何写入路由——对任何插件路由直接发未认证 POST 只会得到只读查询或 404
-  （冒烟测试断言所有 `/write/*` 路径都是 404）。
+  **能到达 OpenViking 的 loopback POST 路径**。会话认证由该 DSH 传输负责，不由本插件负责；
+  对任何插件路由直接发未认证 POST 只会得到只读查询、404，或下面这个本地新手状态写入——
+  绝不会是 OpenViking 变更（冒烟测试断言所有 `/write/*` 路径都是 404）。
 - **从官方插件读取**：按会话的运行时配置/状态、pending queue 目录（只读文件名/时间，
   从不读 payload）、能力 memo，以及服务端产出的提交/归档文件；从不写它们。
 - **本插件自己写的东西**：`${DSH_HOME:-~/.dsh}/state/dsh-openviking-enhance/` 下的
-  `profiles.json` 与 `audit.jsonl`，以及用户手动触发的 OpenViking 策展请求。
+  `profiles.json`、`audit.jsonl` 与 `onboarding.json`，以及用户手动触发的 OpenViking
+  策展请求。新手状态 POST 走与只读路由相同的本机/同源 JSON 围栏，而不是鉴权写入通道，
+  因为它不是 OpenViking 写入：它**只**写插件自己的 0600 `onboarding.json`，动作被限制在
+  文档化的枚举（`dismiss`/`reset`/`forget`/`complete-step`/`full-check`）内，且每个动作
+  都会记入本地审计。
 - **启动不阻塞、失败被隔离**：激活失败只记日志、该条目不提供任何东西，不会拖垮 profile；
   OpenViking 不在线只影响路由答案，不影响宿主。
+
+### 原生读取路由（v0.7）
+
+全部是 loopback + 同源的只读 GET，从不写入；唯一例外是本地新手状态 POST：
+
+| 路由 | 契约 |
+| --- | --- |
+| `GET /api/openviking-enhance/overview?fresh=0` | 组合 config + scope + metrics + 插件事实 + Studio 状态 + 新手检查；各部分独立 `available/error`，缓存 5 s |
+| `GET /api/openviking-enhance/browse/roots` | 按身份解析的 `viking://` 根（不列目录） |
+| `GET /api/openviking-enhance/browse?uri=&offset=&limit=` | 一页 `fs/ls`：50 行、160 字符摘要、标签、服务端游标；404 = 空页 + 提示；非允许/内部作用域直接拒绝 |
+| `GET /api/openviking-enhance/browse/subtree?uri=&levels=&nodes=` | 显式有界 `fs/tree`（≤2 层 / ≤100 节点） |
+| `GET /api/openviking-enhance/sessions?offset=&limit=` | 分页会话目录（每页 50，按 mtime 倒序），带 DSH/非 DSH 类型 |
+| `GET /api/openviking-enhance/recent-commits?limit=&fresh=0` | 有界扇出（≤8 会话、并发 4、10 s 截止、30 s 缓存），带 `partial`/`limitedBy`/`progress` |
+| `GET /api/openviking-enhance/studio-status?fresh=0` | 无凭据响应头探测：`frameable` yes/no/unknown + 原因，缓存 60 s |
+| `POST /api/openviking-enhance/onboarding/state` | `{action:'dismiss'|'reset'|'forget'|'complete-step'|'full-check', …}` → 只写/删除 0600 本地 `onboarding.json`，动作记入本地审计，零 OpenViking 调用 |
 
 ### 时限与上限
 
@@ -289,6 +328,22 @@ dsh plugin --profile web remove dsh-openviking-enhance
 | AUDIT_MAX_LIMIT | 100 |
 | AUDIT_KEEP_ROTATIONS | 2 |
 | ACTIVITY_TASKS_MAX_LIMIT | 50 |
+| BROWSE_PAGE_SIZE | 50 |
+| BROWSE_ABSTRACT_MAX_CHARS | 160 |
+| BROWSE_SUBTREE_MAX_LEVELS | 2 |
+| BROWSE_SUBTREE_MAX_NODES | 100 |
+| BROWSE_CACHE_TTL_MS | 15000 |
+| BROWSE_CACHE_MAX_DIRECTORIES | 100 |
+| SESSIONS_PAGE_SIZE | 50 |
+| SESSION_LIST_CACHE_TTL_MS | 15000 |
+| RECENT_COMMITS_SESSION_CAP | 8 |
+| RECENT_COMMITS_CONCURRENCY | 4 |
+| RECENT_COMMITS_DEADLINE_MS | 10000 |
+| RECENT_COMMITS_CACHE_TTL_MS | 30000 |
+| OVERVIEW_CACHE_TTL_MS | 5000 |
+| STUDIO_STATUS_TIMEOUT_MS | 4000 |
+| STUDIO_STATUS_TTL_MS | 60000 |
+| NATIVE_HISTORY_MAX | 20 |
 <!-- /contract:limits -->
 
 规则列表的截止时间是**调度**截止：已经发出的请求仍按各自的单请求超时跑完，所以慢服务端最多会让实际耗时再多一个在途请求的时间；每次部分结果都会在 `progress` 里给出实际耗时。
@@ -326,9 +381,11 @@ dsh plugin --profile web remove dsh-openviking-enhance
 - **只读路由仅限 loopback，而 loopback 不是用户边界。** 围栏会检查 socket、`Host`、
   同源请求头和请求形状，但在多用户机器上本机其他进程仍可 `curl` 这些只读数据。变更从不
   走这些路由：它们走框架认证的 `connection.fetch`。
-- **Studio 是服务端自己的 UI，装在 iframe 里。** 如果服务端拒绝被嵌入
-  （`X-Frame-Options`/CSP），插件提供新标签页/浏览器打开；它不代理也不重绘 Studio。
-  原生只读视图是 v0.7+ 的事。
+- **原生读取就是经过围栏的普通 GET；Studio 仍是服务端自己的 UI 装在 iframe 里。**
+  原生面板不代理也不重绘 Studio：它通过与其他路由相同的本机/同源围栏读取文档化的
+  `viking://` 路由。如果服务端拒绝嵌入（`X-Frame-Options`/CSP frame-ancestors），
+  宿主侧响应头探测会报告原因并提供新标签页打开；面板绝不从浏览器猜（被阻止的跨域
+  frame 对父页面没有任何错误事件）。
 - **凭据优先级**：`~/.openviking/ovcli.conf` → `OPENVIKING_*` 环境变量 → 插件自己的
   `profiles.json` 命名配置档。旧版 `apiKey` 配置字段已声明为 `role('secret')`，但保存它
   会把明文 key 写进你的 profile 补丁——只当兜底。`profiles.json` 是命名配置档的
@@ -336,8 +393,12 @@ dsh plugin --profile web remove dsh-openviking-enhance
   Doctor/diagnostics。
 - **日志里没有对话或记忆正文**：本地审计文件只记录动作/身份/URI/结果，从不记录正文。
   冒烟脚本默认脱敏（`SMOKE_VERBOSE=1` 是仅供本机调试的显式开关）。
-- **插件持久化的内容**：`profiles.json`（0600）与 `audit.jsonl`（0600，1 MiB 轮转、
-  保留 2 份），都在 `${DSH_HOME:-~/.dsh}/state/dsh-openviking-enhance/` 下。
+- **插件持久化的内容**：`profiles.json`（0600）、`audit.jsonl`（0600，1 MiB 轮转、
+  保留 2 份）与 `onboarding.json`（0600，原子写），都在
+  `${DSH_HOME:-~/.dsh}/state/dsh-openviking-enhance/` 下。`onboarding.json` 只含检查
+  id/状态时间戳与上次检查计数——绝不含端点、账户、用户、密钥、peer、记忆 URI 或记忆正文。
+  `lastOpenedAt` 只在 `showOnboarding` 开关打开时写入（关闭清单即停止写入）；插件页
+  Setup 卡片的"遗忘本地设置状态"会完全删除该文件，动作记入本地审计。
 
 ### 插件会发什么（以及代价）
 
@@ -352,6 +413,13 @@ dsh plugin --profile web remove dsh-openviking-enhance
 | 规则测试 **Run** | 同样的 `rules/search` 代价（按钮旁有说明） |
 | Activity tab 可见时 | `tasks`/指标轮询；**tab 隐藏时不轮询** |
 | 写入、强制提交 | 仅用户触发，一次一个已确认动作 |
+| 原生概览（首屏） | 一次组合请求：配置健康 + 能力探测 + 四项指标读取 + 缓存的 Studio 响应头探测；缓存 5 s |
+| 浏览展开 | 一页 `fs/ls`：50 条、160 字符摘要、标签；缓存 15 s（LRU 100）；刷新、切视图或卸载时中止进行中的读取 |
+| 浏览「展开子树」 | 一次 `fs/tree`，最多 2 层/100 节点——仅显式按钮 |
+| 会话列表 | 一页 50 个会话目录的 `fs/ls`，缓存 15 s（按页键；`fresh=1` 绕过）；详情只在选中时复用既有的有界会话日志（不轮询） |
+| 提交视图 | 最多 8 个会话 × 3–4 次廉价读取，并发 4、10 s 截止、缓存 30 s，从不轮询 |
+| 统计视图 | 与「活动」tab 相同的 REST 指标读取；显式刷新 |
+| 新手「运行完整检查」 | 既有 Doctor 探测，仅用户触发 |
 
 打开规则列表**不会**花一次规则检索：能力闸门是校验用的 `POST rules/search {}`
 （服务端在 body 校验阶段就拒绝，先于任何召回/judge 工作），列表本身是有界文件读取
@@ -365,6 +433,14 @@ dsh plugin --profile web remove dsh-openviking-enhance
 - 兼容性只对上面列出的 DSH/OpenViking 版本负责；0.5.4 未探测，Windows 未验证。
 - 写入需要 DSH 0.2.2-rc.1+；更老的版本按设计只读。
 - 仓库级验证是 CI（Linux）+ macOS 手工；Desktop 载体是手工安装验证，不在 CI 里。
+- **旧 DSH 的深链回退到预览 tab。** 主面板切换需要 `ctx.layout.selectPanel`
+  （0.2.2-rc.1 已验证），缺少它的世代保留全部只读入口，但无法以程序方式打开原生面板。
+- **没有全局提交历史。** 归档按会话存放、任务记录会被清理，所以「提交」只是最新 8 个
+  会话的有界列表；更早的记录在会话详情中查看。
+- **不读消息正文。** 会话的 `messages.jsonl` 从不读取：会话视图只展示计数/标记/diff，
+  Studio 仍是正文阅读器。
+- **导航不持久化、没有浏览器后退。** 面板内历史按设计只在内存中；DSH 没有主面板选择的
+  URL 路由。
 - 本插件由社区维护，**不是 OpenViking 官方项目**。
 
 ## 配置
@@ -402,6 +478,8 @@ dsh plugin --profile web remove dsh-openviking-enhance
 | `enableWrites` | `false` | 手动开启：策展（编辑/删除/标签）、强制提交与写入命令 |
 | `enableActivity` | `true` | 界面开关：「活动」tab（任务、指标、最近操作） |
 | `showScopeBanner` | `true` | 界面开关：常驻作用域 chip；写入弹窗无论是否隐藏都会重复完整作用域 |
+| `showNativeViews` | `true` | 界面开关：原生阅读面板（概览/浏览/会话/提交/统计）。关闭 = v0.6 的 Studio iframe 页面 |
+| `showOnboarding` | `true` | 界面开关：首次运行检查（概览卡片 + 插件页 Setup 卡片）；关闭只隐藏卡片，不清除本地状态 |
 | `activeProfile` | `''` | 要使用的命名配置档；留空 = 使用下面的旧连接字段 |
 
 ![插件配置表单里的界面开关](assets/v04-after-settings.png)
@@ -410,7 +488,9 @@ dsh plugin --profile web remove dsh-openviking-enhance
 不需要重载窗口或重启应用。**Configure** 表单本身永远不会被隐藏，所以关掉的入口随时可以
 在这里重新打开。隐藏左侧入口会一并卸载 Studio 页面（重新打开后重新加载）；隐藏召回 tab
 后不再提供该页，已打开的召回页会在回到对话时自动收起（若它在后台分屏里、不是激活页，
-则需要手动关闭——框架没有提供枚举标签页的接口）。「活动」tab 同理。`enableCommands`、
+则需要手动关闭——框架没有提供枚举标签页的接口）。「活动」tab 同理。`showNativeViews`
+只切换主面板的身体（原生面板 ↔ v0.6 Studio 页面），不重挂面板；`showOnboarding`
+同时移除两张检查卡片。`enableCommands`、
 `enableWrites` 和 `activeProfile` 由宿主半部分读取，所以它们在下次插件应用（会重载插件的
 保存或重启）时生效，并在 Loader 广播 volatile 配置更新时立即生效；不支持该事件的旧 Loader
 只能等到下次应用。它们不是靠挂载/卸载生效的。

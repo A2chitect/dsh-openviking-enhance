@@ -1,0 +1,805 @@
+// Unit tests for the v0.7 "Native I" shared contract.
+//
+// Pure modules only: the `viking://` path classifier/allowlist, the browse row
+// normalizers, the Studio frameability classifier, the onboarding state
+// validation, and the limits the READMEs document. These are the layers both
+// halves depend on, so a drift here would be silent in the UI.
+import test from 'node:test'
+import assert from 'node:assert/strict'
+
+import {
+  BROWSE_URI_MAX_CHARS,
+  browseEntryKind,
+  classifyVikingUri,
+  dshSessionIdOf,
+  isAllowedBrowseUri,
+  isVikingUri,
+  normalizeVikingUri,
+  ovSessionIdOf,
+  sessionKindOf,
+  tailOf,
+} from '../src/shared/viking-tree.ts'
+import {
+  BrowseService,
+  browseRootsFor,
+  normalizeBrowseEntry,
+  normalizeSubtreeEntry,
+} from '../src/host/browse-service.ts'
+import {
+  classifyStudioProbe,
+  parseCspFrameAncestors,
+} from '../src/host/studio-status.ts'
+import {
+  computeOnboardingChecks,
+  freshOnboardingState,
+  normalizeOnboardingState,
+  parseOnboardingUpdate,
+} from '../src/host/onboarding.ts'
+import * as limits from '../src/shared/limits.ts'
+import {
+  getNativeState,
+  navigate,
+  back,
+  forward,
+  resetNative,
+  setNativeSwitches,
+  __setNativeStateForTests,
+  __setNativeLayoutForTests,
+  canSelectPanel,
+  openNative,
+} from '../src/client/native-store.ts'
+
+/* ========================================================================
+ * viking:// classification
+ * ===================================================================== */
+
+test('classifyVikingUri maps each viking:// family to a kind, scope and root', () => {
+  const cases = [
+    ['viking://user/default/memories', 'memory', 'user', 'memories'],
+    ['viking://user/default/memories/preferences/tools.md', 'memory', 'user', 'memories'],
+    ['viking://user/default/memories/rules/always-test.md', 'rule', 'user', 'rules'],
+    ['viking://user/default/memories/rules', 'rule', 'user', 'rules'],
+    ['viking://user/default/resources', 'resource', 'user', 'myResources'],
+    ['viking://user/default/skills/notes', 'skill', 'user', 'skills'],
+    ['viking://resources/team/shared.md', 'resource', 'account', 'resources'],
+    ['viking://resources', 'resource', 'account', 'resources'],
+    ['viking://agent/skills/pdf/SKILL.md', 'skill', 'agent', 'agentSkills'],
+    ['viking://user/default/peers/peer-1/memories/x.md', 'memory', 'peer', 'peers'],
+    ['viking://user/default/sessions/dsh-s1', 'session', 'session', 'sessions'],
+    ['viking://user/default/sessions/dsh-s1/history', 'file', 'session', 'sessions'],
+    ['viking://user/default/sessions/dsh-s1/history/archive_001', 'archive', 'session', 'sessions'],
+    ['viking://user/default/sessions/dsh-s1/messages.jsonl', 'file', 'session', 'sessions'],
+    ['viking://user/default/unknown-thing', 'file', 'user', null],
+  ]
+  for (const [uri, kind, scope, rootId] of cases) {
+    const facts = classifyVikingUri(uri)
+    assert.equal(facts.kind, kind, `${uri}: kind`)
+    assert.equal(facts.scope, scope, `${uri}: scope`)
+    assert.equal(facts.rootId, rootId, `${uri}: rootId`)
+  }
+  assert.equal(classifyVikingUri('not-a-uri').kind, 'unknown', 'malformed uris classify as unknown')
+  assert.equal(classifyVikingUri('viking://queue/job-1').scope, 'unknown', 'the internal queue scope is never user scope')
+})
+
+test('normalizeVikingUri collapses duplicate/trailing slashes and preserves the root', () => {
+  assert.equal(normalizeVikingUri(' viking://user/default/memories/ '), 'viking://user/default/memories')
+  assert.equal(normalizeVikingUri('viking://user//default///memories'), 'viking://user/default/memories')
+  assert.equal(normalizeVikingUri('viking://'), 'viking://')
+  assert.equal(normalizeVikingUri('https://example.com/x'), 'https://example.com/x')
+  assert.equal(tailOf('viking://user/default/memories/preferences/tools.md'), 'tools.md')
+  assert.equal(tailOf('viking://'), '')
+  assert.equal(isVikingUri('viking://resources'), true)
+  assert.equal(isVikingUri('viking:/resources'), false)
+})
+
+test('the browse URI allowlist refuses internal scopes and unsafe paths', () => {
+  for (const uri of [
+    'viking://user/default/memories',
+    'viking://resources',
+    'viking://agent/skills',
+    'viking://user/default/sessions/dsh-s1',
+  ]) {
+    assert.equal(isAllowedBrowseUri(uri), true, `${uri} is readable`)
+  }
+  for (const uri of [
+    'viking://queue/thing',
+    'viking://temp/x',
+    'viking://system/x',
+    'viking://upload/x',
+    'viking://session/dsh-s1',
+    'viking://sessions/dsh-s1',
+    'viking://user/default/memories?x=1',
+    'viking://user/default/memories#frag',
+    'viking://user/default/../queue/x',
+    'viking://user/default/memories/./x',
+    'viking://user/default/a b',
+    'http://127.0.0.1:1933/api/v1/fs/ls',
+    '',
+    `viking://user/default/${'x'.repeat(BROWSE_URI_MAX_CHARS)}`,
+  ]) {
+    assert.equal(isAllowedBrowseUri(uri), false, `${JSON.stringify(uri.slice(0, 60))} is refused`)
+  }
+})
+
+test('the browse allowlist pins the personal tree to the active identity (S2)', () => {
+  const personal = 'viking://user/default/memories/preferences/tools.md'
+  assert.equal(isAllowedBrowseUri(personal, { user: 'default' }), true)
+  assert.equal(isAllowedBrowseUri(personal, { user: 'other' }), false, 'another user\'s personal tree is refused')
+  assert.equal(isAllowedBrowseUri('viking://user/mallory/memories', { user: 'default' }), false)
+  // Account-level trees stay readable regardless of which user is active.
+  assert.equal(isAllowedBrowseUri('viking://resources/team/x.md', { user: 'other' }), true)
+  assert.equal(isAllowedBrowseUri('viking://agent/skills/pdf', { user: 'other' }), true)
+  // A user segment is required once an identity is named.
+  assert.equal(isAllowedBrowseUri('viking://user', { user: 'default' }), false)
+  // The structural form (no identity supplied) keeps the v0.7 allowlist contract.
+  assert.equal(isAllowedBrowseUri(personal), true)
+})
+
+test('an unresolved identity emits no personal browse roots (N4)', () => {
+  const personal = browseRootsFor('default').map((root) => root.id)
+  assert.deepEqual(personal, [
+    'memories',
+    'peers',
+    'resources',
+    'myResources',
+    'skills',
+    'agentSkills',
+    'rules',
+    'sessions',
+  ])
+  for (const empty of ['', '   ']) {
+    const roots = browseRootsFor(empty).map((root) => root.id)
+    assert.deepEqual(roots, ['resources', 'agentSkills'], 'only account-level roots remain without a user')
+    assert.ok(
+      browseRootsFor(empty).every((root) => !root.uri.includes('viking://user/')),
+      'no malformed viking://user// root is emitted',
+    )
+  }
+  // The emitted URIs are identity-allowed; an empty user would otherwise 400.
+  const roots = browseRootsFor('')
+  assert.ok(roots.every((root) => isAllowedBrowseUri(root.uri, { user: '' })))
+})
+
+test('subtree filters returned entries by identity like the directory listing (N4)', async () => {
+  const api = {
+    fsTree: async () => ({
+      ok: true,
+      status: 200,
+      error: null,
+      result: {
+        entries: [
+          { uri: 'viking://user/default/memories/preferences/tools.md', isDir: false, rel_path: 'preferences/tools.md', level: 2 },
+          { uri: 'viking://user/mallory/memories/secret.md', isDir: false, rel_path: 'secret.md', level: 2 },
+          { uri: 'viking://resources/shared/x.md', isDir: false, rel_path: 'x.md', level: 1 },
+        ],
+        hasMore: false,
+      },
+    }),
+  }
+  const service = new BrowseService({ api, user: () => 'default', now: () => 0 })
+  const payload = await service.subtree('viking://user/default/memories')
+  assert.deepEqual(
+    payload.entries.map((entry) => entry.uri),
+    ['viking://user/default/memories/preferences/tools.md', 'viking://resources/shared/x.md'],
+    'another user\'s entry is dropped; the active user and account-level entries stay',
+  )
+})
+
+test('directories keep their meaning only where the tree model has one', () => {
+  const session = 'viking://user/default/sessions/dsh-s1'
+  assert.equal(browseEntryKind(session, true), 'session')
+  assert.equal(browseEntryKind(`${session}/history`, true), 'directory')
+  assert.equal(browseEntryKind(`${session}/history/archive_001`, true), 'archive')
+  assert.equal(browseEntryKind('viking://user/default/peers/peer-1', true), 'agent')
+  assert.equal(browseEntryKind('viking://user/default/memories/preferences', true), 'directory')
+  assert.equal(browseEntryKind('viking://user/default/memories/preferences/tools.md', false), 'memory')
+})
+
+test('session harness classification and the DSH addressability rule', () => {
+  assert.equal(sessionKindOf('dsh-session-abc'), 'dsh')
+  assert.equal(sessionKindOf('dsh-abc'), 'dsh')
+  assert.equal(sessionKindOf('local-runner-1'), 'local')
+  assert.equal(sessionKindOf('something-else'), 'other')
+  assert.equal(dshSessionIdOf('dsh-abc'), 'abc')
+  assert.equal(dshSessionIdOf('local-x'), null, 'another harness is not addressable by this plugin')
+  assert.equal(dshSessionIdOf('dsh-'), null, 'an empty id is not an id')
+  assert.equal(ovSessionIdOf('abc'), 'dsh-abc')
+  assert.equal(ovSessionIdOf('dsh-abc'), 'dsh-abc')
+})
+
+/* ========================================================================
+ * Browse normalization
+ * ===================================================================== */
+
+const LONG_ABSTRACT = 'x'.repeat(400)
+
+test('a directory page row is normalized and its abstract is capped', () => {
+  const row = normalizeBrowseEntry({
+    uri: 'viking://user/default/memories/preferences/tools.md',
+    isDir: false,
+    size: 42,
+    modTime: '2026-11-10T00:00:00Z',
+    abstract: LONG_ABSTRACT,
+    tags: ['env=prod', '', 7, 'team=a', 'b', 'c', 'd'],
+  })
+  assert.ok(row)
+  assert.equal(row.uri, 'viking://user/default/memories/preferences/tools.md')
+  assert.equal(row.name, 'tools.md')
+  assert.equal(row.kind, 'memory')
+  assert.equal(row.isDir, false)
+  assert.equal(row.size, 42)
+  assert.equal(row.abstract.length, limits.BROWSE_ABSTRACT_MAX_CHARS)
+  assert.deepEqual(row.tags, ['env=prod', 'team=a', 'b', 'c', 'd'], 'invalid/blank tags are dropped and the list is bounded')
+  assert.equal(normalizeBrowseEntry({ uri: 'viking://queue/x', isDir: false }), null, 'internal scopes are refused host-side too')
+  assert.equal(normalizeBrowseEntry(null), null)
+})
+
+test('a subtree row carries relPath and depth for the flattened list', () => {
+  const entry = normalizeSubtreeEntry('viking://user/default/memories', {
+    uri: 'viking://user/default/memories/preferences/tools.md',
+    isDir: false,
+    size: 10,
+    modTime: '2026-11-10T00:00:00Z',
+    rel_path: 'preferences/tools.md',
+    level: 2,
+  })
+  assert.ok(entry)
+  assert.equal(entry.relPath, 'preferences/tools.md')
+  assert.equal(entry.depth, 2)
+  assert.equal(entry.name, 'tools.md')
+  assert.equal(entry.kind, 'memory')
+})
+
+/* ========================================================================
+ * Studio frameability classification
+ * ===================================================================== */
+
+function headerMap(entries) {
+  const map = new Map(Object.entries(entries).map(([key, value]) => [key.toLowerCase(), value]))
+  return { get: (name) => map.get(name.toLowerCase()) ?? null }
+}
+
+function probe(status, headers = {}, error = null) {
+  return classifyStudioProbe({ status, headers: headerMap(headers), error })
+}
+
+test('X-Frame-Options blocks embedding and is classified honestly', () => {
+  assert.deepEqual(probe(200, { 'x-frame-options': 'DENY' }), { frameable: 'no', reason: 'x-frame-options', detail: 'DENY' })
+  // SAMEORIGIN blocks the GUI's different port too: a different origin.
+  assert.deepEqual(probe(200, { 'x-frame-options': 'SAMEORIGIN' }), { frameable: 'no', reason: 'x-frame-options', detail: 'SAMEORIGIN' })
+  const allowFrom = probe(200, { 'x-frame-options': 'ALLOW-FROM https://gui.example' })
+  assert.equal(allowFrom.frameable, 'unknown', 'ALLOW-FROM is ignored by browsers; do not claim it works')
+})
+
+test('CSP frame-ancestors is parsed and classified', () => {
+  assert.deepEqual(parseCspFrameAncestors("default-src 'self'; frame-ancestors 'self'"), ["'self'"])
+  assert.equal(parseCspFrameAncestors('default-src self'), null)
+  assert.deepEqual(probe(200, { 'content-security-policy': "frame-ancestors 'none'" }), {
+    frameable: 'no',
+    reason: 'csp-frame-ancestors',
+    detail: 'frame-ancestors none',
+  })
+  assert.equal(probe(200, { 'content-security-policy': "frame-ancestors 'self'" }).frameable, 'no')
+  assert.equal(
+    probe(200, { 'content-security-policy': 'frame-ancestors *' }).frameable,
+    'unknown',
+    'a wildcard may work; the host cannot verify the GUI origin, so it says unknown',
+  )
+  assert.equal(
+    probe(200, { 'content-security-policy': 'frame-ancestors https://gui.example' }).frameable,
+    'unknown',
+    'an explicit origin list cannot be compared to the unknown GUI origin',
+  )
+})
+
+test('the remaining probe answers keep their documented classification', () => {
+  assert.deepEqual(probe(200), { frameable: 'yes', reason: 'ok', detail: null })
+  assert.deepEqual(probe(401), { frameable: 'unknown', reason: 'auth-required', detail: 'HTTP 401' })
+  assert.deepEqual(probe(403), { frameable: 'unknown', reason: 'auth-required', detail: 'HTTP 403' })
+  assert.deepEqual(probe(500), { frameable: 'unknown', reason: 'http-error', detail: 'HTTP 500' })
+  assert.deepEqual(probe(0, {}, 'timeout'), { frameable: 'unknown', reason: 'probe-failed', detail: 'timeout' })
+})
+
+/* ========================================================================
+ * Onboarding state + checks
+ * ===================================================================== */
+
+test('a missing/corrupt onboarding state is a clean first run, never an error', () => {
+  assert.deepEqual(normalizeOnboardingState(null), freshOnboardingState())
+  assert.deepEqual(normalizeOnboardingState('nope'), freshOnboardingState())
+  assert.deepEqual(normalizeOnboardingState({ version: 99 }), freshOnboardingState())
+  const valid = {
+    version: 1,
+    dismissedAt: '2026-11-10T00:00:00.000Z',
+    completedStepIds: ['health', 'not-a-step', 'health'],
+    lastOpenedAt: '2026-11-10T00:01:00.000Z',
+    lastFullCheck: { at: '2026-11-10T00:02:00.000Z', ok: 9, warn: 2, error: 1 },
+  }
+  assert.deepEqual(normalizeOnboardingState(valid), {
+    version: 1,
+    dismissedAt: '2026-11-10T00:00:00.000Z',
+    completedStepIds: ['health'],
+    lastOpenedAt: '2026-11-10T00:01:00.000Z',
+    lastFullCheck: { at: '2026-11-10T00:02:00.000Z', ok: 9, warn: 2, error: 1 },
+  })
+  const oversized = normalizeOnboardingState({ ...valid, lastFullCheck: { at: 'x', ok: -1, warn: 2, error: 1 } })
+  assert.equal(oversized.lastFullCheck, null, 'an invalid full-check record is dropped, not coerced')
+})
+
+test('the onboarding POST validator accepts exactly the documented actions', () => {
+  assert.deepEqual(parseOnboardingUpdate({ action: 'dismiss' }), { ok: true, update: { action: 'dismiss' } })
+  assert.deepEqual(parseOnboardingUpdate({ action: 'reset' }), { ok: true, update: { action: 'reset' } })
+  assert.deepEqual(parseOnboardingUpdate({ action: 'forget' }), { ok: true, update: { action: 'forget' } })
+  assert.deepEqual(parseOnboardingUpdate({ action: 'complete-step', stepId: 'health' }), {
+    ok: true,
+    update: { action: 'complete-step', stepId: 'health' },
+  })
+  assert.equal(parseOnboardingUpdate({ action: 'complete-step', stepId: 'nope' }).ok, false)
+  assert.equal(parseOnboardingUpdate({ action: 'dismiss-all' }).ok, false)
+  assert.deepEqual(parseOnboardingUpdate({ action: 'full-check', ok: 1, warn: 2, error: 3 }), {
+    ok: true,
+    update: { action: 'full-check', ok: 1, warn: 2, error: 3 },
+  })
+  assert.equal(parseOnboardingUpdate({ action: 'full-check', ok: -1, warn: 2, error: 3 }).ok, false)
+  assert.equal(parseOnboardingUpdate({ action: 'full-check', ok: '1', warn: 2, error: 3 }).ok, false)
+  assert.equal(parseOnboardingUpdate({ action: 'full-check', ok: 1, warn: 2, error: 1e9 }).ok, false)
+})
+
+test('the cheap checks derive every step from the composed overview parts', () => {
+  const config = {
+    ok: true,
+    endpoint: 'http://127.0.0.1:1933',
+    studioUrl: 'http://127.0.0.1:1933/studio/',
+    version: '0.5.3',
+    healthy: true,
+    account: 'default',
+    user: 'default',
+    warnings: [],
+  }
+  const scope = {
+    identity: {
+      profileId: null,
+      profileLabel: null,
+      endpoint: 'http://127.0.0.1:1933',
+      authMode: 'dev',
+      account: 'default',
+      user: 'default',
+      peer: null,
+      fingerprint: `sha256:${'a'.repeat(64)}`,
+    },
+    activeProfileId: null,
+    role: 'ROOT',
+    version: '0.5.3',
+    healthy: true,
+    writes: { enabled: false, transport: false, reason: 'writes-disabled' },
+    capabilities: {
+      health: { available: true, detail: null },
+      identity: { available: true, detail: null },
+      tasks: { available: true, detail: null },
+      rules: { available: true, detail: null },
+    },
+    warnings: [],
+    observedAt: '2026-11-10T00:00:00Z',
+  }
+  const metrics = {
+    sessionId: null,
+    dashboard: { available: true, error: null, files: 1, skills: 1, memories: 2, total: 4, todayTokens: 5, todayRetrievals: 6 },
+    queue: { available: true, error: null, queues: [] },
+    memories: { available: true, error: null, total: 2, byCategory: {}, hotness: {}, stale7d: null, stale30d: null, oldestDays: null },
+    session: { available: false, error: 'no-session', sessionId: null, totalTurns: null, memoriesExtracted: null },
+    prometheus: false,
+    warnings: [],
+    observedAt: '2026-11-10T00:00:00Z',
+  }
+  const healthy = computeOnboardingChecks({
+    config,
+    scope,
+    metrics,
+    plugin: { mounted: true, version: '0.3.1' },
+    studio: { url: 'http://127.0.0.1:1933/studio/', frameable: 'yes', reason: 'ok', detail: null, observedAt: 'x' },
+  })
+  assert.deepEqual(
+    healthy.map((check) => [check.id, check.status]),
+    [
+      ['endpoint', 'ok'],
+      ['health', 'ok'],
+      ['identity', 'ok'],
+      ['memoryPlugin', 'ok'],
+      ['capabilities', 'ok'],
+      ['firstStep', 'ok'],
+    ],
+  )
+  assert.equal(healthy[0].hintKey, null)
+  assert.deepEqual(healthy[5].hintKey, 'onboarding.firstStep.browse')
+
+  const unreachable = computeOnboardingChecks({
+    config: { ...config, healthy: false, version: null, warnings: [{ code: 'unreachable', params: { endpoint: 'x', error: 'ECONNREFUSED' } }] },
+    scope: null,
+    metrics: null,
+    plugin: { mounted: false, version: null },
+    studio: null,
+  })
+  assert.deepEqual(
+    unreachable.map((check) => [check.id, check.status]),
+    [
+      ['endpoint', 'error'],
+      ['health', 'error'],
+      ['identity', 'unknown'],
+      ['memoryPlugin', 'warn'],
+      ['capabilities', 'unknown'],
+      ['firstStep', 'ok'],
+    ],
+  )
+  assert.equal(unreachable[5].hintKey, 'onboarding.firstStep.studio', 'no fs and no metrics falls back to Studio')
+})
+
+/* ========================================================================
+ * The native store: history bounds and the layout bridge
+ * ===================================================================== */
+
+test('navigation history is bounded, deduped and supports back/forward', () => {
+  resetNative()
+  assert.equal(getNativeState().view, 'overview')
+  navigate({ view: 'sessions' })
+  navigate({ view: 'commits' })
+  navigate({ view: 'stats' })
+  assert.equal(getNativeState().history.length, 4)
+  assert.equal(back(), true)
+  assert.equal(getNativeState().view, 'commits')
+  assert.equal(forward(), true)
+  assert.equal(getNativeState().view, 'stats')
+  // A new navigation truncates the forward entries.
+  navigate({ view: 'browse', browse: { uri: 'viking://user/default/memories' } })
+  assert.equal(getNativeState().history.length, 5)
+  assert.equal(getNativeState().view, 'browse')
+  assert.equal(getNativeState().target.browse?.uri, 'viking://user/default/memories')
+  // Deduping the exact same target does not grow the history.
+  const before = getNativeState().history.length
+  navigate({ view: 'browse', browse: { uri: 'viking://user/default/memories' } })
+  assert.equal(getNativeState().history.length, before)
+  // The history is capped at NATIVE_HISTORY_MAX.
+  for (let index = 0; index < 40; index += 1) {
+    navigate({ view: index % 2 === 0 ? 'sessions' : 'commits' })
+  }
+  assert.equal(getNativeState().history.length, limits.NATIVE_HISTORY_MAX)
+  resetNative()
+  assert.equal(getNativeState().view, 'overview')
+})
+
+test('the layout bridge is capability-detected and never auto-steals by itself', () => {
+  __setNativeLayoutForTests(null)
+  assert.equal(canSelectPanel(), false)
+  assert.equal(openNative({ view: 'overview' }), 'preview', 'no layout action means the preview-tab fallback')
+  const calls = []
+  __setNativeLayoutForTests({ selectPanel: (id) => calls.push(id) })
+  assert.equal(canSelectPanel(), true)
+  assert.equal(openNative({ view: 'sessions' }), 'panel')
+  assert.deepEqual(calls, ['openviking'])
+  // A throwing shell must not take the click down.
+  __setNativeLayoutForTests({ selectPanel: () => { throw new Error('no such panel') } })
+  assert.equal(openNative({ view: 'overview' }), 'preview')
+  __setNativeLayoutForTests(null)
+})
+
+test('the presentation switches are independent of the history', () => {
+  resetNative()
+  navigate({ view: 'stats' })
+  setNativeSwitches({ nativeViews: false })
+  assert.equal(getNativeState().switches.nativeViews, false)
+  assert.equal(getNativeState().switches.onboarding, true, 'the other switch is untouched')
+  assert.equal(getNativeState().view, 'stats', 'the last view survives the switch')
+  setNativeSwitches({ nativeViews: true, onboarding: false })
+  assert.equal(getNativeState().switches.nativeViews, true)
+  assert.equal(getNativeState().switches.onboarding, false)
+  resetNative()
+  setNativeSwitches({ nativeViews: true, onboarding: true })
+  __setNativeStateForTests({ view: 'overview' })
+})
+
+/* ========================================================================
+ * Limits contract
+ * ===================================================================== */
+
+test('the v0.7 budget constants exist with their documented values', () => {
+  assert.equal(limits.BROWSE_PAGE_SIZE, 50)
+  assert.equal(limits.BROWSE_ABSTRACT_MAX_CHARS, 160)
+  assert.equal(limits.BROWSE_SUBTREE_MAX_LEVELS, 2)
+  assert.equal(limits.BROWSE_SUBTREE_MAX_NODES, 100)
+  assert.equal(limits.BROWSE_CACHE_TTL_MS, 15_000)
+  assert.equal(limits.BROWSE_CACHE_MAX_DIRECTORIES, 100)
+  assert.equal(limits.SESSIONS_PAGE_SIZE, 50)
+  assert.equal(limits.SESSION_LIST_CACHE_TTL_MS, 15_000)
+  assert.equal(limits.RECENT_COMMITS_SESSION_CAP, 8)
+  assert.equal(limits.RECENT_COMMITS_CONCURRENCY, 4)
+  assert.equal(limits.RECENT_COMMITS_DEADLINE_MS, 10_000)
+  assert.equal(limits.RECENT_COMMITS_CACHE_TTL_MS, 30_000)
+  assert.equal(limits.OVERVIEW_CACHE_TTL_MS, 5_000)
+  assert.equal(limits.STUDIO_STATUS_TIMEOUT_MS, 4_000)
+  assert.equal(limits.STUDIO_STATUS_TTL_MS, 60_000)
+  assert.equal(limits.NATIVE_HISTORY_MAX, 20)
+  assert.ok(limits.RECENT_COMMITS_CONCURRENCY < limits.RECENT_COMMITS_SESSION_CAP, 'the pool is narrower than the fan-out')
+  assert.ok(limits.STUDIO_STATUS_TIMEOUT_MS < limits.STUDIO_STATUS_TTL_MS, 'the probe has a sane relationship to its cache')
+})
+
+/* ========================================================================
+ * The onboarding store's write rules (review S5)
+ * ===================================================================== */
+
+test('onboarding writes are gated by the switch and forget removes the file', async () => {
+  const { OnboardingStore } = await import('../src/host/onboarding.ts')
+  const { mkdtempSync, existsSync, readFileSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const dir = mkdtempSync(join(tmpdir(), 'ove-onb-'))
+  const store = new OnboardingStore({ dir, now: () => 1_000_000 })
+  const path = store.filePath()
+  assert.equal(existsSync(path), false, 'a fresh store has no file')
+
+  // A user who turned the checklist off asked for no onboarding writes.
+  store.touchOpened(false)
+  assert.equal(existsSync(path), false, 'touchOpened(false) does not create the file')
+
+  const opened = store.touchOpened(true)
+  assert.equal(existsSync(path), true, 'touchOpened(true) records the first run')
+  assert.equal(typeof opened.lastOpenedAt, 'string')
+
+  store.apply({ action: 'dismiss' })
+  assert.equal(JSON.parse(readFileSync(path, 'utf8')).dismissedAt !== null, true)
+
+  // forget deletes the file completely; the returned state is a fresh first run.
+  const forgotten = store.apply({ action: 'forget' })
+  assert.equal(existsSync(path), false, 'forget unlinks onboarding.json')
+  assert.deepEqual(forgotten.state, { version: 1, dismissedAt: null, completedStepIds: [], lastOpenedAt: null, lastFullCheck: null })
+  assert.equal(forgotten.writeError, null)
+})
+
+/* ========================================================================
+ * The Studio probe's gates (review S3/S4)
+ * ===================================================================== */
+
+test('the studio probe refuses non-probeable endpoints without fetching', async () => {
+  const { StudioStatusService } = await import('../src/host/studio-status.ts')
+  let fetched = 0
+  const service = new StudioStatusService({
+    studioUrl: () => 'http://169.254.169.254/studio/',
+    fetch: async () => {
+      fetched += 1
+      return new Response('', { status: 200 })
+    },
+    now: () => 0,
+  })
+  const status = await service.status(true)
+  assert.equal(fetched, 0, 'the metadata endpoint is never fetched')
+  assert.equal(status.frameable, 'unknown')
+  assert.equal(status.reason, 'probe-failed')
+  assert.equal(status.detail, 'endpoint-not-probeable')
+})
+
+test('the studio probe passes redirect:manual and never follows a redirect', async () => {
+  const { StudioStatusService } = await import('../src/host/studio-status.ts')
+  let seenOptions = null
+  const service = new StudioStatusService({
+    studioUrl: () => 'http://127.0.0.1:1933/studio/',
+    fetch: async (_url, options) => {
+      seenOptions = options
+      return new Response('', { status: 302, headers: { location: '/login' } })
+    },
+    now: () => 0,
+  })
+  const status = await service.status(true)
+  assert.equal(seenOptions.redirect, 'manual', 'the redirect target is never fetched')
+  assert.equal(status.frameable, 'unknown')
+  assert.equal(status.reason, 'http-error', 'a 3xx cannot be classified as frameable and is not followed')
+})
+
+test('the studio probe classifies a transport failure as probe-failed (S4)', async () => {
+  const { StudioStatusService } = await import('../src/host/studio-status.ts')
+  const service = new StudioStatusService({
+    studioUrl: () => 'http://127.0.0.1:1933/studio/',
+    fetch: async () => {
+      throw new Error('connection refused')
+    },
+    now: () => 0,
+  })
+  const status = await service.status(true)
+  assert.equal(status.frameable, 'unknown')
+  assert.equal(status.reason, 'probe-failed')
+  assert.match(status.detail ?? '', /connection refused/)
+})
+
+/* ========================================================================
+ * The sessions-list cache (review N4)
+ * ===================================================================== */
+
+test('the sessions list cache uses the documented SESSION_LIST_CACHE_TTL_MS', async () => {
+  const { SESSION_LIST_CACHE_TTL_MS } = await import('../src/shared/limits.ts')
+  const { SessionsService } = await import('../src/host/sessions-service.ts')
+  assert.equal(SESSION_LIST_CACHE_TTL_MS, 15_000, 'the cache TTL is a documented constant, not a bare literal')
+  let clock = 1_000_000
+  let calls = 0
+  const api = {
+    listDirectoryPage: async () => {
+      calls += 1
+      return {
+        ok: true,
+        status: 200,
+        error: null,
+        result: {
+          entries: [{ uri: 'viking://user/default/sessions/dsh-s1', isDir: true, modTime: '2026-11-10T00:00:00Z' }],
+          hasMore: false,
+          nextOffset: null,
+        },
+      }
+    },
+  }
+  const service = new SessionsService({ api, user: () => 'default', now: () => clock })
+  const first = await service.list({})
+  assert.equal(first.items.length, 1)
+  await service.list({})
+  assert.equal(calls, 1, 'the second page read inside the TTL is served from cache')
+  clock += SESSION_LIST_CACHE_TTL_MS - 1
+  await service.list({})
+  assert.equal(calls, 1, 'still cached just under the TTL')
+  clock += 1
+  await service.list({})
+  assert.equal(calls, 2, 'the cache expires exactly at the documented TTL')
+  await service.list({ fresh: true })
+  assert.equal(calls, 3, 'fresh=1 bypasses the cache')
+})
+
+/* ========================================================================
+ * The bounded recent-commit fan-out service
+ * ===================================================================== */
+
+test('the recent-commit fan-out reports a deadline partial (pool 4, deadline hit)', async () => {
+  const { RecentCommitsService } = await import('../src/host/commits-service.ts')
+  let clock = 1_000_000
+  const rows = Array.from({ length: 8 }, (_, index) => ({
+    ovSessionId: `dsh-s${index}`,
+    sessionId: `s${index}`,
+    uri: `viking://user/default/sessions/dsh-s${index}`,
+    modifiedAt: '2026-11-10T00:00:00Z',
+    kind: 'dsh',
+  }))
+  const sessions = {
+    list: async () => ({ items: rows, hasMore: false, nextOffset: null, warnings: [], observedAt: 'x' }),
+  }
+  const commit = {
+    status: async (sessionId) => {
+      clock += 3_000
+      return {
+        sessionId,
+        ovSessionId: `dsh-${sessionId}`,
+        pendingTokens: 0,
+        threshold: null,
+        ratio: 0,
+        commitCount: 0,
+        lastCommitAt: null,
+        phase: 'idle',
+        latest: null,
+        archives: [],
+      }
+    },
+    summaries: async () => [],
+  }
+  const service = new RecentCommitsService({ commit, sessions, now: () => clock })
+  const payload = await service.recent({})
+  assert.equal(payload.items.length, 4, 'the deadline stopped the pool after the first batch')
+  assert.equal(payload.partial, true)
+  assert.equal(payload.limitedBy, 'deadline')
+  assert.equal(payload.progress.sessionsScanned, 4)
+  assert.equal(payload.progress.deadlineMs, limits.RECENT_COMMITS_DEADLINE_MS)
+  assert.ok(payload.progress.elapsedMs >= limits.RECENT_COMMITS_DEADLINE_MS, 'the reported elapsed time crosses the budget')
+})
+
+test('the recent-commit fan-out reports a session-cap partial and keeps per-row errors', async () => {
+  const { RecentCommitsService } = await import('../src/host/commits-service.ts')
+  const rows = [
+    { ovSessionId: 'dsh-s1', sessionId: 's1', uri: 'viking://user/default/sessions/dsh-s1', modifiedAt: null, kind: 'dsh' },
+    { ovSessionId: 'local-runner', sessionId: null, uri: 'viking://user/default/sessions/local-runner', modifiedAt: null, kind: 'local' },
+  ]
+  const sessions = {
+    list: async () => ({ items: rows, hasMore: true, nextOffset: 2, warnings: [], observedAt: 'x' }),
+  }
+  const commit = {
+    status: async (sessionId) => ({
+      sessionId,
+      ovSessionId: `dsh-${sessionId}`,
+      pendingTokens: 1,
+      threshold: null,
+      ratio: 0,
+      commitCount: 1,
+      lastCommitAt: null,
+      phase: 'done',
+      latest: null,
+      archives: [],
+    }),
+    summaries: async () => [],
+  }
+  const service = new RecentCommitsService({ commit, sessions, now: () => 0 })
+  const payload = await service.recent({})
+  assert.equal(payload.partial, true)
+  assert.equal(payload.limitedBy, 'session-cap')
+  assert.equal(payload.progress.sessionCap, limits.RECENT_COMMITS_SESSION_CAP)
+  assert.equal(payload.items.length, 2)
+  assert.equal(payload.items[1].error, 'unsupported-session', 'another harness session is a row-level answer, not a refusal')
+  assert.equal(payload.items[1].status, null)
+})
+
+/* ========================================================================
+ * i18n parity for the new copy
+ * ===================================================================== */
+
+test('EN and ZH ship exactly the same v0.7 keys', async () => {
+  const { DICTS } = await import('../src/client/locale.ts')
+  const enKeys = Object.keys(DICTS.en).sort()
+  const zhKeys = Object.keys(DICTS.zh).sort()
+  assert.deepEqual(zhKeys, enKeys, 'both dictionaries carry the same key set')
+  const groups = ['native.', 'onboarding.', 'browse.', 'config.showNativeViews', 'config.showOnboarding', 'native.preview.curate']
+  for (const prefix of groups) {
+    const hits = enKeys.filter((key) => key.startsWith(prefix))
+    assert.ok(hits.length > 0, `the ${prefix} copy exists`)
+    assert.equal(hits.length, zhKeys.filter((key) => key.startsWith(prefix)).length, `the ${prefix} copy is translated`)
+  }
+  // Every check the overview can produce has label + hint copy in both halves.
+  for (const step of ['endpoint', 'health', 'identity', 'memoryPlugin', 'capabilities', 'firstStep']) {
+    assert.ok(enKeys.includes(`onboarding.step.${step}`), `EN label for ${step}`)
+    assert.ok(zhKeys.includes(`onboarding.step.${step}`), `ZH label for ${step}`)
+  }
+  for (const root of ['memories', 'peers', 'resources', 'myResources', 'skills', 'agentSkills', 'rules', 'sessions']) {
+    assert.ok(enKeys.includes(`browse.root.${root}`), `EN root label for ${root}`)
+  }
+  for (const kind of ['directory', 'memory', 'resource', 'skill', 'rule', 'session', 'archive', 'agent', 'file', 'unknown']) {
+    assert.ok(enKeys.includes(`browse.kind.${kind}`), `EN kind label for ${kind}`)
+  }
+  for (const state of ['no-messages', 'not-committed', 'extracting', 'failed', 'queued', 'committed', 'unknown']) {
+    assert.ok(enKeys.includes(`native.sessions.state.${state}`), `EN session state for ${state}`)
+  }
+  for (const phase of ['idle', 'pending', 'extracting', 'done', 'failed', 'errored']) {
+    assert.ok(enKeys.includes(`native.commits.phase.${phase}`), `EN commit phase for ${phase}`)
+    assert.ok(zhKeys.includes(`native.commits.phase.${phase}`), `ZH commit phase for ${phase}`)
+  }
+  for (const code of ['not-allowed', 'unreadable', 'unsupported']) {
+    assert.ok(enKeys.includes(`wcode.${code}`), `EN write-error copy for ${code}`)
+    assert.ok(zhKeys.includes(`wcode.${code}`), `ZH write-error copy for ${code}`)
+  }
+  assert.ok(enKeys.includes('notice.staleDirectory'), 'EN stale-directory notice')
+  assert.ok(zhKeys.includes('notice.staleDirectory'), 'ZH stale-directory notice')
+  assert.ok(enKeys.includes('native.warnings.summary'), 'EN warning-row summary')
+  assert.ok(enKeys.includes('browse.entryCountMore'), 'EN lower-bound entry count')
+  assert.ok(enKeys.includes('native.onboarding.forgetSetup'), 'EN forget action copy')
+  for (const frameable of ['yes', 'no', 'unknown']) {
+    assert.ok(enKeys.includes(`native.studio.frameable.${frameable}`), `EN Studio frameability for ${frameable}`)
+  }
+})
+
+
+/* ========================================================================
+ * Browse abort wiring (review N1) — pinned by code shape because this repo has
+ * no DOM runner: each loader must snapshot its request's signal and check THAT
+ * signal after the await; re-reading the shared ref after a Refresh/unmount is
+ * exactly the regression (aborted answers misread as host failures).
+ * ===================================================================== */
+
+test('every browse loader checks the signal it sent, not the current ref (N1)', async () => {
+  const { readFileSync } = await import('node:fs')
+  const source = readFileSync(new URL('../src/client/native-browse.tsx', import.meta.url), 'utf8')
+  assert.ok(!source.includes('isAborted'), 'the shared-ref abort helper is deleted')
+  assert.equal(
+    (source.match(/const signal = requestSignal\(\)/g) ?? []).length,
+    3,
+    'loadRoots, loadNode and loadSubtree each snapshot their request signal',
+  )
+  assert.equal(
+    (source.match(/if \(signal\?\.aborted === true\) return/g) ?? []).length,
+    3,
+    'each loader checks its own captured signal after the await',
+  )
+  assert.ok(
+    !/if \(requestSignal\(\)\?\.signal\.aborted/.test(source),
+    'no loader re-reads the ref to decide whether its answer is stale',
+  )
+  const sessions = readFileSync(new URL('../src/client/native-sessions.tsx', import.meta.url), 'utf8')
+  assert.match(sessions, /const signal = listAbortRef\.current\?\.signal/, 'Sessions keeps the reference pattern N1 mirrors')
+  assert.match(sessions, /if \(signal\?\.aborted === true\) return/, 'and checks the captured signal')
+})

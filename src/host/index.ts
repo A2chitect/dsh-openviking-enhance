@@ -10,9 +10,11 @@
  *     `{ok:false, error}` instead of throwing, because a plugin route that
  *     throws can take a request down with it.
  *
- * It deliberately performs **no writes** to OpenViking and never touches the
- * third-party memory plugin's objects; the only cross-plugin reads are the two
- * optional lookups documented in `commit-service.ts`.
+ * It deliberately performs **no writes** to OpenViking and never mutates the
+ * third-party memory plugin's objects. The cross-plugin reads are the optional
+ * in-process runtime lookups documented in `commit-service.ts` (mounted-ness,
+ * per-session peer/config, installed version) plus the read-only pending-queue
+ * and capability-memo files under the OpenViking home.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
@@ -40,6 +42,7 @@ import {
   type SessionControlPayload,
   type TaskListPayload,
   type WriteAction,
+  type OverviewPluginFact,
 } from '../shared/protocol.ts'
 import {
   configSourceHealth,
@@ -61,6 +64,13 @@ import {
   isTrustedLocalRequest,
   readReadOnlyJsonBody,
 } from './trust-fence.ts'
+import {
+  BROWSE_PAGE_SIZE,
+  BROWSE_SUBTREE_MAX_LEVELS,
+  BROWSE_SUBTREE_MAX_NODES,
+  RECENT_COMMITS_SESSION_CAP,
+  SESSIONS_PAGE_SIZE,
+} from '../shared/limits.ts'
 import { CommitService, isArchiveUriForSession, type OpenVikingMemoryRuntime } from './commit-service.ts'
 import { OpenVikingApi } from './openviking-api.ts'
 import { RecallService } from './recall-service.ts'
@@ -70,6 +80,12 @@ import { localStateHealth, readMemoryPluginVersion } from './local-state.ts'
 import { CatalogService, normalizeExperienceKind } from './catalog-service.ts'
 import { PreviewFailure, PreviewService } from './preview-service.ts'
 import { SearchService } from './search-service.ts'
+import { BrowseFailure, BrowseService } from './browse-service.ts'
+import { SessionsService } from './sessions-service.ts'
+import { RecentCommitsService } from './commits-service.ts'
+import { StudioStatusService } from './studio-status.ts'
+import { OnboardingStore, parseOnboardingUpdate } from './onboarding.ts'
+import { OverviewService } from './overview-service.ts'
 import {
   VikingCommand,
   vikingCommandDefinition,
@@ -165,6 +181,17 @@ export const Config = z.object({
   /** v0.5 interface switch: the scope chip on the composer/panel headers. */
   showScopeBanner: z.boolean().default(true).volatile(),
   /**
+   * v0.7 interface switch: the native read cockpit inside the OpenViking panel.
+   *
+   * Default **true**: the native multi-view page is the point of v0.7. Off
+   * renders exactly the v0.6 Studio iframe page, which is the documented
+   * backwards-compatible fallback for older DSH generations or a user who only
+   * wants Studio. Client-only, like the other `show*` switches.
+   */
+  showNativeViews: z.boolean().default(true).volatile(),
+  /** v0.7 interface switch: the onboarding checklist (Overview card + Plugins Setup card). */
+  showOnboarding: z.boolean().default(true).volatile(),
+  /**
    * The active identity profile id, or '' for legacy v0.4 connection
    * resolution. A named profile wins over the endpoint/apiKey/account/user
    * overrides (Lead sign-off decision A); the host re-resolves on change.
@@ -207,6 +234,8 @@ export interface EnhanceConfigInput {
   enableWrites?: ConfigField<boolean>
   enableActivity?: ConfigField<boolean>
   showScopeBanner?: ConfigField<boolean>
+  showNativeViews?: ConfigField<boolean>
+  showOnboarding?: ConfigField<boolean>
   activeProfile?: ConfigField<string>
 }
 
@@ -283,9 +312,11 @@ interface CommandRegistryLike {
  * 0.2.2-rc.1 Fetch routes ("only owner Peers reach an exact route; the shared
  * handler answers 403 for every other principal"), and when the service is
  * absent writes fail closed with `transport-unavailable`. There is deliberately
- * **no** loopback `webServer` POST write path: the v0.4 read fence is weaker
- * than an authenticated transport, so raising write authority over it would be a
- * security regression.
+ * **no** loopback `webServer` POST path that reaches OpenViking: the v0.4 read
+ * fence is weaker than an authenticated transport, so raising write authority
+ * over it would be a security regression. (v0.7's onboarding-state POST is the
+ * one loopback POST; it writes only the plugin's own 0600 state file, is clamped
+ * to the documented action vocabulary, and is audited — never OpenViking.)
  */
 interface HostConnectionFetchRoute {
   /** Absolute path below `/api`. */
@@ -463,6 +494,13 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
     // the previous profile must not survive the switch.
     service.resetCaches()
     recall.resetCaches()
+    // v0.7: every native read is identity-scoped too (roots carry the user, a
+    // cached directory page names the previous account's tree).
+    browse.resetCaches()
+    sessions.resetCaches()
+    recentCommits.resetCaches()
+    studioStatus.resetCaches()
+    overview.resetCaches()
     recordIdentitySwitch?.()
   }
 
@@ -475,6 +513,25 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
       return value && typeof value === 'object' ? (value as OpenVikingMemoryRuntime) : null
     } catch {
       return null
+    }
+  }
+
+  /**
+   * v0.7: the mounted official memory plugin's facts for the Overview.
+   *
+   * Read in-process and read-only: `mounted` from the runtime object and the
+   * installed version from its package manifest. No identity/peer fields: the
+   * cockpit is root-scoped, so a peer read from an arbitrary session would be
+   * misread as the identity's peer (the session-scoped tabs and the Doctor own
+   * that display).
+   */
+  const overviewPluginFact = (): OverviewPluginFact => {
+    // No identity fields here on purpose: the cockpit is root-scoped, so any
+    // peer read from an arbitrary session would be misread as *the* peer. The
+    // per-session peer belongs to the session-scoped tabs and the Doctor.
+    return {
+      mounted: memoryRuntime() !== null,
+      version: memoryRuntime() === null ? null : readMemoryPluginVersion(),
     }
   }
 
@@ -534,6 +591,14 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
   const capability = new CapabilityService({ api, transport: () => transportAvailable })
   const sessionControl = new SessionControlService({ api, commit: service })
   const activity = new ActivityService({ api })
+
+  /* ---- v0.7 native cockpit services ------------------------------------- */
+
+  const browse = new BrowseService({ api, user: () => connection.user })
+  const sessions = new SessionsService({ api, user: () => connection.user })
+  const recentCommits = new RecentCommitsService({ commit: service, sessions })
+  const studioStatus = new StudioStatusService({ studioUrl: () => `${connection.endpoint}${studioPath}` })
+  const onboardingStore = new OnboardingStore({})
   const writeService = new WriteService({
     api,
     capabilities: capability,
@@ -1228,6 +1293,240 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
     }),
   ]
   routes.push(...v05Routes)
+
+  /* ======================================================================
+   * v0.7 read routes + the local onboarding-state POST
+   *
+   * Everything here is read-only against OpenViking. The one POST writes ONLY
+   * the plugin's own 0600 `onboarding.json` under the DSH state directory: it
+   * deliberately rides the same-origin read-only JSON guard (`guardPost` +
+   * `readReadOnlyJsonBody`) rather than the authenticated mutation transport,
+   * because it is not an OpenViking mutation and must keep working on the
+   * read-only DSH generations the native views target. It performs zero
+   * OpenViking API calls (a unit test asserts that).
+   * ==================================================================== */
+
+  /** The composed Overview: config + scope + metrics + plugin + Studio + onboarding. */
+  const configPart = async (): Promise<EnhanceConfig> => {
+    const payload = await configPayload()
+    if (!payload.ok) throw new Error(payload.error)
+    return payload as EnhanceConfig
+  }
+
+  const overview = new OverviewService({
+    config: configPart,
+    scope: scopePayload,
+    metrics: (fresh) => activity.metrics({ fresh }),
+    plugin: overviewPluginFact,
+    studio: (fresh) => studioStatus.status(fresh),
+    onboarding: onboardingStore,
+    onboardingEnabled: () => configField(config.showOnboarding) !== false,
+  })
+
+  /**
+   * Cancel an upstream read when the browser collapses/deselects the node.
+   *
+   * Listens on the RESPONSE's `close`, not the request's: a GET request's stream
+   * is complete (and emits `close`) as soon as its headers/body are read, which
+   * on a keep-alive socket can be well before the handler finishes, so listening
+   * on `req` would abort every read. `res` closes when the response is finished
+   * or the connection drops — either way there is no reader left.
+   */
+  const abortOnClose = (res: ServerResponse): { signal: AbortSignal; dispose: () => void } => {
+    const controller = new AbortController()
+    const onClose = (): void => controller.abort()
+    res.once('close', onClose)
+    return {
+      signal: controller.signal,
+      dispose: () => {
+        try {
+          res.off('close', onClose)
+        } catch {
+          // A finished response cannot be unlistened to on very old Node builds.
+        }
+      },
+    }
+  }
+
+  /**
+   * Record one local onboarding-state write in the plugin's own audit trail.
+   *
+   * These actions never reach OpenViking, but "forget the checklist state" is a
+   * local mutation a reviewer should be able to see; `identity` stays null on
+   * purpose because the state file is per DSH home, not per scope.
+   */
+  const auditOnboarding = (action: string, writeError: string | null): void => {
+    try {
+      audit.append({
+        kind: 'onboarding',
+        action,
+        target: null,
+        identity: null,
+        fingerprint: null,
+        confirmation: null,
+        preCommit: null,
+        postCommit: null,
+        requestId: null,
+        result: writeError === null ? 'ok' : 'failed',
+        error: writeError,
+        undo: null,
+      })
+    } catch {
+      // The audit trail is best effort; a failed append must not fail the write.
+    }
+  }
+
+  /** A zero-or-more bounded integer query parameter (the paging cursor). */
+  const offsetParam = (params: URLSearchParams): number => {
+    const raw = Number(params.get('offset') ?? 0)
+    return Number.isFinite(raw) ? Math.min(Math.max(Math.trunc(raw), 0), 1_000_000) : 0
+  }
+
+  /** Map a browse/session/commit service refusal to the route envelope. */
+  const browseFailure = (res: ServerResponse, error: unknown): void => {
+    if (error instanceof BrowseFailure) {
+      // The client went away (collapsed node, view change): there is no one to
+      // answer, and the upstream request has already been aborted.
+      if (error.code === 'aborted') return
+      fail(res, error.code === 'not-allowed' ? 400 : 200, error.code, error.message)
+      return
+    }
+    failFrom(res, error)
+  }
+
+  const v07Routes: WebRoute[] = [
+    readRoute(`${API_PREFIX}/overview`, async (params) => {
+      const payload = await overview.overview(params.get('fresh') === '1')
+      return { ok: true, overview: payload }
+    }),
+    readRoute(`${API_PREFIX}/browse/roots`, async (params) => {
+      const payload = browse.roots(params.get('fresh') === '1')
+      return { ok: true, ...payload }
+    }),
+    {
+      kind: 'exact',
+      path: `${API_PREFIX}/browse`,
+      handler: async (req, res) => {
+        if (!guard(req, res)) return
+        const params = query(req)
+        const uri = (params.get('uri') ?? '').trim()
+        if (uri.length === 0) {
+          fail(res, 400, 'invalid-request', 'uri is required')
+          return
+        }
+        const abort = abortOnClose(res)
+        try {
+          const page = await browse.list(uri, {
+            offset: offsetParam(params),
+            limit: limitParam(params, 'limit', BROWSE_PAGE_SIZE, BROWSE_PAGE_SIZE),
+            fresh: params.get('fresh') === '1',
+            signal: abort.signal,
+          })
+          writeJson(res, 200, { ok: true, page })
+        } catch (error) {
+          browseFailure(res, error)
+        } finally {
+          abort.dispose()
+        }
+      },
+    },
+    {
+      kind: 'exact',
+      path: `${API_PREFIX}/browse/subtree`,
+      handler: async (req, res) => {
+        if (!guard(req, res)) return
+        const params = query(req)
+        const uri = (params.get('uri') ?? '').trim()
+        if (uri.length === 0) {
+          fail(res, 400, 'invalid-request', 'uri is required')
+          return
+        }
+        const abort = abortOnClose(res)
+        try {
+          const subtree = await browse.subtree(uri, {
+            levels: limitParam(params, 'levels', BROWSE_SUBTREE_MAX_LEVELS, BROWSE_SUBTREE_MAX_LEVELS),
+            nodes: limitParam(params, 'nodes', BROWSE_SUBTREE_MAX_NODES, BROWSE_SUBTREE_MAX_NODES),
+            signal: abort.signal,
+          })
+          writeJson(res, 200, { ok: true, subtree })
+        } catch (error) {
+          browseFailure(res, error)
+        } finally {
+          abort.dispose()
+        }
+      },
+    },
+    {
+      kind: 'exact',
+      path: `${API_PREFIX}/sessions`,
+      handler: async (req, res) => {
+        if (!guard(req, res)) return
+        const params = query(req)
+        const abort = abortOnClose(res)
+        try {
+          const sessionsPage = await sessions.list({
+            offset: offsetParam(params),
+            limit: limitParam(params, 'limit', SESSIONS_PAGE_SIZE, SESSIONS_PAGE_SIZE),
+            fresh: params.get('fresh') === '1',
+            signal: abort.signal,
+          })
+          writeJson(res, 200, { ok: true, sessions: sessionsPage })
+        } catch (error) {
+          browseFailure(res, error)
+        } finally {
+          abort.dispose()
+        }
+      },
+    },
+    {
+      kind: 'exact',
+      path: `${API_PREFIX}/recent-commits`,
+      handler: async (req, res) => {
+        if (!guard(req, res)) return
+        const params = query(req)
+        const abort = abortOnClose(res)
+        try {
+          const recent = await recentCommits.recent({
+            limit: limitParam(params, 'limit', RECENT_COMMITS_SESSION_CAP, RECENT_COMMITS_SESSION_CAP),
+            fresh: params.get('fresh') === '1',
+            signal: abort.signal,
+          })
+          writeJson(res, 200, { ok: true, recent })
+        } catch (error) {
+          browseFailure(res, error)
+        } finally {
+          abort.dispose()
+        }
+      },
+    },
+    readRoute(`${API_PREFIX}/studio-status`, async (params) => {
+      const studio = await studioStatus.status(params.get('fresh') === '1')
+      return { ok: true, studio }
+    }),
+    {
+      kind: 'exact',
+      path: `${API_PREFIX}/onboarding/state`,
+      handler: async (req, res) => {
+        if (!guardPost(req, res)) return
+        const body = await readPostBody(req, res)
+        if (body === null) return
+        const parsed = parseOnboardingUpdate(body)
+        if (!parsed.ok) {
+          fail(res, 400, 'invalid-request', parsed.error)
+          return
+        }
+        try {
+          // Writes the plugin's own state file only. No OpenViking call, ever.
+          const result = onboardingStore.apply(parsed.update)
+          auditOnboarding(parsed.update.action, result.writeError)
+          writeJson(res, 200, { ok: true, state: result.state, writeError: result.writeError })
+        } catch (error) {
+          failFrom(res, error)
+        }
+      },
+    },
+  ]
+  routes.push(...v07Routes)
 
   /* ---- authenticated mutation routes (decision B) ----------------------- */
 

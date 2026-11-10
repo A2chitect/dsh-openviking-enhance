@@ -51,6 +51,15 @@ import {
   type SearchPayload,
   type SearchType,
   type SkillCatalogue,
+  type BrowsePayload,
+  type BrowseRootsPayload,
+  type BrowseSubtreePayload,
+  type OverviewPayload,
+  type RecentCommitsPayload,
+  type SessionListPayload,
+  type StudioStatus,
+  type OnboardingState,
+  type OnboardingAction,
 } from '../shared/protocol.ts'
 
 /** Relative base: no leading slash, so `<base href>` keeps working. */
@@ -573,4 +582,138 @@ export interface ProfileTestResponse {
 /** Reachability test for a candidate endpoint; never sends a stored key. */
 export function testProfileEndpoint(endpoint: string): Promise<OveResult<ProfileTestResponse>> {
   return postOve<ProfileTestResponse>(`${BASE}/profiles/test`, { endpoint })
+}
+
+/* ========================================================================
+ * v0.7 native cockpit routes
+ *
+ * All read routes use the v0.5 Ove envelope (`{ok:true, …}` / `{ok:false,
+ * error:{code,message}}`) and every helper accepts an AbortSignal, because the
+ * views cancel in-flight reads on view change, collapse and identity switch.
+ * The one POST writes the plugin's own onboarding state file; it never reaches
+ * OpenViking.
+ * ===================================================================== */
+
+export interface OverviewResponse {
+  overview: OverviewPayload
+}
+
+/** One composed round trip for the default native Overview. */
+export function fetchOverview(fresh = false, signal?: AbortSignal): Promise<OveResult<OverviewResponse>> {
+  return readOve<OverviewResponse>(
+    `${BASE}/overview${fresh ? '?fresh=1' : ''}`,
+    signal === undefined ? undefined : { signal },
+  )
+}
+
+/** The identity-aware browse roots; no listing happens in this call. */
+export function fetchBrowseRoots(fresh = false, signal?: AbortSignal): Promise<OveResult<BrowseRootsPayload>> {
+  return readOve<BrowseRootsPayload>(
+    `${BASE}/browse/roots${fresh ? '?fresh=1' : ''}`,
+    signal === undefined ? undefined : { signal },
+  )
+}
+
+export interface BrowsePageResponse {
+  page: BrowsePayload
+}
+
+/** One directory page of the lazy tree. */
+export function fetchBrowsePage(
+  uri: string,
+  options: { offset?: number; limit?: number; fresh?: boolean; signal?: AbortSignal } = {},
+): Promise<OveResult<BrowsePageResponse>> {
+  const params = new URLSearchParams({ uri })
+  if (options.offset !== undefined) params.set('offset', String(options.offset))
+  if (options.limit !== undefined) params.set('limit', String(options.limit))
+  if (options.fresh === true) params.set('fresh', '1')
+  return readOve<BrowsePageResponse>(
+    `${BASE}/browse?${params.toString()}`,
+    options.signal === undefined ? undefined : { signal: options.signal },
+  )
+}
+
+export interface BrowseSubtreeResponse {
+  subtree: BrowseSubtreePayload
+}
+
+/** The explicit bounded "expand subtree" action (≤2 levels, ≤100 nodes). */
+export function fetchBrowseSubtree(
+  uri: string,
+  options: { levels?: number; nodes?: number; signal?: AbortSignal } = {},
+): Promise<OveResult<BrowseSubtreeResponse>> {
+  const params = new URLSearchParams({ uri })
+  if (options.levels !== undefined) params.set('levels', String(options.levels))
+  if (options.nodes !== undefined) params.set('nodes', String(options.nodes))
+  return readOve<BrowseSubtreeResponse>(
+    `${BASE}/browse/subtree?${params.toString()}`,
+    options.signal === undefined ? undefined : { signal: options.signal },
+  )
+}
+
+export interface SessionsPageResponse {
+  sessions: SessionListPayload
+}
+
+/** One page of session directories (the server's own list has no pagination). */
+export function fetchSessionsPage(
+  options: { offset?: number; limit?: number; fresh?: boolean; signal?: AbortSignal } = {},
+): Promise<OveResult<SessionsPageResponse>> {
+  const params = new URLSearchParams()
+  if (options.offset !== undefined) params.set('offset', String(options.offset))
+  if (options.limit !== undefined) params.set('limit', String(options.limit))
+  if (options.fresh === true) params.set('fresh', '1')
+  const suffix = params.toString()
+  return readOve<SessionsPageResponse>(
+    `${BASE}/sessions${suffix.length > 0 ? `?${suffix}` : ''}`,
+    options.signal === undefined ? undefined : { signal: options.signal },
+  )
+}
+
+export interface RecentCommitsResponse {
+  recent: RecentCommitsPayload
+}
+
+/** The bounded recent-commit fan-out (≤8 sessions, 10 s deadline, 30 s cache). */
+export function fetchRecentCommits(
+  options: { limit?: number; fresh?: boolean; signal?: AbortSignal } = {},
+): Promise<OveResult<RecentCommitsResponse>> {
+  const params = new URLSearchParams()
+  if (options.limit !== undefined) params.set('limit', String(options.limit))
+  if (options.fresh === true) params.set('fresh', '1')
+  const suffix = params.toString()
+  return readOve<RecentCommitsResponse>(
+    `${BASE}/recent-commits${suffix.length > 0 ? `?${suffix}` : ''}`,
+    options.signal === undefined ? undefined : { signal: options.signal },
+  )
+}
+
+export interface StudioStatusResponse {
+  studio: StudioStatus
+}
+
+/** The host-side frameability probe (never a browser-side guess). */
+export function fetchStudioStatus(fresh = false, signal?: AbortSignal): Promise<OveResult<StudioStatusResponse>> {
+  return readOve<StudioStatusResponse>(
+    `${BASE}/studio-status${fresh ? '?fresh=1' : ''}`,
+    signal === undefined ? undefined : { signal },
+  )
+}
+
+export interface OnboardingStateRequest {
+  action: OnboardingAction
+  stepId?: string
+  ok?: number
+  warn?: number
+  error?: number
+}
+
+export interface OnboardingStateResponse {
+  state: OnboardingState
+  writeError: string | null
+}
+
+/** Persist one onboarding checklist action (dismiss/reset/complete-step/full-check). */
+export function postOnboardingState(request: OnboardingStateRequest): Promise<OveResult<OnboardingStateResponse>> {
+  return postOve<OnboardingStateResponse>(`${BASE}/onboarding/state`, request)
 }
