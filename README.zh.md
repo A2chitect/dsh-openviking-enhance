@@ -381,6 +381,7 @@ dsh plugin --profile web remove dsh-openviking-enhance
 | OPS_PREPARE_RATE_LIMIT | 6 |
 | OPS_PREPARE_RATE_WINDOW_MS | 60000 |
 | PACK_MAX_BYTES | 67108864 |
+| PACK_CAPABILITY_TTL_MS | 600000 |
 | PACK_DOWNLOAD_TTL_MS | 120000 |
 | PACK_DOWNLOAD_MAX_ACTIVE | 2 |
 | OPS_EXPORT_TIMEOUT_MS | 120000 |
@@ -392,6 +393,7 @@ dsh plugin --profile web remove dsh-openviking-enhance
 | SNAPSHOT_RESTORE_PLAN_PATHS | 50 |
 | SNAPSHOT_DIFF_PATHS_PAGE | 100 |
 | FILE_VERSIONS_PAGE | 20 |
+| COMPILE_CONFIGS_MAX | 50 |
 | COMPILE_FROM_MAX | 8 |
 | COMPILE_SKILL_MAX_CHARS | 128 |
 | COMPILE_INSTRUCTION_MAX_CHARS | 500 |
@@ -400,6 +402,7 @@ dsh plugin --profile web remove dsh-openviking-enhance
 | OBSERVABILITY_CACHE_TTL_MS | 30000 |
 | OBSERVABILITY_MAX_DAYS | 7 |
 | TASK_EVIDENCE_MAX_BYTES | 524288 |
+| TASK_EVIDENCE_CORRELATION_MAX | 20 |
 <!-- /contract:limits -->
 
 规则列表的截止时间是**调度**截止：已经发出的请求仍按各自的单请求超时跑完，所以慢服务端最多会让实际耗时再多一个在途请求的时间；每次部分结果都会在 `progress` 里给出实际耗时。
