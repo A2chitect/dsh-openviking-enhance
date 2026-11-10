@@ -44,6 +44,9 @@ class FakeServer {
     this.compileRuns = 0
     this.packCalls = 0
     this.fileVersionCurrent = 'ver-2'
+    this.logLag = 0
+    this.holdCommit = false
+    this.heldCommit = null
     this.server = http.createServer((request, response) => {
       const url = new URL(request.url ?? '/', 'http://127.0.0.1')
       const chunks = []
@@ -73,6 +76,17 @@ class FakeServer {
 
   get base() {
     return `http://127.0.0.1:${this.server.address().port}`
+  }
+
+  /** Release a commit held by `holdCommit` (gate-contention test). */
+  releaseCommit() {
+    const held = this.heldCommit
+    if (held === null) return false
+    this.heldCommit = null
+    this.commitCount += 1
+    held.response.writeHead(200, { 'content-type': 'application/json', 'x-request-id': 'req-held' })
+    held.response.end(envelope({ result: 'created', commit_oid: `commit-${this.commitCount}`, changed: 1 }))
+    return true
   }
 
   close() {
@@ -183,7 +197,8 @@ class FakeServer {
     /* ---- snapshot reads -------------------------------------------------- */
     if (path === '/api/v1/snapshot/log') {
       const limit = Number(url.searchParams.get('limit') ?? '20')
-      const newest = `commit-${this.commitCount}`
+      const newest = `commit-${Math.max(1, this.commitCount - this.logLag)}`
+      if (this.logLag > 0) this.logLag -= 1
       envelopeReply(
         [
           commit(newest, 'v0.8 operate snapshot'),
@@ -254,8 +269,13 @@ class FakeServer {
     }
     /* ---- snapshot mutations --------------------------------------------- */
     if (path === '/api/v1/snapshot/commit' && request.method === 'POST') {
-      this.commitCount += 1
       this.writes.push({ op: 'snapshot-commit', message: body.message, paths: body.paths })
+      if (this.holdCommit) {
+        // Gate-contention test: hold the mutation open until the test releases it.
+        this.heldCommit = { response, body }
+        return
+      }
+      this.commitCount += 1
       envelopeReply({ result: 'created', commit_oid: `commit-${this.commitCount}`, changed: 1 })
       return
     }
@@ -747,8 +767,11 @@ test('partial writeback is reported honestly and can be undone to the parent', a
     assert.equal(executed.body.partial.taskId, 'task-reindex-1')
     assert.deepEqual(executed.body.partial.failedWrites, ['stale.md: EACCES'])
     assert.equal(typeof executed.body.undoId, 'string')
+    assert.match(executed.body.auditId, /^aud-/, 'the partial writeback has a real audit row')
     const audit = await app.get('/api/openviking-enhance/audit?limit=5')
     assert.equal(audit.entries[0].result, 'failed')
+    assert.match(audit.entries[0].error, /failed-partial/)
+    assert.equal(audit.entries[0].taskId, 'task-reindex-1')
   } finally {
     await app.shutdown()
   }
@@ -1020,6 +1043,116 @@ test('ops cancel releases a pending token; a cancelled token cannot execute', as
     const scope = await app.get('/api/openviking-enhance/scope')
     assert.equal(scope.scope.writes.enabled, true)
     assert.equal(scope.scope.ops.enabled, true)
+  } finally {
+    await app.shutdown()
+  }
+})
+
+/* ========================================================================
+ * PR #6 review round 1 — destructive paths, gate contention and caps
+ * ===================================================================== */
+
+test('S7: history moving between prepare and execute refuses with revision-mismatch (no retry)', async () => {
+  const app = await boot()
+  try {
+    const prepared = await app.mutate('/ops/prepare', { action: 'snapshot-restore', projectDir: OUT, sourceCommit: 'commit-44' })
+    assert.equal(prepared.body.ok, true)
+    // The server's next dry run answers 409 CONFLICT (branch advanced).
+    app.fake.restoreMode = 'conflict'
+    const executed = await app.mutate('/ops/execute', { token: prepared.body.token, typed: 'out' })
+    assert.equal(executed.body.ok, false)
+    assert.equal(executed.body.error.code, 'revision-mismatch')
+    assert.equal(app.fake.writes.filter((write) => write.op === 'snapshot-restore' && write.body.dry_run === false).length, 0, 'nothing was applied')
+    const audit = await app.get('/api/openviking-enhance/audit?limit=5')
+    assert.equal(audit.entries[0].result, 'failed')
+    // The token is dead: executing again is a used-token refusal, not a retry.
+    const replay = await app.mutate('/ops/execute', { token: prepared.body.token, typed: 'out' })
+    assert.equal(replay.body.error.code, 'token-used')
+  } finally {
+    await app.shutdown()
+  }
+})
+
+test('S6: a lagging snapshot log is verified with the bounded read retry (route level)', async () => {
+  const app = await boot()
+  try {
+    const prepared = await app.mutate('/ops/prepare', { action: 'snapshot-create', message: 'lag', paths: [MEMORY] })
+    assert.equal(prepared.body.ok, true)
+    app.fake.logLag = 2 // the first two verification reads still show the old HEAD
+    const executed = await app.mutate('/ops/execute', { token: prepared.body.token })
+    assert.equal(executed.body.ok, true)
+    assert.equal(executed.body.verified, true, 'the bounded retry saw the new commit')
+  } finally {
+    await app.shutdown()
+  }
+})
+
+test('read-route paths filters are capped at SNAPSHOT_PATHS_MAX', async () => {
+  const app = await boot()
+  try {
+    const paths = Array.from({ length: 17 }, (_, index) => `${OUT}/f${index}`)
+    const log = await app.get(
+      `/api/openviking-enhance/snapshot-log?${paths.map((path) => `paths=${encodeURIComponent(path)}`).join('&')}`,
+    )
+    assert.equal(log.ok, false)
+    assert.equal(log.error.code, 'invalid-scope')
+    const diffPaths = await app.get(
+      `/api/openviking-enhance/snapshot-diff-paths?to=commit-45&${paths.map((path) => `paths=${encodeURIComponent(path)}`).join('&')}`,
+    )
+    assert.equal(diffPaths.ok, false)
+    assert.equal(diffPaths.error.code, 'invalid-scope')
+  } finally {
+    await app.shutdown()
+  }
+})
+
+test('S7: an in-flight ops mutation holds the shared gate and refuses a write prepare', async () => {
+  const app = await boot()
+  try {
+    const prepared = await app.mutate('/ops/prepare', { action: 'snapshot-create', message: 'gate', paths: [MEMORY] })
+    assert.equal(prepared.body.ok, true)
+    app.fake.holdCommit = true
+    const executing = app.mutate('/ops/execute', { token: prepared.body.token })
+    // Wait until the ops mutation has reached the server and is parked there.
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (app.fake.heldCommit !== null) break
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    assert.notEqual(app.fake.heldCommit, null, 'the ops mutation is in flight')
+    const blocked = await app.mutate('/write/prepare', {
+      action: 'delete-memory',
+      target: `${MEMORY}/preferences/tools.md`,
+    })
+    assert.equal(blocked.body.ok, false)
+    assert.equal(blocked.body.error.code, 'write-in-flight', 'WriteService and OpsService share one gate')
+    app.fake.releaseCommit()
+    const executed = await executing
+    assert.equal(executed.body.ok, true)
+    assert.match(executed.body.auditId, /^aud-/)
+  } finally {
+    await app.shutdown()
+  }
+})
+
+test('file-version restore audit does not stuff a version id into the commit columns', async () => {
+  const app = await boot()
+  try {
+    const uri = `${OUT}/report.md`
+    const prepared = await app.mutate('/ops/prepare', {
+      action: 'file-version-restore',
+      uri,
+      restoreVersion: 'ver-1',
+      currentVersion: 'ver-2',
+    })
+    assert.equal(prepared.body.ok, true)
+    const executed = await app.mutate('/ops/execute', { token: prepared.body.token, typed: 'report.md' })
+    assert.equal(executed.body.ok, true)
+    const audit = await app.get('/api/openviking-enhance/audit?limit=10&action=file-version-restore')
+    assert.equal(audit.entries.length >= 1, true)
+    const entry = audit.entries[0]
+    assert.equal(entry.snapshot === null || entry.snapshot === undefined, true, 'no fake commit columns')
+    assert.equal(entry.snapshot?.sourceCommit ?? null, null, 'the version UUID is not a commit')
+    assert.equal(entry.target, uri)
   } finally {
     await app.shutdown()
   }

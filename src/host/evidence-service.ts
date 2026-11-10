@@ -14,7 +14,7 @@
  * `TASK_EVIDENCE_MAX_BYTES`; when the cap is hit the correlation shrinks first
  * (server rows → audit rows → minimal task) and a warning says so.
  */
-import { TASK_EVIDENCE_CORRELATION_MAX, TASK_EVIDENCE_MAX_BYTES } from '../shared/limits.ts'
+import { EVIDENCE_LOOKUP_DEADLINE_MS, TASK_EVIDENCE_CORRELATION_MAX, TASK_EVIDENCE_MAX_BYTES } from '../shared/limits.ts'
 import { AUDIT_MAX_LIMIT } from '../shared/protocol.ts'
 import type {
   AuditEntry,
@@ -115,8 +115,15 @@ export class EvidenceService {
       warnings.push('no-request-ids')
     } else {
       let failures = 0
+      const lookupStartedAt = this.now()
       for (const requestId of idsToLookup) {
         if (serverRequests.length >= TASK_EVIDENCE_CORRELATION_MAX) break
+        // The fan-out is one `/console/audit` call per request id; that can be
+        // many 8 s timeouts. Stop at the documented total deadline and say so.
+        if (this.now() - lookupStartedAt > EVIDENCE_LOOKUP_DEADLINE_MS) {
+          warnings.push('server-request-log-deadline')
+          break
+        }
         const response = await this.options.api.consoleAudit({ requestId, pageSize: 20 })
         if (!response.ok) {
           failures += 1

@@ -53,6 +53,7 @@ import {
   SNAPSHOT_DIFF_PATHS_PAGE,
   SNAPSHOT_LOG_MAX,
   SNAPSHOT_LOG_PAGE,
+  SNAPSHOT_PATHS_MAX,
   SNAPSHOT_SHOW_MAX_BYTES,
   TASK_EVIDENCE_MAX_BYTES,
 } from '../shared/limits.ts'
@@ -1640,9 +1641,16 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
 
   const v08Routes: WebRoute[] = [
     readRoute(`${API_PREFIX}/snapshot-log`, async (params) => {
+      // A read route's `paths` filter is a repeated query parameter: cap it at
+      // the documented SNAPSHOT_PATHS_MAX so one request cannot fan out (or be
+      // logged) unbounded.
+      const paths = params.getAll('paths')
+      if (paths.length > SNAPSHOT_PATHS_MAX) {
+        return { ok: false, error: { code: 'invalid-scope', message: `At most ${SNAPSHOT_PATHS_MAX} paths may be filtered.` } }
+      }
       const payload = await snapshotService.log({
         branch: params.get('branch') ?? 'main',
-        paths: params.getAll('paths'),
+        paths,
         limit: limitParam(params, 'limit', SNAPSHOT_LOG_PAGE, SNAPSHOT_LOG_MAX),
       })
       return { ok: true, ...payload }
@@ -1668,6 +1676,9 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
       const paths = params.getAll('paths')
       if (to.length === 0 || paths.length === 0) {
         return { ok: false, error: { code: 'invalid-request', message: 'paths and to are required' } }
+      }
+      if (paths.length > SNAPSHOT_PATHS_MAX) {
+        return { ok: false, error: { code: 'invalid-scope', message: `At most ${SNAPSHOT_PATHS_MAX} paths may be listed.` } }
       }
       const from = params.get('from')
       return {
@@ -1758,7 +1769,12 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
       const payload = await observability.read(days, params.get('fresh') === '1')
       return { ok: true, ...payload }
     }),
-    readRoute(`${API_PREFIX}/pack/history`, async () => ({ ok: true, history: packHistory(audit) })),
+    readRoute(`${API_PREFIX}/pack/history`, async () => {
+      // Reading the history is also a natural sweep point: expiry must not wait
+      // for the next export/consume to delete an abandoned temp file.
+      packBroker.sweep()
+      return { ok: true, history: packHistory(audit) }
+    }),
     {
       kind: 'exact',
       path: `${API_PREFIX}/task/evidence`,
@@ -1833,6 +1849,9 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
             }
           })
           stream.on('end', cleanup)
+          // A client abort fires `close`, not `end`: never leave the temp file.
+          stream.on('close', cleanup)
+          res.on('close', cleanup)
           stream.pipe(res)
         } catch (error) {
           packBroker.remove(token)

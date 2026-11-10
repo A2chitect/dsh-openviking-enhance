@@ -1080,7 +1080,7 @@ const zh: Record<string, string> = {
   'ops.restoreConsequence': '把 {dir} 恢复到 {commit}；将删除 {deleted} 个文件。恢复会覆盖该目录下任何会话的未提交改动。',
   'ops.restoreCounts': '写入 {write} 个文件 · 删除 {delete} 个 · 未变 {unchanged} 个',
   'ops.planHead': '计划基于 HEAD {head}；HEAD 变化会拒绝执行（不会自动重试）。',
-  'ops.planTruncated': '路径列表已截断；计数完整。',
+  'ops.planTruncated': '路径列表只显示前 {shown} 条（共 {total} 条）；上方计数是完整的。',
   'ops.unexpectedPath': '本次操作范围之外',
   'ops.compileConsequence': '会生成新的输出文件并重建索引。编译没有撤销；取消是协作式的，不会回滚已完成的工作。',
   'ops.compile.memoryExcluded': '操作员触发的编译不提供 skill:"memory" 哨兵和任意 args。',
@@ -1250,6 +1250,10 @@ const zh: Record<string, string> = {
   'ops.snapshots.loadIgnore': '载入忽略文件',
   'ops.snapshots.ignoreUnavailable': '此服务端没有忽略文件。',
   'ops.snapshots.ignoreEmpty': '没有忽略规则。',
+  /* ---- v0.8 PR #6 review round 1 ---------------------------------- */
+  'ops.undoCounts': '将写入 {write} 个路径 · 删除 {delete} 个 · 未变 {unchanged} 个',
+  'ops.typedWordRequired': '输入 {word} 后才能启用确认。',
+  'notice.packDownloadEvicted': '为腾出空间，较旧的一次性下载链接已被丢弃；请重新导出。',
 }
 
 const en: Record<string, string> = {
@@ -2305,7 +2309,7 @@ const en: Record<string, string> = {
   'ops.restoreConsequence': 'Restore {dir} to {commit}; {deleted} file(s) will be deleted. Restore overwrites uncommitted changes under this directory from any session.',
   'ops.restoreCounts': '{write} file(s) written · {delete} deleted · {unchanged} unchanged',
   'ops.planHead': 'Planned against HEAD {head}; a moved HEAD refuses the execute (no automatic retry).',
-  'ops.planTruncated': 'The path list is truncated; the counts are complete.',
+  'ops.planTruncated': 'The path list shows the first {shown} of {total}; the counts above are complete.',
   'ops.unexpectedPath': 'outside this operation',
   'ops.compileConsequence': 'Creates new output files and reindexes them. There is no undo for a compile; cancellation is cooperative and does not roll back completed work.',
   'ops.compile.memoryExcluded': 'The skill:"memory" sentinel and arbitrary args are not available for operator-triggered compiles.',
@@ -2475,6 +2479,10 @@ const en: Record<string, string> = {
   'ops.snapshots.loadIgnore': 'Load ignore file',
   'ops.snapshots.ignoreUnavailable': 'The ignore file is unavailable on this server.',
   'ops.snapshots.ignoreEmpty': 'No ignore patterns.',
+  /* ---- v0.8 PR #6 review round 1 ---------------------------------- */
+  'ops.undoCounts': '{write} path(s) will be written · {delete} deleted · {unchanged} unchanged',
+  'ops.typedWordRequired': 'Type {word} exactly to enable Confirm.',
+  'notice.packDownloadEvicted': 'An older one-time download link was dropped to make room; export the pack again.',
 }
 
 /** Every key the plugin ships, per language. */

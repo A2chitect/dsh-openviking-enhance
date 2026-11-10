@@ -36,6 +36,7 @@ import {
   OPS_RATE_LIMIT,
   OPS_RATE_WINDOW_MS,
   OPS_TOKEN_TTL_MS,
+  SNAPSHOT_MESSAGE_MAX_CHARS,
   SNAPSHOT_RESTORE_PLAN_PATHS,
 } from '../shared/limits.ts'
 import type {
@@ -54,7 +55,6 @@ import type {
   OveError,
   OveResult,
   PackExportPlan,
-  PluginNotice,
   SnapshotCreatePlan,
   SnapshotRestorePlan,
 } from '../shared/protocol.ts'
@@ -66,7 +66,7 @@ import {
   mintToken,
   type ConfirmationRecord,
 } from './confirmation-store.ts'
-import { leafName, classifySnapshotPaths, classifySnapshotScope, SNAPSHOT_MESSAGE_MAX_CHARS } from './snapshot-service.ts'
+import { leafName, classifySnapshotPaths, classifySnapshotScope } from './snapshot-service.ts'
 import type { AuditLog } from './audit.ts'
 import type { CapabilityService } from './capability.ts'
 import type { CompileService } from './compile-service.ts'
@@ -130,8 +130,6 @@ export interface OpsServiceOptions {
   randomToken?: () => string
 }
 
-/** The longest a prepared commit message may be (display + server bound). */
-const CREATE_MESSAGE_MAX = 200
 /** The longest a snapshot ref may be. */
 const SNAPSHOT_REF_MAX = 128
 
@@ -153,11 +151,6 @@ export class OpsService {
     this.prepares = new SlidingWindowRate(OPS_PREPARE_RATE_LIMIT, OPS_PREPARE_RATE_WINDOW_MS, this.now)
   }
 
-  /** Whether the shared gate is currently held by any mutation (write or ops). */
-  get mutationInFlight(): boolean {
-    return this.options.gate.busy
-  }
-
   /**
    * Step 1. Every action runs the same gates, then builds the plan the user will
    * confirm; nothing is mutated here (a restore dry-run writes nothing).
@@ -166,7 +159,7 @@ export class OpsService {
     if (this.options.gate.busy) {
       return { ok: false, error: err('write-in-flight', 'Another write or operation is already executing; wait for it to settle.') }
     }
-    const gate = await this.gateFor(request.action)
+    const gate = await this.gateFor(request.action, targetOf(request))
     if (gate !== null) return { ok: false, error: gate }
     this.tokens.purge()
 
@@ -250,7 +243,10 @@ export class OpsService {
       this.tokens.delete(token.token)
       return { ok: false, error: err('token-expired', 'This confirmation expired; prepare the action again.') }
     }
-    const gate = await this.gateCore()
+    // S4: every gate is re-checked at execute, including the action-specific
+    // capability/role answer (a cached probe, so it is cheap). The denial is
+    // audited against the token's own target.
+    const gate = await this.gateFor(token.action, token.target)
     if (gate !== null) return { ok: false, error: gate }
     if (this.now() > token.expiresAt) {
       this.tokens.delete(token.token)
@@ -331,7 +327,10 @@ export class OpsService {
     }
     const record = this.undos.get(request.undoId)
     if (record === undefined) return { ok: false, error: err('undo-unavailable', 'No undo handle with that id (it may have expired).') }
-    const gate = await this.gateCore()
+    // Undo is a safety action: it stays available when `enableOps` is switched
+    // off after the action (otherwise a user could be trapped with a restored
+    // tree and no way back). The transport/identity/capability gates still run.
+    const gate = await this.gateFor(record.action, record.target, { allowOpsDisabled: true })
     if (gate !== null) return { ok: false, error: gate }
     if (record.undone) return { ok: false, error: err('token-used', 'This action was already undone.') }
     const scope = this.options.identity()
@@ -343,6 +342,23 @@ export class OpsService {
     const plan = await this.buildUndoPlan(record)
     if (plan.extraChanges && request.confirmExtra !== true) {
       return { ok: false, error: err('extra-changes', 'The undo plan touches files this action did not change. Confirm explicitly to continue.', plan) }
+    }
+    // S5: re-run the dry run immediately before applying. The plan is a read,
+    // so this stays cheap, and it closes the window where another session wrote
+    // under the restore scope between the plan dialog and Apply.
+    if (record.action === 'snapshot-restore') {
+      const recheck = await this.options.snapshot.dryRunRestore(record.projectDir, record.sourceCommit)
+      if (!recheck.ok) {
+        this.auditUndoFailed(record, recheck.message)
+        return { ok: false, error: err(recheck.code, recheck.message) }
+      }
+      const recheckPlan = this.planFromDryRun(record, recheck)
+      if (recheckPlan.extraChanges && request.confirmExtra !== true) {
+        return {
+          ok: false,
+          error: err('extra-changes', 'The undo plan changed since it was reviewed. Confirm explicitly to continue.', recheckPlan),
+        }
+      }
     }
     if (this.options.gate.busy) {
       return { ok: false, error: err('write-in-flight', 'Another write or operation started while this undo was prepared.') }
@@ -356,7 +372,6 @@ export class OpsService {
           return { ok: false, error: err(applied.code, applied.message) }
         }
         record.undone = true
-        this.publishOperationId(applied.newCommit)
         const audit = this.options.audit.append({
           kind: 'undo',
           action: record.action,
@@ -453,9 +468,17 @@ export class OpsService {
 
   /* ---- gates ------------------------------------------------------------ */
 
-  /** The master gates shared by every action (prepare and execute). */
-  private async gateCore(): Promise<OveError | null> {
-    if (!this.options.opsEnabled()) return err('ops-disabled', 'Operations are disabled (enableOps is off).')
+  /**
+   * The master gates shared by every action (prepare and execute).
+   *
+   * `allowOpsDisabled` is used by undo only: turning the switch off after a
+   * confirmed restore must not trap the user with an unrestorable tree. Undo
+   * still needs the transport, a healthy identity and the action capability.
+   */
+  private async gateCore(allowOpsDisabled = false): Promise<OveError | null> {
+    if (!allowOpsDisabled && !this.options.opsEnabled()) {
+      return err('ops-disabled', 'Operations are disabled (enableOps is off).')
+    }
     if (!this.options.transport()) return err('transport-unavailable', 'Operations need the DSH 0.2.2-rc.1 connection transport.')
     const scope = this.options.identity()
     if (scope.fingerprint.length === 0) return err('identity-ambiguous', 'The active identity is unknown; operations are refused.')
@@ -468,22 +491,26 @@ export class OpsService {
   }
 
   /** The action capability/role gate; a runtime answer, never a version string. */
-  private async gateFor(action: OpsAction): Promise<OveError | null> {
-    const core = await this.gateCore()
+  private async gateFor(
+    action: OpsAction,
+    target = '',
+    options: { allowOpsDisabled?: boolean } = {},
+  ): Promise<OveError | null> {
+    const core = await this.gateCore(options.allowOpsDisabled === true)
     if (core !== null) {
-      this.auditDenied(action, '', core)
+      this.auditDenied(action, target, core)
       return core
     }
     const snapshot = await this.options.capabilities.probe()
     if (action === 'snapshot-create' || action === 'snapshot-restore' || action === 'file-version-restore') {
       if (!snapshot.snapshot.available) {
         const error = err('snapshot-unavailable', 'This server has no snapshot capability, so restore/create actions are disabled.')
-        this.auditDenied(action, '', error)
+        this.auditDenied(action, target, error)
         return error
       }
       if (action === 'file-version-restore' && !snapshot.versions.available) {
         const error = err('not-supported', 'Per-file version history needs OpenViking 0.5.3+ (route not present on this server).')
-        this.auditDenied(action, '', error)
+        this.auditDenied(action, target, error)
         return error
       }
       return null
@@ -499,7 +526,7 @@ export class OpsService {
         const error = err(snapshot.compile.reason === 'API_KEY_REQUIRED' ? 'compile-role-required' : 'compile-not-configured', reason, {
           reason: snapshot.compile.reason,
         })
-        this.auditDenied(action, '', error)
+        this.auditDenied(action, target, error)
         return error
       }
       return null
@@ -513,7 +540,7 @@ export class OpsService {
           ? 'This deployment requires API-key authentication for OVPack export.'
           : 'This server does not expose the OVPack export route.',
       )
-      this.auditDenied(action, '', error)
+      this.auditDenied(action, target, error)
       return error
     }
     return null
@@ -532,7 +559,7 @@ export class OpsService {
     if (request.action === 'snapshot-create') {
       const message = request.message.trim()
       if (message.length === 0) return { ok: false, error: err('invalid-request', 'A commit message is required.') }
-      if (message.length > CREATE_MESSAGE_MAX) {
+      if (message.length > SNAPSHOT_MESSAGE_MAX_CHARS) {
         return { ok: false, error: err('invalid-request', `The message is limited to ${SNAPSHOT_MESSAGE_MAX_CHARS} characters.`) }
       }
       const paths = classifySnapshotPaths(request.paths, 'commit', user)
@@ -568,6 +595,10 @@ export class OpsService {
         head: dry.head,
         toWrite: dry.toWrite.slice(0, SNAPSHOT_RESTORE_PLAN_PATHS).map((entry) => ({ path: entry.path, expected: true })),
         toDelete: dry.toDelete.slice(0, SNAPSHOT_RESTORE_PLAN_PATHS).map((entry) => ({ path: entry.path, expected: true })),
+        // S3: the rows above are clamped for display only; the real counts are
+        // what the dialog must show ("truncated list; counts are complete").
+        writeTotal: dry.toWrite.length,
+        deleteTotal: dry.toDelete.length,
         unchanged: dry.unchanged,
         extraChanges: false,
         truncated,
@@ -768,11 +799,6 @@ export class OpsService {
     token.settledAt = this.now()
   }
 
-  /** Remember the operation id from a snapshot commit verify-read (best effort). */
-  private publishOperationId(_commit: string | null): void {
-    // The snapshot commit oid is not a compile operation id; nothing to publish.
-  }
-
   private async executeSnapshotCreate(token: PendingOps, scope: IdentityScope): Promise<OveResult<OpsExecutePayload>> {
     const plan = token.plan as SnapshotCreatePlan
     const requestId = { value: null as string | null }
@@ -782,7 +808,7 @@ export class OpsService {
       this.auditFailed(token, created.code, created.message, created.requestId)
       return { ok: false, error: err(created.code, created.message) }
     }
-    const verified = await this.options.snapshot.verifyCommit(created.commit)
+    const verified = await this.options.snapshot.verifyCommit(created.commit, 'main')
     this.finish(token, 'done')
     const audit = this.options.audit.append({
       kind: 'snapshot',
@@ -840,13 +866,28 @@ export class OpsService {
         // Partial writeback: HEAD advanced, some VFS writes failed, a reindex
         // task exists. Report honestly and offer a new operation or an undo.
         const undo = this.rememberSnapshotUndo(token, plan.projectDir, applied.partial.parentCommit ?? '', applied.partial.writtenPaths, applied.partial.deletedPaths, scope)
-        this.auditFailed(token, 'failed-partial', applied.message, applied.requestId)
+        const partialAudit = this.options.audit.append({
+          kind: 'snapshot',
+          action: 'snapshot-restore',
+          target: token.target,
+          identity: auditIdentity(scope),
+          fingerprint: token.identityFingerprint,
+          confirmation: token.origin,
+          preCommit: applied.partial.parentCommit,
+          postCommit: applied.partial.newCommit,
+          requestId: applied.requestId,
+          result: 'failed',
+          error: `failed-partial: ${applied.message}`,
+          undo: undo === null ? null : { kind: 'snapshot-restore', projectDir: plan.projectDir, sourceCommit: applied.partial.parentCommit ?? '' },
+          taskId: applied.partial.taskId,
+          snapshot: { projectDir: plan.projectDir, sourceCommit: plan.sourceCommit, newCommit: applied.partial.newCommit },
+        })
         return {
           ok: true,
           action: token.action,
           target: token.target,
           scope,
-          auditId: '',
+          auditId: partialAudit.id ?? '',
           requestId: applied.requestId,
           verified: false,
           warnings: [{ code: 'restorePartial' }],
@@ -869,7 +910,7 @@ export class OpsService {
       this.auditFailed(token, applied.code, applied.message, applied.requestId)
       return { ok: false, error: err(applied.code, applied.message) }
     }
-    const verified = await this.options.snapshot.verifyCommit(applied.newCommit)
+    const verified = await this.options.snapshot.verifyCommit(applied.newCommit, 'main')
     const undoId = this.rememberSnapshotUndo(token, plan.projectDir, applied.parentCommit ?? '', applied.writtenPaths, applied.deletedPaths, scope)
     this.finish(token, 'done')
     const audit = this.options.audit.append({
@@ -994,7 +1035,10 @@ export class OpsService {
       auditId: audit.id ?? '',
       requestId: exported.requestId,
       verified: true,
-      warnings: [{ code: 'packOneTimeDownload' }],
+      warnings: [
+        { code: 'packOneTimeDownload' },
+        ...(exported.evicted ? [{ code: 'packDownloadEvicted' }] : []),
+      ],
       undoId: null,
       downloadId: exported.downloadId,
       fileName: exported.fileName,
@@ -1037,7 +1081,8 @@ export class OpsService {
       result: 'ok',
       error: null,
       undo: undoId === null ? null : { kind: 'file-version-restore', projectDir: '', sourceCommit: '' },
-      snapshot: { projectDir: null, sourceCommit: plan.restoreVersion, newCommit: null },
+      // Version ids belong in the request/undo handle, not in the commit columns.
+      snapshot: null,
     })
     return {
       ok: true,
@@ -1140,6 +1185,8 @@ export class OpsService {
         sourceCommit: '',
         toWrite: [],
         toDelete: [],
+        writeTotal: 0,
+        deleteTotal: 0,
         unchanged: 0,
         extraChanges,
         truncated: false,
@@ -1164,6 +1211,8 @@ export class OpsService {
         sourceCommit: record.sourceCommit,
         toWrite: [],
         toDelete: [],
+        writeTotal: 0,
+        deleteTotal: 0,
         unchanged: 0,
         extraChanges: true,
         truncated: false,
@@ -1173,11 +1222,39 @@ export class OpsService {
         summary: ['The undo dry run failed; the plan could not be computed.'],
       }
     }
-    const expected = new Set([...record.expectedWrite, ...record.expectedDelete].map((entry) => basename(entry)))
-    const toWrite: OpsPlanPath[] = dry.toWrite.map((entry) => ({ path: entry.path, expected: expected.has(basename(entry.path)) }))
-    const toDelete: OpsPlanPath[] = dry.toDelete.map((entry) => ({ path: entry.path, expected: expected.has(basename(entry.path)) }))
+    return this.planFromDryRun(record, dry)
+  }
+
+  /**
+   * Turn one undo dry run into the plan shape.
+   *
+   * S5: expected-path membership is compared on NORMALIZED full project URIs
+   * (`viking://…`), never on basenames: `report.md` under two different
+   * directories must not count as the action's own inverse. The rows are
+   * display-clamped, while `writeTotal`/`deleteTotal` stay the real counts.
+   */
+  private planFromDryRun(
+    record: OpsUndoRecord,
+    dry: {
+      head: string | null
+      toWrite: Array<{ path: string; oid: string | null }>
+      toDelete: Array<{ path: string; oid: string | null }>
+      unchanged: number
+    },
+  ): OpsUndoPlan {
+    const expected = new Set(
+      [...record.expectedWrite, ...record.expectedDelete].map((entry) => projectUriOf(entry, record.projectDir)),
+    )
+    const toWrite: OpsPlanPath[] = dry.toWrite.map((entry) => ({
+      path: entry.path,
+      expected: expected.has(projectUriOf(entry.path, record.projectDir)),
+    }))
+    const toDelete: OpsPlanPath[] = dry.toDelete.map((entry) => ({
+      path: entry.path,
+      expected: expected.has(projectUriOf(entry.path, record.projectDir)),
+    }))
     const extraChanges = [...toWrite, ...toDelete].some((entry) => !entry.expected)
-    const truncated = toWrite.length + toDelete.length > SNAPSHOT_RESTORE_PLAN_PATHS
+    const truncated = dry.toWrite.length + dry.toDelete.length > SNAPSHOT_RESTORE_PLAN_PATHS
     return {
       undoId: record.undoId,
       action: record.action,
@@ -1187,6 +1264,8 @@ export class OpsService {
       sourceCommit: record.sourceCommit,
       toWrite: toWrite.slice(0, SNAPSHOT_RESTORE_PLAN_PATHS),
       toDelete: toDelete.slice(0, SNAPSHOT_RESTORE_PLAN_PATHS),
+      writeTotal: dry.toWrite.length,
+      deleteTotal: dry.toDelete.length,
       unchanged: dry.unchanged,
       extraChanges,
       truncated,
@@ -1271,10 +1350,20 @@ function typedWordOf(plan: OpsPlan): string | null {
   return plan.kind === 'snapshot-restore' || plan.kind === 'file-version-restore' ? plan.typedWord : null
 }
 
-/** The basename of a plan path (relative path or full URI, both handled). */
-function basename(path: string): string {
-  const trimmed = path.replace(/\/+$/, '')
-  return trimmed.slice(trimmed.lastIndexOf('/') + 1)
+/**
+ * Normalize a plan path to a full project-scoped URI.
+ *
+ * The server's dry-run reports paths relative to `project_dir`; the restore
+ * result and the audit store may echo either relative paths or full URIs. Both
+ * sides of the "expected path" comparison go through this function, so a
+ * same-named file under another directory can never masquerade as the action's
+ * own inverse (S5).
+ */
+function projectUriOf(entry: string, projectDir: string): string {
+  const path = entry.trim()
+  if (path.startsWith('viking://')) return path.replace(/\/+$/, '')
+  const base = projectDir.trim().replace(/\/+$/, '')
+  return `${base}/${path.replace(/^\/+/, '')}`.replace(/\/+$/, '')
 }
 
 /** Map a compile TaskRecord body into the shared ActivityTask shape. */

@@ -17,10 +17,11 @@
  * files are deleted after the one download, on expiry, or on plugin unload.
  * This is user data by definition; the UI says so.
  */
-import { closeSync, createWriteStream, existsSync, mkdirSync, openSync, readSync, statSync, unlinkSync, writeSync, chmodSync } from 'node:fs'
+import { closeSync, chmodSync, existsSync, openSync, readdirSync, unlinkSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import {
+  PACK_BODY_INACTIVITY_TIMEOUT_MS,
   PACK_DOWNLOAD_MAX_ACTIVE,
   PACK_DOWNLOAD_TTL_MS,
   PACK_MAX_BYTES,
@@ -79,6 +80,12 @@ export interface PackDownloadBrokerOptions {
   identity: () => IdentityScope
   /** Override the state dir (tests); the downloads dir is created under it. */
   dir?: string
+  /** Host cap for one pack body (default PACK_MAX_BYTES; tests shrink it). */
+  maxBytes?: number
+  /** Max silence between body chunks before the export is aborted. */
+  inactivityMs?: number
+  /** Overall body deadline; also aborts a slow-but-alive stream. */
+  totalMs?: number
   now?: () => number
   randomToken?: () => string
 }
@@ -90,12 +97,22 @@ export class PackDownloadBroker {
   private readonly directory: string
   private readonly now: () => number
   private readonly randomToken: () => string
+  private readonly maxBytes: number
+  private readonly inactivityMs: number
+  private readonly totalMs: number
 
   constructor(options: PackDownloadBrokerOptions) {
     this.options = options
     this.now = options.now ?? Date.now
     this.randomToken = options.randomToken ?? (() => randomBytes(32).toString('hex'))
     this.directory = join(options.dir ?? pluginStateDir(), 'downloads')
+    this.maxBytes = options.maxBytes ?? PACK_MAX_BYTES
+    this.inactivityMs = options.inactivityMs ?? PACK_BODY_INACTIVITY_TIMEOUT_MS
+    this.totalMs = options.totalMs ?? OPS_EXPORT_TIMEOUT_MS
+    // A restart invalidates every in-memory capability token, so any `pack-*.ovpack`
+    // file left in the private downloads dir is an orphan: sweep it at startup
+    // rather than leave user data on disk until the next export.
+    this.sweepOrphans()
   }
 
   /** The private directory holding exported packs (0700, created on demand). */
@@ -115,16 +132,41 @@ export class PackDownloadBroker {
     uri: string,
     includeVectors: boolean,
   ): Promise<
-    | { ok: true; downloadId: string; fileName: string; bytes: number; expiresAt: number; requestId: string | null }
+    | { ok: true; downloadId: string; fileName: string; bytes: number; expiresAt: number; requestId: string | null; evicted: boolean }
     | { ok: false; code: string; message: string; requestId: string | null }
   > {
     this.sweep()
     // Active-capacity guard: the oldest download is dropped (and its file
-    // deleted) before a new export starts, so a burst cannot fill the disk.
+    // deleted) before a new export starts, so a burst cannot fill the disk. The
+    // eviction is surfaced as a warning and audited (never silent).
+    let evicted = false
     while (this.downloads.size >= PACK_DOWNLOAD_MAX_ACTIVE) {
       const oldest = this.downloads.values().next()
       if (oldest.done === true) break
+      const dropped = this.downloads.get(oldest.value.token)
       this.remove(oldest.value.token)
+      evicted = true
+      if (dropped !== undefined) {
+        try {
+          this.options.audit.append({
+            kind: 'download',
+            action: 'pack-download',
+            target: dropped.uri,
+            identity: auditIdentity(this.options.identity()),
+            fingerprint: dropped.identityFingerprint,
+            confirmation: null,
+            preCommit: null,
+            postCommit: null,
+            requestId: null,
+            result: 'failed',
+            error: 'evicted-by-active-cap',
+            undo: null,
+            bytes: dropped.bytes,
+          })
+        } catch {
+          // Best effort; the eviction itself already happened.
+        }
+      }
     }
     const response = await this.options.api.streamPackExport(uri, includeVectors, {
       timeoutMs: OPS_EXPORT_TIMEOUT_MS,
@@ -151,10 +193,36 @@ export class PackDownloadBroker {
     )
     let bytes = 0
     const handle = openSync(filePath, 'w', STATE_FILE_MODE)
+    const reader = response.response.body.getReader()
+    const startedAt = this.now()
     try {
       // The zip signature check happens on the first chunk, before any trust.
       let first = true
-      for await (const chunk of response.response.body as unknown as AsyncIterable<Uint8Array>) {
+      for (;;) {
+        if (this.now() - startedAt > this.totalMs) {
+          await cancelReader(reader)
+          closeSync(handle)
+          deleteFile(filePath)
+          return {
+            ok: false,
+            code: 'pack-failed',
+            message: `The pack export exceeded the ${Math.round(this.totalMs / 1000)}s host deadline; nothing was kept.`,
+            requestId: response.requestId ?? null,
+          }
+        }
+        const next = await readWithInactivity(reader, this.inactivityMs, () => this.now())
+        if (next === 'timeout') {
+          closeSync(handle)
+          deleteFile(filePath)
+          return {
+            ok: false,
+            code: 'pack-failed',
+            message: `The pack export body stalled for more than ${Math.round(this.inactivityMs / 1000)}s; the export was aborted.`,
+            requestId: response.requestId ?? null,
+          }
+        }
+        if (next.done) break
+        const chunk = next.value
         const view = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk as ArrayBuffer)
         if (first) {
           first = false
@@ -165,13 +233,14 @@ export class PackDownloadBroker {
           }
         }
         bytes += view.byteLength
-        if (bytes > PACK_MAX_BYTES) {
+        if (bytes > this.maxBytes) {
+          await cancelReader(reader)
           closeSync(handle)
           deleteFile(filePath)
           return {
             ok: false,
             code: 'pack-too-large',
-            message: `The export exceeded the ${Math.trunc(PACK_MAX_BYTES / (1024 * 1024))} MiB host cap; use the OpenViking CLI for larger packs.`,
+            message: `The export exceeded the ${Math.trunc(this.maxBytes / (1024 * 1024))} MiB host cap; use the OpenViking CLI for larger packs.`,
             requestId: response.requestId ?? null,
           }
         }
@@ -183,6 +252,7 @@ export class PackDownloadBroker {
         return { ok: false, code: 'pack-failed', message: 'The export stream was empty.', requestId: response.requestId ?? null }
       }
     } catch (error) {
+      await cancelReader(reader)
       deleteFile(filePath)
       return {
         ok: false,
@@ -213,7 +283,7 @@ export class PackDownloadBroker {
       uri,
     }
     this.downloads.set(token, record)
-    return { ok: true, downloadId: token, fileName, bytes, expiresAt, requestId: response.requestId ?? null }
+    return { ok: true, downloadId: token, fileName, bytes, expiresAt, requestId: response.requestId ?? null, evicted }
   }
 
   /**
@@ -225,6 +295,12 @@ export class PackDownloadBroker {
     const record = this.downloads.get(token)
     if (record === undefined) return null
     this.downloads.delete(token)
+    // The token is a capability bound to the identity it was exported under: a
+    // profile switch must make it useless even if the sweep/close path missed it.
+    if (this.options.identity().fingerprint !== record.identityFingerprint) {
+      deleteFile(record.filePath)
+      return null
+    }
     if (this.now() > record.expiresAt || !existsSync(record.filePath)) {
       deleteFile(record.filePath)
       return null
@@ -275,6 +351,20 @@ export class PackDownloadBroker {
     for (const token of [...this.downloads.keys()]) this.remove(token)
   }
 
+  /** Delete every `pack-*.ovpack` left over from a previous process (startup). */
+  sweepOrphans(): void {
+    let entries: string[]
+    try {
+      entries = readdirSync(this.directory)
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      if (!/^pack-[0-9a-f]+\.ovpack$/.test(entry)) continue
+      deleteFile(join(this.directory, entry))
+    }
+  }
+
   /** Test/diagnostics: how many one-time tokens are currently active. */
   get activeCount(): number {
     this.sweep()
@@ -323,27 +413,48 @@ function deleteFile(path: string): void {
   }
 }
 
-/** Read the first bytes of a file; exported for the smoke/unit checks. */
-export function readSignature(path: string, bytes = 2): Uint8Array | null {
+/** Cancel a body reader without letting a refusal propagate as an exception. */
+async function cancelReader(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<void> {
   try {
-    const fd = openSync(path, 'r')
-    try {
-      const buffer = new Uint8Array(bytes)
-      readSync(fd, buffer, 0, bytes, 0)
-      return buffer
-    } finally {
-      closeSync(fd)
-    }
+    await reader.cancel()
   } catch {
-    return null
+    // A body that already errored/closed cannot be cancelled again.
   }
 }
 
-/** The file size on disk, or null; exported for diagnostics. */
-export function fileBytes(path: string): number | null {
-  try {
-    return statSync(path).size
-  } catch {
-    return null
-  }
+/**
+ * Read one chunk, aborting when the stream stays silent for `inactivityMs`.
+ *
+ * S1: the request deadline only covers the response HEADERS; without this, a
+ * server that sends headers and then stalls would hold the shared mutation gate
+ * for undici's default body timeout. `'timeout'` is the refusal signal; the
+ * caller deletes the partial file.
+ */
+function readWithInactivity(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  inactivityMs: number,
+  now: () => number,
+): Promise<ReadableStreamReadResult<Uint8Array> | 'timeout'> {
+  return new Promise((resolve) => {
+    const startedAt = now()
+    const timer = setTimeout(() => {
+      // The race settles with 'timeout'; cancel in the background so the socket
+      // is released even if the server never answers.
+      void cancelReader(reader)
+      resolve('timeout')
+    }, inactivityMs)
+    reader.read().then(
+      (result) => {
+        clearTimeout(timer)
+        // `now()` is read for symmetry with the total deadline; the promise
+        // settles on the chunk, not on elapsed time.
+        void startedAt
+        resolve(result)
+      },
+      (error: unknown) => {
+        clearTimeout(timer)
+        resolve(Promise.reject(error))
+      },
+    )
+  })
 }

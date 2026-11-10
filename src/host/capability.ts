@@ -160,8 +160,13 @@ export class CapabilityService {
         // A streaming method cannot be used for a validation probe without
         // consuming its body; the service classifies status codes only.
         const answer = classifyPackProbe(reply.status, reply.error ?? null)
-        this.packCached = answer
-        this.packObservedAt = this.now()
+        // A transport error (status 0) is not an answer: caching it would keep
+        // the Packs tab disabled for 10 minutes after a transient outage. Retry
+        // fresh on the next caller; only definitive answers are cached.
+        if (reply.status !== 0) {
+          this.packCached = answer
+          this.packObservedAt = this.now()
+        }
         return answer
       })
       .finally(() => {

@@ -57,6 +57,8 @@ export function ConfirmShell(props: {
   error: string | null
   busy: boolean
   confirmLabel: string
+  /** Disable the confirm button (e.g. until the typed word matches). */
+  confirmDisabled?: boolean
   onCancel: () => void
   onConfirm: (() => void) | null
   extraLabel?: string
@@ -102,7 +104,7 @@ export function ConfirmShell(props: {
             <button
               type="button"
               className={`ove-write-button ${danger ? 'ove-write-primary' : ''}`}
-              disabled={props.busy}
+              disabled={props.busy || props.confirmDisabled === true}
               onClick={props.onConfirm}
             >
               {props.busy ? t('write.working') : props.confirmLabel}
@@ -155,12 +157,18 @@ function PlanBody(props: { plan: OpsPlan; typed: string; onTyped: (value: string
     return (
       <>
         <p className="ove-write-warning">
-          {t('ops.restoreConsequence', { dir: plan.projectDir, commit: plan.sourceCommit, deleted: plan.toDelete.length })}
+          {t('ops.restoreConsequence', { dir: plan.projectDir, commit: plan.sourceCommit, deleted: plan.deleteTotal })}
         </p>
         <p className="ove-write-target">
-          {t('ops.restoreCounts', { write: plan.toWrite.length, delete: plan.toDelete.length, unchanged: plan.unchanged })}
+          { /* S3: the real dry-run counts, not the display-clamped row counts */ }
+          {t('ops.restoreCounts', { write: plan.writeTotal, delete: plan.deleteTotal, unchanged: plan.unchanged })}
         </p>
-        <PlanPaths rows={[...plan.toWrite, ...plan.toDelete]} truncated={plan.truncated} />
+        <PlanPaths
+          rows={[...plan.toWrite, ...plan.toDelete]}
+          truncated={plan.truncated}
+          shown={plan.toWrite.length + plan.toDelete.length}
+          total={plan.writeTotal + plan.deleteTotal}
+        />
         {plan.head !== null && <p className="ove-write-hint">{t('ops.planHead', { head: shortHash(plan.head) })}</p>}
         <TypedWord word={plan.typedWord} value={props.typed} onChange={props.onTyped} />
       </>
@@ -254,7 +262,12 @@ function PlanBody(props: { plan: OpsPlan; typed: string; onTyped: (value: string
   )
 }
 
-function PlanPaths(props: { rows: Array<{ path: string; expected: boolean }>; truncated: boolean }) {
+function PlanPaths(props: {
+  rows: Array<{ path: string; expected: boolean }>
+  truncated: boolean
+  shown?: number
+  total?: number
+}) {
   if (props.rows.length === 0) return <p className="ove-write-hint">{t('write.planEmpty')}</p>
   return (
     <ul className="ove-ops-list ove-ops-mono">
@@ -264,7 +277,14 @@ function PlanPaths(props: { rows: Array<{ path: string; expected: boolean }>; tr
           {row.expected ? '' : ` · ${t('ops.unexpectedPath')}`}
         </li>
       ))}
-      {props.truncated && <li className="ove-write-hint">{t('ops.planTruncated')}</li>}
+      {props.truncated && (
+        <li className="ove-write-hint">
+          {t('ops.planTruncated', {
+            shown: props.shown ?? props.rows.length,
+            total: props.total ?? props.rows.length,
+          })}
+        </li>
+      )}
     </ul>
   )
 }
@@ -419,7 +439,21 @@ function UndoPlanBody(props: { plan: OpsUndoPlan; extra: boolean; extraConfirm: 
     <>
       <p className="ove-write-warning">{t('ops.undoConsequence')}</p>
       {props.plan.kind === 'snapshot-restore' ? (
-        <PlanPaths rows={[...props.plan.toWrite, ...props.plan.toDelete]} truncated={props.plan.truncated} />
+        <>
+          <p className="ove-write-target">
+            {t('ops.undoCounts', {
+              write: props.plan.writeTotal,
+              delete: props.plan.deleteTotal,
+              unchanged: props.plan.unchanged,
+            })}
+          </p>
+          <PlanPaths
+            rows={[...props.plan.toWrite, ...props.plan.toDelete]}
+            truncated={props.plan.truncated}
+            shown={props.plan.toWrite.length + props.plan.toDelete.length}
+            total={props.plan.writeTotal + props.plan.deleteTotal}
+          />
+        </>
       ) : (
         <p className="ove-write-target">
           {t('ops.versionUndoLine', {
@@ -737,6 +771,8 @@ export function OpsDialog(props: {
   }
 
   if (prepared === null) return null
+  const requiredWord = requiredTypedWord(prepared.plan)
+  const typedMatches = requiredWord === null || typed.trim() === requiredWord
   return (
     <ConfirmShell
       title={title}
@@ -745,9 +781,10 @@ export function OpsDialog(props: {
       error={error === null ? null : writeErrorText(error)}
       busy={false}
       confirmLabel={confirmLabelFor(prepared)}
+      confirmDisabled={!typedMatches}
       onCancel={close}
       onConfirm={() => void execute()}
-      footnote={t('ops.notAutomaticRetry')}
+      footnote={typedMatches ? t('ops.notAutomaticRetry') : t('ops.typedWordRequired', { word: requiredWord ?? '' })}
     >
       <PlanBody plan={prepared.plan} typed={typed} onTyped={setTyped} />
       {prepared.summary.length > 0 && (
@@ -766,4 +803,9 @@ function confirmLabelFor(prepared: OpsPreparePayload): string {
   if (prepared.action === 'compile-run') return t('ops.confirmCompile')
   if (prepared.action === 'snapshot-create') return t('ops.confirmCreate')
   return t('ops.confirmRestore')
+}
+
+/** The typed word a plan requires before Confirm is enabled, or null. */
+function requiredTypedWord(plan: OpsPlan): string | null {
+  return plan.kind === 'snapshot-restore' || plan.kind === 'file-version-restore' ? plan.typedWord : null
 }

@@ -317,10 +317,12 @@ dsh plugin --profile web remove dsh-openviking-enhance
 | 动作 | 改动什么 | 确认 | 撤销 | 审计 |
 | --- | --- | --- | --- | --- |
 | snapshot-create | 一个只追加的提交 | 范围 + 说明 + 路径，显式确认 | **不可**（提交无法通过 API 删除） | `snapshot`（oid） |
-| snapshot-restore | 一个目录下的文件、新提交 + 重建索引任务 | dry-run 计划 + 计数 + 输入目录名；撤销时额外改动需二次确认 | 正向恢复到恢复前的父提交 | `snapshot`（前后提交、任务 id） |
+| snapshot-restore | 一个目录下的文件、新提交 + 重建索引任务 | dry-run 计划 + 真实计数（行列表被截断时同样准确）+ 输入目录名；撤销时额外改动需二次确认。范围不得是、也不得包含流水线所有的 `sessions` 树 | 正向恢复到恢复前的父提交 | `snapshot`（前后提交、任务 id） |
 | compile-run | 派生的输出文件 + 重建索引 | 明确的 to/from/skill/instruction + 宿主 `Idempotency-Key`；无需输入（不覆盖用户文件） | **不可**（没有回滚 API）；取消是协作式的 | `compile`（任务 id + 幂等键） |
-| pack-export | 仅本机 `.ovpack` 下载 | 范围、include-vectors（默认关）、64 MiB 上限 | **不可** | `pack`（字节数；无内容）+ `download` |
+| pack-export | 仅本机 `.ovpack` 下载 | 仅当前用户自己的树（或 `viking://resources`）、include-vectors（默认关）、64 MiB 上限、一次性下载。**包内包含当前用户的完整会话文本**——请按敏感数据处理 | **不可** | `pack`（字节数；无内容）+ `download` |
 | file-version-restore | 一个编译输出文件的新版本（CAS） | 当前/目标版本 + 输入文件名 | CAS 恢复恢复前版本（文件变化后拒绝） | `snapshot`（版本 id） |
+
+撤销属于安全动作：动作完成后即使关闭 `enableOps`，撤销仍然可用（传输、身份与能力闸门照常生效），避免用户被已恢复的树困住而无法回退。
 
 每个动作还受新的 **`enableOps`** 开关（默认 **false**；`enableWrites` 仍只负责策展）、认证通道、健康探测身份、运行时能力/角色探测（绝不比较版本号）以及和策展写入共享的**单一变更闸门**约束。令牌一次性、120 秒、绑定身份指纹；操作限 2 次成功执行与 6 次准备/分钟。**任何地方都没有"重试"按钮**：被测服务端没有任务重试 API，编译只能"作为新编译重跑"（新操作、新 Idempotency-Key）。OVPack **备份/导入/恢复被有意推迟**到后续版本（它们属于 ROOT/ADMIN、账户级、非原子且/或需要服务端临时上传流程），rules compile、编译配置更新/embeddings/reindex、watches 与会话快照恢复同样不提供。
 
@@ -402,6 +404,9 @@ dsh plugin --profile web remove dsh-openviking-enhance
 | OBSERVABILITY_CACHE_TTL_MS | 30000 |
 | OBSERVABILITY_MAX_DAYS | 7 |
 | TASK_EVIDENCE_MAX_BYTES | 524288 |
+| SNAPSHOT_MESSAGE_MAX_CHARS | 200 |
+| PACK_BODY_INACTIVITY_TIMEOUT_MS | 30000 |
+| EVIDENCE_LOOKUP_DEADLINE_MS | 15000 |
 | TASK_EVIDENCE_CORRELATION_MAX | 20 |
 <!-- /contract:limits -->
 
@@ -489,6 +494,12 @@ dsh plugin --profile web remove dsh-openviking-enhance
 （服务端在 body 校验阶段就拒绝，先于任何召回/judge 工作），列表本身是有界文件读取
 （15 s 总截止、并发 4、100 条规则/20 个场景上限，部分结果保留并显示
 「显示 N 条（上限 M）」）。
+
+### OVPack 下载处理（v0.8）
+
+导出的 `.ovpack` 写入插件状态目录下的 **0600 临时文件**（目录 0700），通过**一次性令牌**（120 秒有效）流式下载给浏览器，并在一次下载后、过期后、下次历史/导出清理时或插件卸载时删除（启动时也会清理孤儿文件）。审计只记录 URI、字节数与 request id——绝不记录内容或令牌。导出上限 64 MiB；正文若 30 秒无进展（或超过整体导出时限）会被中止，避免慢服务端长期占用共享变更闸门。
+
+**从 `viking://user/<me>` 导出的包会包含完整会话文本**（`messages.jsonl` 与归档会话），不仅是记忆，因此本质上属于敏感用户数据：插件拒绝裸 `viking://user` 根与其他身份的树，界面也会提示用完删除。
 
 ### 已知缺口
 

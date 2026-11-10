@@ -183,3 +183,14 @@ export const OBSERVABILITY_MAX_DAYS = 7
 export const TASK_EVIDENCE_MAX_BYTES = 524_288
 /** Correlation arrays are capped at this many rows each in the evidence. */
 export const TASK_EVIDENCE_CORRELATION_MAX = 20
+
+/* ========================================================================
+ * v0.8 PR #6 review round 1 — bounded fan-out / body deadlines and caps
+ * ===================================================================== */
+
+/** Display cap for a snapshot commit message (shared by prepare + rendering). */
+export const SNAPSHOT_MESSAGE_MAX_CHARS = 200
+/** A pack export body must make progress within this window or it is aborted. */
+export const PACK_BODY_INACTIVITY_TIMEOUT_MS = 30_000
+/** Overall deadline for one task-evidence server-request-log fan-out. */
+export const EVIDENCE_LOOKUP_DEADLINE_MS = 15_000

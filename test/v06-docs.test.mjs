@@ -142,6 +142,10 @@ const DOCUMENTED_LIMITS = [
   'OBSERVABILITY_MAX_DAYS',
   'TASK_EVIDENCE_MAX_BYTES',
   'TASK_EVIDENCE_CORRELATION_MAX',
+  // v0.8 PR #6 review round 1 bounds.
+  'SNAPSHOT_MESSAGE_MAX_CHARS',
+  'PACK_BODY_INACTIVITY_TIMEOUT_MS',
+  'EVIDENCE_LOOKUP_DEADLINE_MS',
 ]
 
 test('both READMEs document every user-visible limit with the code value', () => {

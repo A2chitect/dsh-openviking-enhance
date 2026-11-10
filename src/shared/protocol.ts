@@ -1799,6 +1799,9 @@ export interface SnapshotRestorePlan {
   head: string | null
   toWrite: OpsPlanPath[]
   toDelete: OpsPlanPath[]
+  /** Real counts from the dry run, independent of the display cap below. */
+  writeTotal: number
+  deleteTotal: number
   unchanged: number
   /** True when the plan touches paths outside the action's own inverse set. */
   extraChanges: boolean
@@ -1919,6 +1922,9 @@ export interface OpsUndoPlan {
   sourceCommit: string
   toWrite: OpsPlanPath[]
   toDelete: OpsPlanPath[]
+  /** Real counts from the undo dry run, independent of the display cap. */
+  writeTotal: number
+  deleteTotal: number
   unchanged: number
   extraChanges: boolean
   truncated: boolean

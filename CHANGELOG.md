@@ -21,6 +21,31 @@ no new dependency, no AGPL code. One shared `OpsService` and the extracted
 `confirmation-store` (token/TTL/quota + the single mutation gate shared with
 `WriteService`) mean curated writes and operational actions can never overlap.
 
+#### Fixed (PR #6 review round 1)
+
+- Restore/commit scope checks are no longer fail-open for an **ancestor of the
+  pipeline-owned sessions tree** (`viking://user/<me>` is refused; the sessions
+  directory, its descendants and its ancestors all are).
+- The restore dialog shows the **real dry-run write/delete counts** even when the
+  path rows are display-capped, and the "truncated" line states `shown of total`.
+- Pack export has a real **body deadline** (30 s of inactivity, overall export
+  deadline): a stalled download no longer holds the shared mutation gate, and the
+  partial temp file is deleted. Pack export now requires the **active user**
+  (bare `viking://user`/other identities refused) and both READMEs state that a
+  pack contains the full session text.
+- Every gate (including the action capability/role probe) is re-checked at
+  execute; snapshot read-back verification has a bounded retry and passes the
+  branch; undo compares **normalized full URIs** instead of basenames and re-runs
+  the dry run immediately before applying; a partial writeback now writes a real
+  audit row (non-empty `auditId`), and the typed-confirmation button stays
+  disabled until the word matches.
+- Smaller hardening: undo remains available when `enableOps` is switched off
+  after an action, the task-evidence server-log fan-out has an overall deadline,
+  the commit-message cap lives in `limits.ts`, read-route `paths` filters are
+  capped, transport-error pack probes are no longer cached, download tokens are
+  identity-checked on consume, and leftover `downloads/` files are swept at
+  startup plus on history reads/client aborts.
+
 #### Added
 
 - **Snapshots.** Read: bounded commit history, file-at-commit preview (text only),

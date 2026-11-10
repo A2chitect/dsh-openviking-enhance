@@ -418,10 +418,15 @@ protocol. Loopback GETs for actions never exist.
 | Action | What it changes | Confirmation | Undo | Audit |
 | --- | --- | --- | --- | --- |
 | snapshot-create | one append-only commit | scope + message + paths, explicit confirm | **no** (commits cannot be deleted through the API) | `snapshot` (oid) |
-| snapshot-restore | files under one directory, a new commit + reindex task | dry-run plan + counts + typed directory leaf; extra-changes second confirm for undo | forward restore to the pre-restore parent | `snapshot` (pre/post commit, task id) |
+| snapshot-restore | files under one directory, a new commit + reindex task | dry-run plan + real counts (also when the row list is capped) + typed directory leaf; extra-changes second confirm for undo. The scope may not be — or contain — the pipeline-owned `sessions` tree | forward restore to the pre-restore parent | `snapshot` (pre/post commit, task id) |
 | compile-run | derived output files + reindex | explicit to/from/skill/instruction + host `Idempotency-Key`; no typed word (no user file is overwritten) | **no** (no rollback API); cancellation is cooperative | `compile` (task id + idempotency key) |
-| pack-export | a local `.ovpack` download only | scope, include-vectors (default off), 64 MiB cap | **no** | `pack` (bytes; no content) + `download` |
+| pack-export | a local `.ovpack` download only | the active user's own tree (or `viking://resources`); include-vectors (default off), 64 MiB cap, one-time download. **The pack contains the full session transcripts of the active user** — treat it as sensitive | **no** | `pack` (bytes; no content) + `download` |
 | file-version-restore | one compile-output file, a new version (CAS) | current/target version + typed file name | CAS restore of the pre-restore version (refused after a change) | `snapshot` (version ids) |
+
+Undo is a safety action: it stays available if `enableOps` is switched off
+after an action (the transport, identity and capability gates still apply), so
+turning the switch off can never trap a user with a restored tree and no way
+back.
 
 Every action is additionally gated by the new **`enableOps`** switch (default
 **false**; `enableWrites` stays curation-only), the authenticated transport, a
@@ -515,6 +520,9 @@ from the code. Times are milliseconds; sizes are bytes unless marked.
 | OBSERVABILITY_CACHE_TTL_MS | 30000 |
 | OBSERVABILITY_MAX_DAYS | 7 |
 | TASK_EVIDENCE_MAX_BYTES | 524288 |
+| SNAPSHOT_MESSAGE_MAX_CHARS | 200 |
+| PACK_BODY_INACTIVITY_TIMEOUT_MS | 30000 |
+| EVIDENCE_LOOKUP_DEADLINE_MS | 15000 |
 | TASK_EVIDENCE_CORRELATION_MAX | 20 |
 <!-- /contract:limits -->
 
@@ -623,6 +631,22 @@ validation-only `POST rules/search {}` (rejected by the server's body validation
 before any recall/judge work) and the list itself is bounded file reads (15 s
 total deadline, concurrency 4, 100-rule/20-scenario caps, partial results kept
 with a "showing N of up to M" line).
+
+### OVPack download handling (v0.8)
+
+An exported `.ovpack` is written to a **0600 temp file** under the plugin state
+directory (the directory is 0700), streamed to the browser through a
+**single-use token** that lives 120 s, and deleted after the one download, on
+expiry, on the next history/export sweep, or on plugin unload (startup sweeps
+orphans too). The audit records the URI, byte count and request id only — never
+the content or the token. The export is capped at 64 MiB and a body that stalls
+for 30 s (or exceeds the overall export deadline) is aborted so a slow server
+cannot hold the shared mutation gate.
+
+**A pack exported from `viking://user/<me>` contains the full session text**
+(`messages.jsonl` and archived sessions) in addition to memories, so it is
+sensitive user data by definition: the plugin refuses the bare `viking://user`
+root and another identity's tree, and the UI says to delete the file when done.
 
 ### Known gaps
 

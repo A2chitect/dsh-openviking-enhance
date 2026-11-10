@@ -145,3 +145,27 @@ test('the Packs tab states the deferred backup/import/restore reasons', () => {
   assert.match(markup, /import|Import/)
   assert.match(markup, /restore|Restore/)
 })
+
+test('the confirm button stays disabled until the typed word matches (ConfirmShell)', () => {
+  const client = loadBundle('en')
+  const render = (confirmDisabled) =>
+    renderToStaticMarkup(
+      createElement(client.ConfirmShell, {
+        title: 'Restore directory',
+        scopeLine: 'default · default/default',
+        fingerprint: 'sha256:abcd',
+        children: createElement('p', null, 'body'),
+        error: null,
+        busy: false,
+        confirmLabel: 'Restore',
+        confirmDisabled,
+        onCancel: () => {},
+        onConfirm: () => {},
+      }),
+    )
+  const waiting = render(true)
+  const ready = render(false)
+  const confirmTag = (markup) => [...markup.matchAll(/<button[^>]*>(?:(?!<\/button>).)*Restore(?:(?!<\/button>).)*<\/button>/gs)][0]?.[0] ?? ''
+  assert.equal(/\bdisabled(=|>|\s)/.test(confirmTag(waiting)), true, 'Confirm is disabled until the word matches')
+  assert.equal(/\bdisabled(=|>|\s)/.test(confirmTag(ready)), false, 'Confirm enables once the word matches')
+})

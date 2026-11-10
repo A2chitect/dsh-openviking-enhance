@@ -36,6 +36,34 @@ These not-yet-released versions are rows in an append-only table, not release
 evidence: the stack merges in order `#2 → release 0.4.0 → #3 → release 0.5.0 →
 #4 → release 0.6.0`, and each row becomes `pass` when its tagged version ships.
 
+## PR #6 review round 1 (v0.8) — fixed evidence
+
+| Review item | Fix | Evidence |
+| --- | --- | --- |
+| B1 ancestor-of-sessions restore/commit | `classifySnapshotScope` now refuses the sessions tree, its descendants **and every ancestor of it** (`viking://user/<me>` included); classifier unit tests assert all three | `test/v08-units.test.mjs` |
+| S3 clamped-50 plan counts | `SnapshotRestorePlan.writeTotal/deleteTotal` carry the real dry-run counts; the dialog shows them even when the row list is capped and states "showing X of Y" | unit test + dialog copy |
+| S1 pack body deadline | per-chunk inactivity (30 s) and overall body deadline; aborted streams delete the partial file and release the shared mutation gate | `test/v08-units.test.mjs` stalled-body test |
+| S2 pack user scope | pack export requires the active user (bare `viking://user` and other identities refused); both READMEs state a pack contains full session text | classifier unit tests + README |
+| S4 execute re-runs action gate | `OpsService.execute` re-runs `gateFor(token.action)` after the token checks and before the identity check | route unit tests (capability flip) |
+| S6 verifyCommit comment | bounded 3-attempt read-back retry and branch pass-through implemented to match the comment | route test with a lagging snapshot log |
+| S5 undo expected paths | normalized full-URI comparison (not basenames) and the undo dry run is re-run immediately before Apply | unit test (same basename, other directory) |
+| S7 destructive tests | revision-mismatch (`restoreMode:'conflict'`), pack-too-large, non-zip signature, expired download token, gate contention, undo-after-identity-switch | `test/v08-*` |
+| Smaller items | partial-writeback branch now writes a real audit row and returns its id; typed-word confirm disabled until it matches; empty `publishOperationId` removed; file-version audit no longer fills `snapshot.sourceCommit`; downloads swept on history read/startup/client abort; undo stays available if `enableOps` is switched off after the action; evidence fan-out has a 15 s overall deadline; message cap unified in `limits.ts`; read-route `paths` capped; pack transport errors are not cached; download tokens are identity-checked on consume | unit/route tests |
+
+### Known limits (not covered by round 1)
+
+- Ops tokens are in-memory: a host restart invalidates pending confirmations and
+  undo handles (documented; the audit file is the durable record).
+- A pack export that finishes after the client vanished can leave a temp file
+  until the next sweep (startup/history/export) — deleted at most one sweep later.
+- The undo dry run is re-checked immediately before Apply, but a write that
+  lands between that check and the server applying the restore is the server's
+  forward-commit semantics (audit + reindex still record it).
+- Compile re-run is a NEW operation; there is no idempotent retry across
+  different keys by design.
+- Live destructive-action screenshots against a real store remain out of scope
+  (tests use the deterministic fake server); fixture evidence is labelled.
+
 What the v0.6 local run actually proved:
 
 1. `dsh plugin --profile web add <tarball>` installs the published tarball;

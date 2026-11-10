@@ -8,7 +8,7 @@
 // of the real state directory.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, statSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -29,6 +29,8 @@ import { fileNameFromDisposition, sanitizePackFileName } from '../src/host/pack-
 import { seriesFromConsole } from '../src/host/observability-service.ts'
 import { OpsService } from '../src/host/ops-service.ts'
 import { AuditLog } from '../src/host/audit.ts'
+import { PackDownloadBroker } from '../src/host/pack-service.ts'
+import { SnapshotService } from '../src/host/snapshot-service.ts'
 
 const tempDir = (label) => mkdtempSync(join(tmpdir(), `ove-v08-unit-${label}-`))
 
@@ -127,8 +129,20 @@ test('snapshot restore/create scopes allow directories and refuse sessions, syst
   const commit = classifySnapshotScope('viking://agent/anything', 'commit', user)
   assert.equal(commit.ok, true, 'agent scope is readable/committable')
 
+  // B1: an ancestor of the pipeline-owned sessions tree is refused for every
+  // mutating kind, not just the sessions directory itself.
+  assert.equal(classifySnapshotScope('viking://user/alice', 'restore', user).ok, false)
+  assert.equal(classifySnapshotScope('viking://user/alice', 'commit', user).ok, false)
+  assert.equal(classifySnapshotScope('viking://user/alice/sessions', 'restore', user).ok, false)
+  assert.equal(classifySnapshotScope('viking://user/alice/sessions/dsh-1', 'commit', user).ok, false)
+  // S2: pack requires the active user's own tree; bare viking://user and another
+  // identity are refused.
+  assert.equal(classifySnapshotScope('viking://user', 'pack', user).ok, false)
+  assert.equal(classifySnapshotScope('viking://user/bob/resources/x', 'pack', user).ok, false)
+  assert.equal(classifySnapshotScope('viking://user/alice/memories', 'pack', user).ok, true)
+  assert.equal(classifySnapshotScope('viking://resources/x', 'pack', user).ok, true)
   const pack = classifySnapshotScope('viking://user/alice/sessions/dsh-1', 'pack', user)
-  assert.equal(pack.ok, true, 'sessions inside user are technically exportable')
+  assert.equal(pack.ok, true, 'sessions inside the active user are technically exportable (documented: full session text)')
   assert.equal(classifySnapshotScope('viking://agent/skills', 'pack', user).ok, false)
 })
 
@@ -186,22 +200,27 @@ test('the console series normaliser degrades instead of throwing', () => {
  * OpsService gates: fail closed before any mutation
  * ===================================================================== */
 
+function healthyProbe() {
+  return {
+    observedAt: Date.now(),
+    health: { ok: true, version: '0.5.3', authMode: 'dev', role: 'user', accountId: 'default', userId: 'default', latencyMs: 1, error: null },
+    snapshot: { available: true, detail: null, kind: 'history' },
+    tasks: { available: true, detail: null },
+    rules: { available: true, detail: null, kind: 'supported' },
+    compile: { available: true, detail: null, configured: true, canCreate: true, reason: null, kind: 'capabilities' },
+    versions: { available: true, detail: null },
+    diffPaths: { available: true, detail: null },
+  }
+}
+
 function opsRig(overrides = {}) {
   const dir = tempDir('ops')
   const audit = new AuditLog({ dir })
   const flags = { ops: overrides.opsEnabled ?? true, transport: overrides.transport ?? true }
+  const gate = overrides.gate ?? new MutationGate()
   const calls = []
   const capability = {
-    probe: async () => ({
-      observedAt: Date.now(),
-      health: { ok: true, version: '0.5.3', authMode: 'dev', role: 'user', accountId: 'default', userId: 'default', latencyMs: 1, error: null },
-      snapshot: { available: true, detail: null, kind: 'history' },
-      tasks: { available: true, detail: null },
-      rules: { available: true, detail: null, kind: 'supported' },
-      compile: { available: true, detail: null, configured: true, canCreate: true, reason: null, kind: 'capabilities' },
-      versions: { available: true, detail: null },
-      diffPaths: { available: true, detail: null },
-    }),
+    probe: async () => (overrides.probe === undefined ? healthyProbe() : overrides.probe()),
     pack: async () => ({ available: true, detail: null }),
     invalidate: () => {},
     lastSnapshot: () => null,
@@ -214,10 +233,11 @@ function opsRig(overrides = {}) {
         return { ok: true, commit: 'commit-1', requestId: 'req-1' }
       },
       verifyCommit: async () => true,
-      dryRunRestore: async () => ({ ok: true, head: 'head-1', toWrite: [], toDelete: [], unchanged: 0 }),
+      dryRunRestore: async (projectDir, sourceCommit) => ({ ok: true, head: 'head-1', toWrite: [], toDelete: [], unchanged: 0, projectDir, sourceCommit }),
       applyRestore: async () => ({ ok: true, newCommit: 'commit-2', parentCommit: 'commit-1', written: 0, deleted: 0, unchanged: 0, writtenPaths: [], deletedPaths: [], taskId: null, requestId: 'req-2' }),
       versions: async () => ({ available: false, note: 'not-compile-managed' }),
       restoreFileVersion: async () => ({ ok: true, versionId: 'ver-3', versionNumber: 3, requestId: null, noop: false }),
+      ...(overrides.snapshot ?? {}),
     },
     compile: {
       targetConfig: async () => ({ available: true, target: { to: 'viking://resources/out', from: ['viking://resources/in'], skill: 's', instruction: null, autoUpdate: null, updateSchedule: null, status: 'active', compileType: 'compile', conflicts: 0 }, note: null }),
@@ -235,11 +255,11 @@ function opsRig(overrides = {}) {
     identity: () => scope,
     opsEnabled: () => flags.ops,
     transport: () => flags.transport,
-    gate: new MutationGate(),
-    activeUser: () => 'default',
-    now: () => 1000,
+    gate,
+    activeUser: overrides.activeUser ?? (() => 'default'),
+    now: overrides.now ?? (() => 1000),
   })
-  return { service, audit, dir, calls, flags, scope }
+  return { service, audit, dir, calls, flags, scope, gate }
 }
 
 test('ops prepare fails closed before any mutation when a gate is off', async () => {
@@ -293,4 +313,308 @@ test('every scope capability id has an EN and ZH label', async () => {
     const key = `'native.overview.capability.${id}'`
     assert.equal(count(key), 2, `${id} must have an EN and a ZH label (${key})`)
   }
+})
+
+/* ========================================================================
+ * PR #6 review round 1 — plan counts, undo normalization, pack deadlines,
+ * execute gate re-check, verify retry, evidence deadline
+ * ===================================================================== */
+
+test('S3: the restore plan carries the real counts even when the rows are capped', async () => {
+  const writes = Array.from({ length: 60 }, (_, index) => ({ path: `out/f${index}.md`, oid: null }))
+  const deletes = Array.from({ length: 55 }, (_, index) => ({ path: `out/old${index}.md`, oid: null }))
+  const rig = opsRig({
+    snapshot: {
+      dryRunRestore: async () => ({ ok: true, head: 'head-1', toWrite: writes, toDelete: deletes, unchanged: 3 }),
+    },
+  })
+  const prepared = await rig.service.prepare({ action: 'snapshot-restore', projectDir: 'viking://resources/out', sourceCommit: 'c1' })
+  assert.equal(prepared.ok, true)
+  const plan = prepared.plan
+  assert.equal(plan.writeTotal, 60, 'the dialog can state the real write count')
+  assert.equal(plan.deleteTotal, 55, 'the dialog can state the real delete count')
+  assert.equal(plan.toWrite.length, 50, 'the write rows stay clamped')
+  assert.equal(plan.toDelete.length, 50, 'the delete rows stay clamped')
+  assert.equal(plan.truncated, true)
+  const restoreSummary = prepared.summary.find((line) => line.includes('will be written'))
+  assert.match(restoreSummary, /60 file\(s\) will be written, 55 deleted/)
+})
+
+test('S4: execute re-runs the action capability gate after the identity check', async () => {
+  let probes = 0
+  const rig = opsRig({
+    probe: () => {
+      probes += 1
+      const snapshot = healthyProbe()
+      if (probes > 2) {
+        snapshot.snapshot = { available: false, detail: 'snapshot-unavailable', kind: 'route-absent' }
+      }
+      return snapshot
+    },
+  })
+  const prepared = await rig.service.prepare({ action: 'snapshot-create', message: 'x', paths: ['viking://resources/x'] })
+  assert.equal(prepared.ok, true)
+  const refused = await rig.service.execute({ token: prepared.token })
+  assert.equal(refused.ok, false)
+  assert.equal(refused.error.code, 'snapshot-unavailable', 'the capability is re-checked at execute')
+  assert.equal(rig.calls.length, 0, 'no mutation ran')
+})
+
+test('S6: verifyCommit retries a lagging log a bounded number of times and passes the branch', async () => {
+  const branches = []
+  let calls = 0
+  const responses = [[{ oid: 'c-old' }], [{ oid: 'c-old' }], [{ oid: 'c-new' }]]
+  const api = {
+    snapshotLog: async (options) => {
+      branches.push(options.branch)
+      const result = responses[Math.min(calls, 2)]
+      calls += 1
+      return { ok: true, status: 200, result, error: null, errorCode: null }
+    },
+  }
+  const service = new SnapshotService({ api, user: () => 'default' })
+  assert.equal(await service.verifyCommit('c-new', 'release'), true)
+  assert.equal(calls, 3)
+  assert.deepEqual(branches, ['release', 'release', 'release'])
+
+  const staleApi = { snapshotLog: async () => ({ ok: true, status: 200, result: [{ oid: 'c-old' }], error: null, errorCode: null }) }
+  const stale = new SnapshotService({ api: staleApi, user: () => 'default' })
+  assert.equal(await stale.verifyCommit('c-new', 'main'), false, 'the retry budget is bounded')
+})
+
+test('S5: undo expected paths compare normalized full URIs, not basenames', async () => {
+  // Prepare + execute use two dry runs; the undo plan is the third.
+  let dryCalls = 0
+  const rig = opsRig({
+    snapshot: {
+      dryRunRestore: async () => {
+        dryCalls += 1
+        if (dryCalls <= 2) return { ok: true, head: 'head-1', toWrite: [{ path: 'report.md', oid: null }], toDelete: [], unchanged: 0 }
+        // Same basename, DIFFERENT directory: a basename comparison would call
+        // this the action's own inverse; the normalized URI must not.
+        return { ok: true, head: 'head-1', toWrite: [{ path: 'other/report.md', oid: null }], toDelete: [], unchanged: 0 }
+      },
+    },
+  })
+  const prepared = await rig.service.prepare({ action: 'snapshot-restore', projectDir: 'viking://resources/out', sourceCommit: 'c1' })
+  const executed = await rig.service.execute({ token: prepared.token, typed: 'out' })
+  assert.equal(executed.ok, true)
+  const plan = await rig.service.plan({ undoId: executed.undoId })
+  assert.equal(plan.ok, true)
+  assert.equal(plan.plan.extraChanges, true, 'other/report.md is outside the action inverse set, not "report.md"')
+  const refused = await rig.service.undo({ undoId: executed.undoId })
+  assert.equal(refused.ok, false)
+  assert.equal(refused.error.code, 'extra-changes')
+  const applied = await rig.service.undo({ undoId: executed.undoId, confirmExtra: true })
+  assert.equal(applied.ok, true)
+})
+
+test('undo stays available when enableOps is switched off after the action; identity switch still refuses', async () => {
+  const preparedRig = () =>
+    opsRig({
+      snapshot: {
+        dryRunRestore: async () => ({ ok: true, head: 'head-1', toWrite: [{ path: 'report.md', oid: null }], toDelete: [], unchanged: 0 }),
+        applyRestore: async () => ({
+          ok: true,
+          newCommit: 'commit-2',
+          parentCommit: 'commit-1',
+          written: 1,
+          deleted: 0,
+          unchanged: 0,
+          writtenPaths: ['report.md'],
+          deletedPaths: [],
+          taskId: null,
+          requestId: 'req-2',
+        }),
+      },
+    })
+  const rig = preparedRig()
+  const prepared = await rig.service.prepare({ action: 'snapshot-restore', projectDir: 'viking://resources/out', sourceCommit: 'c1' })
+  const executed = await rig.service.execute({ token: prepared.token, typed: 'out' })
+  assert.equal(executed.ok, true)
+  assert.equal(typeof executed.undoId, 'string')
+  rig.flags.ops = false
+  const undone = await rig.service.undo({ undoId: executed.undoId })
+  assert.equal(undone.ok, true, 'turning the switch off must not trap the user')
+
+  const rig2 = preparedRig()
+  const prepared2 = await rig2.service.prepare({ action: 'snapshot-restore', projectDir: 'viking://resources/out', sourceCommit: 'c1' })
+  const executed2 = await rig2.service.execute({ token: prepared2.token, typed: 'out' })
+  assert.equal(executed2.ok, true)
+  rig2.scope.fingerprint = 'sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'
+  const afterSwitch = await rig2.service.undo({ undoId: executed2.undoId })
+  assert.equal(afterSwitch.ok, false)
+  assert.equal(afterSwitch.error.code, 'identity-changed')
+})
+
+test('an identity switch between prepare and execute is refused at execute', async () => {
+  const rig = opsRig()
+  const prepared = await rig.service.prepare({ action: 'snapshot-create', message: 'x', paths: ['viking://resources/x'] })
+  assert.equal(prepared.ok, true)
+  rig.scope.fingerprint = 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  const refused = await rig.service.execute({ token: prepared.token })
+  assert.equal(refused.ok, false)
+  assert.equal(refused.error.code, 'identity-changed')
+})
+
+/* ---- pack broker: deadlines, caps, signature, expiry, identity, eviction -- */
+
+function packBrokerRig({ bodyFactory, maxBytes = 1024, inactivityMs = 60, totalMs = 500 } = {}) {
+  const dir = tempDir('pack-b')
+  const audit = new AuditLog({ dir })
+  const clock = { now: 1000 }
+  const identity = { current: { ...IDENTITY } }
+  const api = {
+    streamPackExport: async () => ({
+      ok: true,
+      status: 200,
+      response: new Response(bodyFactory()),
+      error: null,
+      errorCode: null,
+      requestId: 'req-pack',
+    }),
+  }
+  const broker = new PackDownloadBroker({
+    api,
+    audit,
+    identity: () => identity.current,
+    dir,
+    maxBytes,
+    inactivityMs,
+    totalMs,
+    now: () => clock.now,
+  })
+  return { broker, audit, dir, clock, identity, downloadsDir: join(dir, 'downloads') }
+}
+
+const zipBody = () =>
+  new ReadableStream({
+    start(controller) {
+      controller.enqueue(new Uint8Array([0x50, 0x4b, 0x03, 0x04]))
+      controller.enqueue(new TextEncoder().encode('zip payload'))
+      controller.close()
+    },
+  })
+
+const stalledBody = () =>
+  new ReadableStream({
+    start(controller) {
+      controller.enqueue(new Uint8Array([0x50, 0x4b, 0x03, 0x04]))
+      // Never closed and never sends another chunk: a stalled server body.
+    },
+  })
+
+test('S1: a stalled pack body is aborted by the inactivity deadline and leaves no file', async () => {
+  const rig = packBrokerRig({ bodyFactory: stalledBody, inactivityMs: 30 })
+  const startedAt = Date.now()
+  const outcome = await rig.broker.export('viking://resources/x', false)
+  assert.equal(outcome.ok, false)
+  assert.equal(outcome.code, 'pack-failed')
+  assert.match(outcome.message, /stalled/i)
+  assert.ok(Date.now() - startedAt < 2_000, 'the refusal did not wait for a transport timeout')
+  assert.equal(readdirSync(rig.downloadsDir).length, 0, 'the partial temp file is deleted')
+})
+
+test('a pack body over the host cap is refused as pack-too-large and cleaned up', async () => {
+  const rig = packBrokerRig({
+    maxBytes: 16,
+    bodyFactory: () =>
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(new Uint8Array([0x50, 0x4b, 0x03, 0x04]))
+          controller.enqueue(new Uint8Array(100))
+          controller.close()
+        },
+      }),
+  })
+  const outcome = await rig.broker.export('viking://resources/x', false)
+  assert.equal(outcome.ok, false)
+  assert.equal(outcome.code, 'pack-too-large')
+  assert.equal(readdirSync(rig.downloadsDir).length, 0)
+})
+
+test('a non-zip body is refused before it is trusted', async () => {
+  const rig = packBrokerRig({
+    bodyFactory: () =>
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(new Uint8Array([1, 2, 3, 4]))
+          controller.close()
+        },
+      }),
+  })
+  const outcome = await rig.broker.export('viking://resources/x', false)
+  assert.equal(outcome.ok, false)
+  assert.equal(outcome.code, 'pack-failed')
+  assert.equal(readdirSync(rig.downloadsDir).length, 0)
+})
+
+test('download tokens are single-use, expire, are identity-bound and evict at the active cap', async () => {
+  const single = packBrokerRig({ bodyFactory: zipBody })
+  const first = await single.broker.export('viking://resources/x', false)
+  assert.equal(first.ok, true)
+  assert.equal(single.broker.consume(first.downloadId) === null, false)
+  assert.equal(single.broker.consume(first.downloadId), null, 'single use')
+
+  const expiring = packBrokerRig({ bodyFactory: zipBody })
+  const exported = await expiring.broker.export('viking://resources/x', false)
+  assert.equal(exported.ok, true)
+  expiring.clock.now += 120_000 + 1
+  assert.equal(expiring.broker.consume(exported.downloadId), null, 'expired token')
+
+  const bound = packBrokerRig({ bodyFactory: zipBody })
+  const boundExport = await bound.broker.export('viking://resources/x', false)
+  assert.equal(boundExport.ok, true)
+  bound.identity.current = { ...bound.identity.current, fingerprint: 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd' }
+  assert.equal(bound.broker.consume(boundExport.downloadId), null, 'identity-bound token')
+
+  const evicting = packBrokerRig({ bodyFactory: zipBody })
+  const a = await evicting.broker.export('viking://resources/a', false)
+  const b = await evicting.broker.export('viking://resources/b', false)
+  const c = await evicting.broker.export('viking://resources/c', false)
+  assert.equal(a.ok && b.ok && c.ok, true)
+  assert.equal(c.evicted, true, 'the export reports the eviction instead of dropping it silently')
+  assert.equal(evicting.broker.consume(a.downloadId), null, 'the oldest token was evicted')
+  assert.equal(evicting.broker.consume(b.downloadId) === null, false)
+})
+
+/* ---- evidence: one overall deadline for the request-log fan-out ---------- */
+
+test('the task-evidence server-request fan-out stops at its overall deadline', async () => {
+  const clock = { now: 0 }
+  const { EvidenceService } = await import('../src/host/evidence-service.ts')
+  const entries = Array.from({ length: 5 }, (_, index) => ({
+    id: `aud-${index}`,
+    ts: new Date().toISOString(),
+    kind: 'compile',
+    action: 'compile-run',
+    target: 'viking://resources/x',
+    identity: null,
+    fingerprint: null,
+    confirmation: 'overlay',
+    preCommit: null,
+    postCommit: null,
+    requestId: `req-${index}`,
+    result: 'ok',
+    error: null,
+    undo: null,
+    taskId: 'task-1',
+  }))
+  const service = new EvidenceService({
+    api: {
+      consoleAudit: async (options) => {
+        clock.now += 20_000
+        return { ok: true, status: 200, result: { items: [{ request_id: options.requestId, method: 'POST', route: '/api/v1/compile' }] }, error: null, errorCode: null }
+      },
+    },
+    audit: { recent: () => ({ entries, path: '', unavailable: false, warnings: [], observedAt: new Date().toISOString() }) },
+    activity: { exportTask: async () => ({ ok: true, task: { task_id: 'task-1', task_type: 'compile' }, fileName: 'x.json' }) },
+    identity: () => IDENTITY,
+    build: () => ({ pluginVersion: '0.8.0', dshVersion: '0.2.2-rc.1', node: 'v22', platform: 'darwin' }),
+    now: () => clock.now,
+  })
+  const evidence = await service.evidence('task-1')
+  assert.equal(evidence.ok, true)
+  assert.equal(evidence.evidence.correlation.serverRequests.length, 1, 'only the first lookup ran before the deadline')
+  assert.equal(evidence.evidence.correlation.warnings.includes('server-request-log-deadline'), true)
 })

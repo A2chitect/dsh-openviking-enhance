@@ -21,6 +21,7 @@
  */
 import {
   SNAPSHOT_DIFF_MAX_CHARS,
+  SNAPSHOT_MESSAGE_MAX_CHARS,
   SNAPSHOT_PATHS_MAX,
   SNAPSHOT_SHOW_MAX_BYTES,
 } from '../shared/limits.ts'
@@ -37,8 +38,8 @@ import type {
 } from '../shared/protocol.ts'
 import type { OpenVikingApi } from './openviking-api.ts'
 
-/** Cap on a displayed commit message (the server's message is display-only). */
-export const SNAPSHOT_MESSAGE_MAX_CHARS = 200
+/** Re-exported for the services that render commit messages. */
+export { SNAPSHOT_MESSAGE_MAX_CHARS }
 
 /** A scope refusal: a stable code plus the human-readable explanation. */
 export interface ScopeRefusal {
@@ -89,8 +90,19 @@ export function classifySnapshotScope(
   const scope = parts[0] as string
   const rest = parts.slice(1)
   if (kind === 'pack') {
-    if (scope !== 'resources' && scope !== 'user') {
-      return refuse('invalid-scope', 'OVPack export supports viking://resources/** and viking://user/** subtrees only.')
+    // v0.8 review S2: a pack is full user data (it includes the session
+    // transcripts). Export only the ACTIVE user's own tree, never the bare
+    // `viking://user` root and never another identity's tree.
+    if (scope === 'user') {
+      const user = rest[0] ?? ''
+      if (user.length === 0) {
+        return refuse('invalid-scope', 'Name the active user scope (viking://user/<user>); the bare viking://user tree is not exportable.')
+      }
+      if (user !== activeUser) {
+        return refuse('invalid-scope', `That user scope is not the active identity (${activeUser}).`)
+      }
+    } else if (scope !== 'resources') {
+      return refuse('invalid-scope', 'OVPack export supports viking://resources/** and the active user tree only.')
     }
   } else if (scope === 'user') {
     const user = rest[0] ?? ''
@@ -98,8 +110,16 @@ export function classifySnapshotScope(
     if (user !== activeUser) {
       return refuse('invalid-scope', `That user scope is not the active identity (${activeUser}).`)
     }
-    if (rest.includes('sessions')) {
-      return refuse('restore-scope-refused', 'Sessions are pipeline-owned; restoring or committing them is refused.')
+    // B1: sessions are pipeline-owned, and a scope that CONTAINS the sessions
+    // directory is just as dangerous as the directory itself (restoring the
+    // whole `viking://user/<me>` would rewrite sessions/** and corrupt capture).
+    // Refuse the sessions tree, its descendants, and every ancestor of it.
+    const sessions = `viking://user/${user}/sessions`
+    if (uri === sessions || uri.startsWith(`${sessions}/`) || sessions.startsWith(`${uri}/`)) {
+      return refuse(
+        'restore-scope-refused',
+        'Sessions are pipeline-owned: a restore/commit scope may not be, contain, or be contained by the sessions directory.',
+      )
     }
   } else if (scope === 'agent') {
     // Commit allows agent-scope reads (documented); restore only agent skills.
@@ -657,13 +677,24 @@ export class SnapshotService {
     }
   }
 
-  /** Verify a read-back through the snapshot log (0.1 s retry budget, no write retry). */
-  async verifyCommit(commit: string | null): Promise<boolean> {
+  /**
+   * Verify a just-created commit through the snapshot log.
+   *
+   * The log is a read, so a short bounded retry is safe (three attempts, 100 ms
+   * apart, ~0.2 s total) and covers the server's commit-visibility lag without
+   * ever retrying the write itself. The branch is passed through: verification
+   * must look at the same history the action wrote to, not an assumed `main`.
+   */
+  async verifyCommit(commit: string | null, branch = 'main'): Promise<boolean> {
     if (commit === null) return false
-    const response = await this.options.api.snapshotLog({ limit: 1 })
-    if (!response.ok) return false
-    const newest = (response.result ?? [])[0]
-    return typeof newest?.oid === 'string' && newest.oid === commit
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (attempt > 0) await sleep(100)
+      const response = await this.options.api.snapshotLog({ branch, limit: 1 })
+      if (!response.ok) continue
+      const newest = (response.result ?? [])[0]
+      if (typeof newest?.oid === 'string' && newest.oid === commit) return true
+    }
+    return false
   }
 }
 
@@ -691,4 +722,9 @@ function mapPartial(details: Record<string, unknown>): {
     failedDeletes: pairs(details.failed_deletes),
     taskId: typeof details.task_id === 'string' ? details.task_id : null,
   }
+}
+
+/** Small bounded delay for read-back verification only (never a write retry). */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
