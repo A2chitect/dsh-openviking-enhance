@@ -28,8 +28,8 @@ link **before tagging**.
 | Version | Date | DSH (profile) | Node | OS | OpenViking | Install path | Result | Evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 0.4.0 (PR #2) | 2026-11 | 0.2.2-rc.1 (web, scratch profile) | 22 | macOS 15 | 0.5.3 read-only | tarball into a scratch DSH home + mock-fixture browser capture | pass (browser render only; no clean-profile install/uninstall record) | PR #2 screenshots + review evidence; see "Live evidence" |
-| 0.5.0 (PR #3, awaited) | — | — | — | — | — | — | pending its PR | — |
-| 0.6.0 (Unreleased branch) | 2026-11-10 | 0.2.1-rc.3 (local binary; CI pins 0.2.2-rc.1) | 22.22.3 | macOS (Darwin 24) | 0.5.3 reachable, read-only | `pnpm pack` tarball → scratch `DSH_HOME` web profile | pass | `node scripts/verify-install.mjs --dsh "$(command -v dsh)" --tarball /tmp/dsh-openviking-enhance-*.tgz --json-out /tmp/install-verify.json` → 23/23 steps, about 5 s; CI: `install-verify` job (URL added on the PR) |
+| 0.5.0 (PR #3) | 2026-11 | 0.2.2-rc.1 (web, scratch profile) | 22 | macOS 15 | 0.5.3 contract via stand-in fixture (no real writes) | tarball into a scratch DSH home + stateful mock-fixture browser capture | pass (browser render only; no clean-profile install record, no real-server write) | PR #3 BEFORE/AFTER capture set; write paths covered by fake-transport unit/E2E tests |
+| 0.6.0 (PR #4) | 2026-11-10 | 0.2.1-rc.3 local + 0.2.2-rc.1 pinned in CI | 22.22.3 | macOS (Darwin 24); Linux CI | 0.5.3 reachable, read-only; mock fixture for the UI deltas | `pnpm pack` tarball → scratch `DSH_HOME` web profile | pass | `node scripts/verify-install.mjs …` → 23/23 steps (~5 s); CI `install-verify` job on the PR; browser BEFORE/AFTER set in the PR |
 
 What the v0.6 local run actually proved:
 

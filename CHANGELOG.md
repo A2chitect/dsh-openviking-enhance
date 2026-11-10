@@ -10,7 +10,7 @@ promotes to a dated section — see [RELEASING.md](RELEASING.md).
 
 ## Unreleased
 
-### v0.6 — Trust and verify (this PR)
+### v0.6 — Trust and verify (PR #4)
 
 Trust and verify. v0.6 is a trust/verification release: it removes the last
 mirrored upstream expression from the MIT build, makes the package's install,
@@ -75,6 +75,24 @@ rules-list notice.
 - Stale "verified against 0.4.22" and mirrored-request comments replaced with the
   tested range and the actual contract; timeouts/limits centralized in
   `src/shared/limits.ts` with a README parity test.
+
+#### Verified
+
+- `pnpm test`: typecheck, build, packaging contract, independence gate,
+  **318** unit tests, client smoke and host smoke (live read-only path redacted)
+  all green.
+- `pnpm run verify:install`: 23/23 clean-profile steps (install → one config row
+  → boot → composed client bundle → host route → reinstall → uninstall), also
+  running as a CI `install-verify` job pinned to DSH 0.2.2-rc.1 on Linux.
+- Independence gate has a demonstrated negative control (fails on a re-introduced
+  "copied from" marker); the frozen rule fixtures are generated from the server's
+  own PyYAML and the committed corpus contains only invented content.
+- Browser evidence (mock fixture, invented data): v0.5 branch-head baseline vs
+  this branch in the same scratch DSH 0.2.2-rc.1 web profile, light 1440×900 @2x;
+  the four small UI deltas (rules-cost opt-in, preview paging, partial rules
+  notice, Doctor config-source health) captured before/after with 0 unexpected
+  console/page errors; frozen fixture responses for pre-v0.6 surfaces are
+  byte-identical.
 
 ### v0.5 — Collaborate (PR #3)
 
