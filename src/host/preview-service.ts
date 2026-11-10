@@ -143,19 +143,20 @@ export class PreviewService {
    * `viking://` URI, `not-found` when the server knows no such entry, and
    * `unreadable` for any other total failure (transport, auth).
    */
-  async preview(rawUri: string): Promise<PreviewPayload> {
+  async preview(rawUri: string, options: { signal?: AbortSignal } = {}): Promise<PreviewPayload> {
     const uri = (rawUri ?? '').trim()
     if (!isVikingUri(uri) || uri.length > PREVIEW_URI_MAX) {
       throw new PreviewFailure('not-a-viking-path', 'not-a-viking-path')
     }
 
     const { api } = this.options
+    const request = options.signal === undefined ? {} : { signal: options.signal }
     const [stat, attrs, abstract, overview, read] = await Promise.all([
-      api.fsStat(uri),
-      api.fsAttrs(uri),
-      api.contentFace(uri, 'abstract'),
-      api.contentFace(uri, 'overview'),
-      api.readText(uri),
+      api.fsStat(uri, request),
+      api.fsAttrs(uri, request),
+      api.contentFace(uri, 'abstract', request),
+      api.contentFace(uri, 'overview', request),
+      api.readText(uri, request),
     ])
 
     const warnings: PluginNotice[] = []

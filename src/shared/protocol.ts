@@ -704,7 +704,7 @@ export interface SearchPayload {
   query: string
   searchType: SearchType
   buckets: SearchBucket[]
-  /** Entries across every bucket, before the per-bucket cap. */
+  /** Entries shown across every bucket, i.e. AFTER each bucket's cap. */
   total: number
   latencyMs: number
   searchedAt: string

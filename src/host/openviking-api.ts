@@ -73,10 +73,16 @@ export interface OvFsEntry {
 /** A commit task as the server returns it; the shared shape is what we rely on. */
 export type OvCommitTask = CommitTask & { task_type?: string }
 
-interface RequestOptions {
+export interface RequestOptions {
   /** Actor peer for peer-scoped sessions. Omitted when the peer is unknown. */
   actorPeerId?: string | undefined
   timeoutMs?: number
+  /**
+   * Caller-owned cancellation. When it aborts, the in-flight fetch aborts with
+   * it, so a cancelled `/viking recall` stops burning requests instead of
+   * waiting for the 12–20 s server answer.
+   */
+  signal?: AbortSignal | undefined
 }
 
 const DEFAULT_TIMEOUT_MS = 8000
@@ -106,6 +112,14 @@ export class OpenVikingApi {
   ): Promise<OvResult<T>> {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_TIMEOUT_MS)
+    // Fold the caller's cancellation into the timeout controller: whichever
+    // fires first aborts the fetch, and the listener is always removed.
+    const external = options.signal
+    const cancel = (): void => controller.abort()
+    if (external !== undefined) {
+      if (external.aborted) controller.abort()
+      else external.addEventListener('abort', cancel, { once: true })
+    }
     try {
       const response = await fetch(`${this.connection.endpoint}${path}`, {
         method: init.method ?? 'GET',
@@ -134,12 +148,15 @@ export class OpenVikingApi {
       }
     } finally {
       clearTimeout(timer)
+      external?.removeEventListener('abort', cancel)
     }
   }
 
   /** `/health` answers bare, without the `{status, result}` envelope. */
-  async health(): Promise<{ ok: boolean; version: string | null; authMode: string | null; error: string | null }> {
-    const response = await this.request<Record<string, unknown>>('/health', { timeoutMs: 4000 })
+  async health(
+    options: RequestOptions = {},
+  ): Promise<{ ok: boolean; version: string | null; authMode: string | null; error: string | null }> {
+    const response = await this.request<Record<string, unknown>>('/health', { timeoutMs: 4000, ...options })
     if (!response.ok) return { ok: false, version: null, authMode: null, error: response.error }
     const body = response.result
     return {
@@ -636,6 +653,3 @@ export function extractFailure(body: unknown): OvFailure | null {
   return null
 }
 
-function extractError(body: unknown): string | null {
-  return extractFailure(body)?.message ?? null
-}

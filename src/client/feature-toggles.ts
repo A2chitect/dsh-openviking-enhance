@@ -25,8 +25,9 @@
  * command is registered by the HOST half, so the browser half cannot mount or
  * unmount it. The field is carried here (and rendered by the settings form) so
  * the switch set stays in one table and a save emits once; the host half watches
- * the same value and registers/unregisters its command. It is deliberately not
- * in `FEATURE_ORDER`: the browser half owns no mount for it.
+ * the same value and registers/unregisters its command (on the next plugin
+ * apply, and live where the Loader emits `loader/volatile-update`). It is
+ * deliberately not in `FEATURE_ORDER`: the browser half owns no mount for it.
  */
 import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { ClientContext } from './slot-service.ts'

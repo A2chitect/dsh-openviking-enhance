@@ -21,7 +21,7 @@ import type {
   DoctorReport,
   PluginNotice,
 } from '../shared/protocol.ts'
-import type { OpenVikingApi } from './openviking-api.ts'
+import type { OpenVikingApi, RequestOptions } from './openviking-api.ts'
 import type { OvConnection } from './config.ts'
 import type { CommitService } from './commit-service.ts'
 import { resolveSessionUri } from './commit-service.ts'
@@ -99,14 +99,17 @@ export class DoctorService {
    * without it; the full tab calls with it, because that is what the person
    * opened the page for.
    */
-  async report(sessionId: string | undefined, options: { probe?: boolean } = {}): Promise<DoctorReport> {
+  async report(
+    sessionId: string | undefined,
+    options: { probe?: boolean; signal?: AbortSignal } = {},
+  ): Promise<DoctorReport> {
     const { api, commit } = this.options
     const warnings: PluginNotice[] = []
     const probe = options.probe === true
     const observedAt = new Date(this.now()).toISOString()
 
     const started = this.now()
-    const health = await api.health()
+    const health = await api.health(options.signal === undefined ? {} : { signal: options.signal })
     const healthLatencyMs = Math.max(0, this.now() - started)
     if (!health.ok) {
       warnings.push({
@@ -117,7 +120,10 @@ export class DoctorService {
 
     const ovSessionId = sessionId === undefined ? null : commit.ovSessionId(sessionId)
     const peer = sessionId === undefined ? null : commit.actorPeer(sessionId) ?? null
-    const request = peer === null ? {} : { actorPeerId: peer }
+    const request: RequestOptions = {
+      ...(peer === null ? {} : { actorPeerId: peer }),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    }
     const config = sessionId === undefined ? null : commit.pluginConfig(sessionId)
     const mounted = commit.pluginMounted()
     if (!mounted) warnings.push({ code: 'noMemoryPlugin' })
@@ -338,7 +344,7 @@ export class DoctorService {
 
   private async contextCapability(
     probe: boolean,
-    request: { actorPeerId?: string },
+    request: RequestOptions,
     warnings: PluginNotice[],
   ): Promise<DoctorCapability> {
     const memo = await readPluginMemo<ContextFaceMemo>('context-face.json', this.options.localState)
@@ -370,7 +376,7 @@ export class DoctorService {
     return { state: 'unknown', detail }
   }
 
-  private async rulesCapability(probe: boolean, request: { actorPeerId?: string }): Promise<DoctorCapability> {
+  private async rulesCapability(probe: boolean, request: RequestOptions): Promise<DoctorCapability> {
     if (!probe) return { state: 'unknown', detail: null }
     const reply = await this.options.api.rulesSearch(
       'OpenViking plugin doctor: check whether the Rule search capability is available.',
@@ -383,7 +389,7 @@ export class DoctorService {
     return { state: 'unavailable', detail: reply.error ?? `HTTP ${reply.status}` }
   }
 
-  private async fsCapability(probe: boolean, request: { actorPeerId?: string }): Promise<DoctorCapability> {
+  private async fsCapability(probe: boolean, request: RequestOptions): Promise<DoctorCapability> {
     if (!probe) return { state: 'unknown', detail: null }
     const reply = await this.options.api.fsStat('viking://~', { ...request, timeoutMs: 5000 })
     if (reply.ok) {

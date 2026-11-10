@@ -30,7 +30,8 @@
  * live through `ctx.configForms`, so saving one immediately mounts or unmounts
  * the surface without a reload. The one exception is `enableCommands`: its
  * effect is host-side (the `/viking` command registry), so the host half watches
- * the same value and registers/unregisters the command.
+ * the same value and registers/unregisters the command — on the next plugin
+ * apply, and live where the Loader emits `loader/volatile-update`.
  */
 import { useCallback, useState } from 'react'
 import type { PluginConfigViewProps } from '@deepseek-ai/dsh-client-ui-plugin-manager/client'

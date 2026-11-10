@@ -162,7 +162,13 @@ export async function readReadOnlyJsonBody(
   },
   cap = READ_ONLY_JSON_BODY_MAX,
 ): Promise<JsonBodyResult> {
-  if (!isJsonContentType(request.headers?.['content-type'])) return { ok: false, error: 'content-type' }
+  if (!isJsonContentType(request.headers?.['content-type'])) {
+    // Drain the refused body, exactly like the too-large branch below: a route
+    // that answers 415 without reading can look like a connection reset to a
+    // client still sending a large non-JSON payload.
+    request.resume?.()
+    return { ok: false, error: 'content-type' }
+  }
   const declared = request.headers?.['content-length']
   const declaredLength = typeof declared === 'string' ? Number(declared) : NaN
   if (Number.isFinite(declaredLength) && declaredLength > cap) return { ok: false, error: 'too-large' }

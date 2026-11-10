@@ -111,9 +111,9 @@ The Studio panel, the sidebar row that opens it, and the commit pill below the c
 
 ![The viking:// preview tab](assets/v04-after-preview.png)
 
-**Open any `viking://` URI.** Every URI the plugin shows is a link now — recall
-rows, the explanation card, the commit diff, and the Explore rows. Clicking one
-opens the *Preview* tab in the right sidebar (or re-targets the preview that is
+**Open any `viking://` URI.** Every URI in the plugin's detail views is a link
+now — the loaded recall-row detail, the explanation card, the commit diff rows,
+and the Explore results. Clicking one opens the *Preview* tab in the right sidebar (or re-targets the preview that is
 already open) with the entry's metadata — name, file or directory, context and
 memory type, category, size, modified time, lock, tags — and the server's three
 read tiers: L0 abstract, L1 overview and L2 full text, each with its availability
@@ -153,7 +153,7 @@ search, so there is no toggle.
 | | |
 | --- | --- |
 | DSH | 0.2.0-rc.2 or newer (desktop or web profile; verified on 0.2.0-rc.2, 0.2.1-rc.5 and 0.2.2-rc.1) |
-| OpenViking | A local server; 0.5.1.1–0.5.3 tested (0.5.3 with the context face). Preview, search, skills and Experience work on 0.5.1.1+; **Rules need 0.5.3+**. Studio is served at `/studio/` on the same port |
+| OpenViking | A local server; 0.5.1.1–0.5.3 tested (0.5.3 with the context face). Preview, search and skills work on 0.5.1.1+; the Experience routes are present in the same releases and verified on 0.5.3; **Rules need 0.5.3+**. Studio is served at `/studio/` on the same port |
 | Memory plugin | `@openviking/dsh-memory-plugin` recommended — it is what commits sessions. Without it the panel still works, but pending-token thresholds are unknown |
 
 ## Install
@@ -301,10 +301,11 @@ half only after an app restart.
   this plugin's copy too; anything else falls back to English.
 - OpenViking cleans up its commit task records over time, so the failure list
   covers recent commits only. The archives themselves are permanent.
-- The plugin's internal routes answer loopback requests only, and only from the
-  DSH window's own origin. The only POST routes are the read-only search and
-  rule-tester queries, and they additionally require a JSON body of at most
-  64 KiB.
+- The plugin's internal read routes answer loopback requests only; the fence
+  checks the socket, the `Host` header and same-origin headers, and an
+  `Origin`-less local `curl` is deliberately admitted. The only POST routes are
+  the read-only search and rule-tester queries, and they additionally require a
+  JSON body of at most 64 KiB.
 - **v0.4 is read-only.** No route or command writes to OpenViking: there is no
   commit, remember, forget, curate or capture-control action. Those are planned
   for v0.5 and will need an explicit confirmation, a dry run and an audit trail

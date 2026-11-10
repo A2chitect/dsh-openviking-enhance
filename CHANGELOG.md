@@ -68,8 +68,8 @@ rules, skills and Experience. Nothing in this version writes to OpenViking.
   with the invariants every version keeps.
 - New unit coverage for the preview/search/catalog/command services, the
   read-only POST fence, the rule-frontmatter parser, the new switches and the
-  new copy, and expanded browser-smoke checks for the new seats and the command
-  surface.
+  new copy, and expanded browser-smoke checks for the new seats and the
+  `enableCommands` switch.
 
 ### Changed
 
@@ -98,7 +98,9 @@ rules, skills and Experience. Nothing in this version writes to OpenViking.
   taken in the same scratch DSH 0.2.2-rc.1 web profile against the stand-in
   server in `scripts/screenshot-fixture.mjs` (now covering the v0.4 endpoints)
   and a mock model, at 1440x900 @2x in the light theme, with invented content
-  only.
+  only. The live "0 Experiences" check proves an empty state on 0.5.3; the
+  experience path itself is asserted from the server source and fixture, not
+  from a non-empty live store.
 
 
 ## 0.3.0 — 2026-11-09

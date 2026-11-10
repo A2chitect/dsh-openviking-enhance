@@ -48,7 +48,8 @@ export interface VikingCommandInvocation {
   /** The Agent whose UI received the command; its id IS the DSH session id. */
   readonly agent?: { readonly id?: unknown } | undefined
   readonly rawInput?: unknown
-  readonly signal?: { readonly aborted?: boolean } | undefined
+  /** The dispatching UI request's cancellation signal, threaded into every API call. */
+  readonly signal?: AbortSignal | undefined
 }
 
 /** The registry definition this module contributes (structurally, no new dependency). */
@@ -130,6 +131,41 @@ export interface VikingCommandOptions {
   now?: () => number
 }
 
+/** Thrown when the dispatching request is cancelled; mapped to one short outcome. */
+class CommandCancelled extends Error {
+  constructor() {
+    super('cancelled')
+    this.name = 'CommandCancelled'
+  }
+}
+
+/** The one error result for a cancelled command, never a partial answer. */
+const CANCELLED: VikingCommandResult = { kind: 'error', text: 'Cancelled.' }
+
+/** Stop between awaits when the UI request that dispatched the command is gone. */
+function throwIfCancelled(signal: AbortSignal | undefined): void {
+  if (signal?.aborted === true) throw new CommandCancelled()
+}
+
+/**
+ * Short English for the stable error codes the browser half also translates
+ * (`error.notFound`, …). The host has no locale service, but a command result
+ * is read by a person: it must not print a bare code like `not-found` when a
+ * sentence is available. Server messages and unknown codes pass through as-is.
+ */
+const COMMAND_ERROR_TEXT: Record<string, string> = {
+  'not-found': 'OpenViking has no such entry.',
+  'not-a-viking-path': 'Only viking:// paths can be previewed.',
+  'invalid-experience-uri': 'That is not an Experience file path.',
+  'query-required': 'Type something to search for.',
+  'task-context-required': 'Describe the task first.',
+}
+
+/** Render a stable error code (or a server message) as command text. */
+export function commandErrorText(error: string): string {
+  return COMMAND_ERROR_TEXT[error.trim()] ?? error
+}
+
 /** First line of a possibly multi-line server text, bounded. */
 function firstLine(text: string, max = 160): string {
   const line = text.split(/\r?\n/).find((candidate) => candidate.trim().length > 0)?.trim() ?? ''
@@ -170,33 +206,44 @@ export class VikingCommand {
     this.options = options
   }
 
-  /** Execute one command line. Never throws: every failure is an error text. */
-  async run(rawInput: string, sessionId: string): Promise<VikingCommandResult> {
+  /**
+   * Execute one command line. Never throws: every failure is an error text.
+   *
+   * `signal` is the dispatching UI request's cancellation. It is checked between
+   * every await and threaded into the recall/doctor/preview services (whose API
+   * requests abort with it), so a cancelled `/viking recall` stops instead of
+   * holding a 12–20 s retrieval open to completion.
+   */
+  async run(rawInput: string, sessionId: string, signal?: AbortSignal): Promise<VikingCommandResult> {
     const parsed = parseVikingCommand(rawInput)
     try {
+      throwIfCancelled(signal)
       switch (parsed.subcommand) {
         case 'status':
-          return { kind: 'success', text: await this.status(sessionId) }
+          return { kind: 'success', text: await this.status(sessionId, signal) }
         case 'doctor':
-          return { kind: 'success', text: await this.doctor(sessionId) }
+          return { kind: 'success', text: await this.doctor(sessionId, signal) }
         case 'recall':
-          return await this.recall(sessionId, parsed.argument)
+          return await this.recall(sessionId, parsed.argument, signal)
         case 'open':
-          return await this.open(parsed.argument)
+          return await this.open(parsed.argument, signal)
         case 'help':
           return { kind: 'success', text: VIKING_USAGE }
         default:
           return { kind: 'error', text: `Unknown /viking command.\n${VIKING_USAGE}` }
       }
     } catch (error) {
-      return { kind: 'error', text: error instanceof Error ? error.message : String(error) }
+      if (error instanceof CommandCancelled || signal?.aborted === true) return CANCELLED
+      return { kind: 'error', text: commandErrorText(error instanceof Error ? error.message : String(error)) }
     }
   }
 
   /** The one-screen status: where, as whom, what is mounted, what is pending. */
-  private async status(sessionId: string): Promise<string> {
+  private async status(sessionId: string, signal?: AbortSignal): Promise<string> {
     const { connection, commit, api, memoryPluginVersion, dshVersion } = this.options
-    const health = await api.health()
+    throwIfCancelled(signal)
+    const health = await api.health(signal === undefined ? {} : { signal })
+    throwIfCancelled(signal)
     const lines: string[] = []
     lines.push(
       `OpenViking ${health.version ?? '?'} · ${health.ok ? 'healthy' : 'unreachable'} · ${connection.endpoint}`,
@@ -215,6 +262,7 @@ export class VikingCommand {
 
     try {
       const status = await commit.status(sessionId)
+      throwIfCancelled(signal)
       const threshold = status.threshold === null ? '?' : String(status.threshold)
       lines.push(
         `Session ${sessionId}: ${status.pendingTokens} pending tokens (threshold ${threshold}) · ` +
@@ -232,8 +280,13 @@ export class VikingCommand {
   }
 
   /** The Doctor report as short lines; hints are left to the panel. */
-  private async doctor(sessionId: string): Promise<string> {
-    const report = await this.options.doctor.report(sessionId, { probe: false })
+  private async doctor(sessionId: string, signal?: AbortSignal): Promise<string> {
+    throwIfCancelled(signal)
+    const report = await this.options.doctor.report(
+      sessionId,
+      signal === undefined ? { probe: false } : { probe: false, signal },
+    )
+    throwIfCancelled(signal)
     const lines: string[] = [
       `Doctor · ${report.connection.endpoint} · server ${report.health.version ?? '?'} · ` +
         `${report.health.healthy ? 'healthy' : 'unreachable'}`,
@@ -249,10 +302,21 @@ export class VikingCommand {
   }
 
   /** Run the session's recall and print the ranked hits, one line each. */
-  private async recall(sessionId: string, argument: string): Promise<VikingCommandResult> {
+  private async recall(
+    sessionId: string,
+    argument: string,
+    signal?: AbortSignal,
+  ): Promise<VikingCommandResult> {
     const query = argument.trim()
     if (query.length === 0) return { kind: 'error', text: 'Usage: /viking recall <query>' }
-    const payload = await this.options.recall.recall(sessionId, query, RECALL_DEFAULT_LIMIT)
+    throwIfCancelled(signal)
+    const payload = await this.options.recall.recall(
+      sessionId,
+      query,
+      RECALL_DEFAULT_LIMIT,
+      signal === undefined ? {} : { signal },
+    )
+    throwIfCancelled(signal)
     const lines: string[] = [
       `Recall “${clip(query, 80)}” · ${payload.total} hits · ${payload.latencyMs} ms`,
     ]
@@ -269,12 +333,14 @@ export class VikingCommand {
   }
 
   /** Stat and L0/L1 for one entry; the body is the preview tab's job. */
-  private async open(argument: string): Promise<VikingCommandResult> {
+  private async open(argument: string, signal?: AbortSignal): Promise<VikingCommandResult> {
     const uri = vikingUriArgument(argument)
     if (uri === null) {
       return { kind: 'error', text: 'Usage: /viking open <viking://…>' }
     }
-    const preview = await this.options.preview.preview(uri)
+    throwIfCancelled(signal)
+    const preview = await this.options.preview.preview(uri, signal === undefined ? {} : { signal })
+    throwIfCancelled(signal)
     const stat = preview.stat
     const lines: string[] = [uri]
     if (stat !== null) {
@@ -307,13 +373,16 @@ export function vikingCommandDefinition(runner: VikingCommand): VikingCommandDef
     description: 'Inspect OpenViking: status, doctor, recall and URI preview (read-only)',
     input: { hint: 'status | doctor | recall <query> | open <viking://…> | help' },
     handler: async (invocation) => {
-      if (invocation.signal?.aborted === true) return { kind: 'error', text: 'Cancelled.' }
+      if (invocation.signal?.aborted === true) return CANCELLED
       const sessionId = typeof invocation.agent?.id === 'string' ? invocation.agent.id : ''
       if (sessionId.length === 0) {
         return { kind: 'error', text: 'Cannot determine the DSH session id for this command.' }
       }
       const rawInput = typeof invocation.rawInput === 'string' ? invocation.rawInput : ''
-      return runner.run(rawInput, sessionId)
+      // The registry settles a cancelled handler as an error; threading the
+      // signal means the underlying retrieval aborts too instead of finishing
+      // in the background.
+      return runner.run(rawInput, sessionId, invocation.signal)
     },
   }
 }

@@ -24,6 +24,7 @@ import {
   normalizeRuleStatus,
   ruleFactsFromDocument,
 } from '../src/host/rule-format.ts'
+import { OpenVikingApi } from '../src/host/openviking-api.ts'
 import {
   PreviewFailure,
   PreviewService,
@@ -48,6 +49,7 @@ import {
 import {
   VIKING_USAGE,
   VikingCommand,
+  commandErrorText,
   doctorMarker,
   parseVikingCommand,
   vikingCommandDefinition,
@@ -242,6 +244,108 @@ test('the rule-document parser reads scalar, quoted and block frontmatter', () =
   assert.match(parsed.body, /Add a LICENSE file\./)
 })
 
+/** The server's own serialization, reproduced from PyYAML defaults. */
+// OpenViking writes rule files with `yaml.safe_dump(meta, allow_unicode=True,
+// sort_keys=False, default_flow_style=False)` and PyYAML folds any scalar past
+// `width=80` onto indented continuation lines. Reproduced here with the
+// installed server's Python (see the review's B1 evidence) — this is the exact
+// shape that used to be silently truncated.
+const WRAPPED_PYYAML_RULE = [
+  '---',
+  'schema: openviking.rule/v1',
+  'atomic_id: project-license',
+  'revision: 2',
+  'status: active',
+  'scenario_id: repository-license',
+  'source_uris:',
+  '- viking://user/default/resources/LICENSE.md',
+  'evidence: []',
+  "updated_at: '2026-11-09T08:00:00+00:00'",
+  'name: Run the test suite before reporting done',
+  'confidence: user',
+  'description: A long description that certainly exceeds the eighty character default',
+  '  width and therefore wraps onto a continuation line.',
+  'content: Run the full test suite before reporting a change as complete, unless the',
+  '  change is documentation-only.',
+  'applies_when: The task modifies source code or configuration, and the change will',
+  '  be reported to another person as complete.',
+  "exception: ''",
+  '---',
+  '',
+  '# Project license',
+  '',
+  'Add a LICENSE file.',
+].join('\n')
+
+test('wrapped PyYAML plain scalars are folded back instead of truncated', () => {
+  const parsed = parseRuleDocument(WRAPPED_PYYAML_RULE)
+  // The exact evidence from the review: the old parser stopped at the fold.
+  assert.equal(
+    parsed.fields.content,
+    'Run the full test suite before reporting a change as complete, unless the change is documentation-only.',
+  )
+  assert.equal(
+    parsed.fields.description,
+    'A long description that certainly exceeds the eighty character default width and therefore wraps onto a continuation line.',
+  )
+  assert.equal(
+    parsed.fields.applies_when,
+    'The task modifies source code or configuration, and the change will be reported to another person as complete.',
+  )
+  assert.equal(parsed.fields.exception, '')
+  // A folded continuation must not swallow the following fields.
+  assert.equal(parsed.fields.name, 'Run the test suite before reporting done')
+  assert.equal(parsed.fields.status, 'active')
+  // The sequence is still skipped, not merged into the scalar above it.
+  assert.equal(parsed.fields.source_uris, '')
+  assert.equal(parsed.fields.evidence, '[]')
+  assert.match(parsed.body, /Add a LICENSE file\./)
+
+  const facts = ruleFactsFromDocument(
+    'viking://user/default/memories/rules/repository-license/project-license.md',
+    WRAPPED_PYYAML_RULE,
+  )
+  assert.equal(
+    facts.constraint,
+    'Run the full test suite before reporting a change as complete, unless the change is documentation-only.',
+    'the requirement the user sees is the full sentence, not the first 80 columns',
+  )
+  assert.match(facts.appliesWhen, /reported to another person as complete\.$/)
+  assert.equal(facts.name, 'Run the test suite before reporting done')
+})
+
+test('folded single- and double-quoted scalars are re-joined by YAML rules', () => {
+  // PyYAML chooses single quotes for a value containing `: ` / `#`; the closing
+  // quote lands on the continuation line.
+  const singleQuoted = [
+    '---',
+    "content: 'He said: \"Run the full test suite before reporting a change as complete,",
+    '  then report it.\"\'',
+    '---',
+  ].join('\n')
+  assert.equal(
+    parseRuleDocument(singleQuoted).fields.content,
+    'He said: "Run the full test suite before reporting a change as complete, then report it."',
+  )
+
+  // A tab forces double-quote style. PyYAML wraps it with an ESCAPED line break
+  // (`\` at EOL + `\ ` at the start of the continuation): no folded space, and
+  // `\t` is the tab escape.
+  const doubleQuoted = [
+    '---',
+    'content: "Run\\tthe full test suite before reporting a change as complete, then report\\',
+    '  \\ it."',
+    '---',
+  ].join('\n')
+  assert.equal(
+    parseRuleDocument(doubleQuoted).fields.content,
+    'Run\tthe full test suite before reporting a change as complete, then report it.',
+  )
+
+  // A single-line double-quoted scalar still decodes its escapes.
+  assert.equal(parseRuleDocument('---\ncontent: "line\\nbreak"\n---\n').fields.content, 'line\nbreak')
+})
+
 test('the rule-document parser tolerates quotes, CRLF, folded blocks and no frontmatter', () => {
   const quoted = parseRuleDocument("---\nname: \"Quoted name\"\nexception: 'single quoted'\n---\nbody")
   assert.equal(quoted.fields.name, 'Quoted name')
@@ -391,6 +495,38 @@ test('readReadOnlyJsonBody refuses the wrong content type, a large body or bad J
     await readReadOnlyJsonBody(postRequest({ body: '', headers: { 'content-type': 'application/json' } })),
     { ok: false, error: 'invalid-json' },
   )
+})
+
+test('a caller signal aborts the in-flight OpenViking request', async () => {
+  // This is the transport end of S3: the command's signal must reach the fetch,
+  // not just be checked between awaits, so a cancelled retrieval stops spending
+  // server time immediately.
+  const original = globalThis.fetch
+  const controller = new AbortController()
+  let fetchSignal
+  globalThis.fetch = (_url, init) =>
+    new Promise((_resolve, reject) => {
+      fetchSignal = init.signal
+      const onAbort = () => reject(new Error('The operation was aborted.'))
+      init.signal.addEventListener('abort', onAbort, { once: true })
+      if (init.signal.aborted) onAbort()
+      else controller.abort()
+    })
+  try {
+    const api = new OpenVikingApi({
+      endpoint: 'http://127.0.0.1:1933',
+      apiKey: '',
+      account: 'default',
+      user: 'default',
+    })
+    const answer = await api.health({ signal: controller.signal })
+    assert.equal(fetchSignal?.aborted, true, 'the caller cancellation reaches the fetch signal')
+    assert.equal(answer.ok, false)
+    assert.equal(answer.version, null)
+    assert.match(String(answer.error), /abort/i, 'the aborted fetch is reported, not thrown')
+  } finally {
+    globalThis.fetch = original
+  }
 })
 
 /* ========================================================================
@@ -767,6 +903,48 @@ test('the rules list reads scenario folders and parses each rule file', async ()
   assert.deepEqual(list.scenarios, [{ id: 'repository-license', name: 'Repository license', ruleCount: 1 }])
   // Index files are not rules.
   assert.equal(seenReads.filter((uri) => uri.endsWith('abstract.md')).length, 1)
+})
+
+test('a failed scenario abstract read is recorded as a warning, not swallowed', async () => {
+  const root = 'viking://~/memories/rules'
+  const scenario = `${root}/repository-license`
+  const api = fakeApi({
+    listDirectory: async (uri) => {
+      if (uri === root) return ok([{ uri: scenario, isDir: true }])
+      if (uri === scenario) return ok([{ uri: `${scenario}/project-license.md`, isDir: false }])
+      return ok([])
+    },
+    readText: async (uri) => {
+      if (uri.endsWith('abstract.md')) return fail(500, 'backend exploded')
+      return ok(RULE_MARKDOWN)
+    },
+  })
+  const list = await new CatalogService({ api }).listRules()
+  assert.equal(list.rules.length, 1, 'the rule file itself still lists')
+  assert.deepEqual(list.scenarios, [{ id: 'repository-license', name: 'repository-license', ruleCount: 1 }])
+  assert.deepEqual(list.warnings.map((warning) => warning.code), ['ruleScenarioUnreadable'])
+  assert.match(String(list.warnings[0].params.uri), /repository-license\/abstract\.md$/)
+})
+
+test('a wrong-content-type POST drains its body before the clean 415 answer', async () => {
+  let resumed = false
+  let consumed = 0
+  const request = {
+    headers: { 'content-type': 'text/plain', 'content-length': '900000' },
+    resume() {
+      resumed = true
+    },
+    async *[Symbol.asyncIterator]() {
+      for (let index = 0; index < 4; index += 1) {
+        consumed += 1
+        yield Buffer.from('x'.repeat(1024))
+      }
+    },
+  }
+  const answer = await readReadOnlyJsonBody(request, 64)
+  assert.deepEqual(answer, { ok: false, error: 'content-type' })
+  assert.equal(resumed, true, 'the refused body is drained so the client sees a 415, not a reset')
+  assert.equal(consumed, 0, 'the body is refused before any of it is parsed')
 })
 
 test('the rule tester parses matched rules and reports the delivery', async () => {
@@ -1196,7 +1374,7 @@ test('open reports a missing entry as an error result instead of throwing', asyn
   })
   const result = await runner.run('open viking://user/default/memories/nope.md', 'session-1')
   assert.equal(result.kind, 'error')
-  assert.match(result.text, /not-found/)
+  assert.equal(result.text, 'OpenViking has no such entry.', 'the raw code is rendered as a sentence')
 })
 
 test('help and an unknown verb render the usage', async () => {
@@ -1232,6 +1410,95 @@ test('the registry definition takes the session id from invocation.agent.id', as
   const aborted = await definition.handler({ agent: { id: 's' }, rawInput: 'status', signal: { aborted: true } })
   assert.equal(aborted.kind, 'error')
   assert.match(aborted.text, /Cancelled/)
+})
+
+test('the /viking command threads cancellation into every long verb', async () => {
+  // The signal reaches the service it may be spent in, and the command returns
+  // ONE cancellation result instead of a partial answer.
+  const recallController = new AbortController()
+  const recallSignals = []
+  const recallRun = commandDeps({
+    recall: {
+      recall: async (sessionId, query, limit, options) => {
+        recallSignals.push(options?.signal)
+        recallController.abort()
+        return {
+          sessionId,
+          ovSessionId: `dsh-${sessionId}`,
+          sessionUri: null,
+          peer: null,
+          query: { text: query, source: 'manual' },
+          buckets: [],
+          plan: null,
+          targets: [],
+          total: 0,
+          latencyMs: 1,
+          searchedAt: '2026-11-01T00:00:00Z',
+          warnings: [],
+        }
+      },
+    },
+  })
+  const recalled = await recallRun.runner.run('recall anything', 'session-1', recallController.signal)
+  assert.deepEqual(recalled, { kind: 'error', text: 'Cancelled.' })
+  assert.equal(recallSignals[0], recallController.signal, 'recall receives the caller signal')
+
+  // doctor: abort during the report; the result must not be printed.
+  const doctorController = new AbortController()
+  const doctorSignals = []
+  const doctorRun = commandDeps({
+    doctor: {
+      report: async (_sessionId, options) => {
+        doctorSignals.push(options.signal)
+        doctorController.abort()
+        return {}
+      },
+    },
+  })
+  const doctored = await doctorRun.runner.run('doctor', 'session-1', doctorController.signal)
+  assert.deepEqual(doctored, { kind: 'error', text: 'Cancelled.' })
+  assert.equal(doctorSignals[0], doctorController.signal, 'doctor receives the caller signal')
+
+  // open: abort during the preview read.
+  const openController = new AbortController()
+  const openSignals = []
+  const openRun = commandDeps({
+    preview: {
+      preview: async (_uri, options) => {
+        openSignals.push(options.signal)
+        openController.abort()
+        return {}
+      },
+    },
+  })
+  const opened = await openRun.runner.run('open viking://user/default/memories/x.md', 'session-1', openController.signal)
+  assert.deepEqual(opened, { kind: 'error', text: 'Cancelled.' })
+  assert.equal(openSignals[0], openController.signal, 'preview receives the caller signal')
+})
+
+test('a command cancelled before it starts makes no request at all', async () => {
+  const controller = new AbortController()
+  controller.abort()
+  const { runner, calls } = commandDeps()
+  for (const rawInput of ['status', 'doctor', 'recall something', 'open viking://user/default/memories/x.md']) {
+    const result = await runner.run(rawInput, 'session-1', controller.signal)
+    assert.deepEqual(result, { kind: 'error', text: 'Cancelled.' })
+  }
+  assert.deepEqual(calls, [], 'nothing was asked of the server')
+
+  // The registry handler passes its own signal through too.
+  const definition = vikingCommandDefinition(runner)
+  const handlerResult = await definition.handler({ agent: { id: 'session-1' }, rawInput: ' status', signal: controller.signal })
+  assert.deepEqual(handlerResult, { kind: 'error', text: 'Cancelled.' })
+})
+
+test('host error codes are rendered as sentences for command output', () => {
+  assert.equal(commandErrorText('not-found'), 'OpenViking has no such entry.')
+  assert.equal(commandErrorText('not-a-viking-path'), 'Only viking:// paths can be previewed.')
+  assert.equal(commandErrorText('invalid-experience-uri'), 'That is not an Experience file path.')
+  // Server messages and unknown codes are diagnostics and pass through.
+  assert.equal(commandErrorText('HTTP 500'), 'HTTP 500')
+  assert.equal(commandErrorText('something the server said'), 'something the server said')
 })
 
 /* ========================================================================
@@ -1390,7 +1657,7 @@ test('the command is registered optionally and lives behind enableCommands', asy
   const result = await registry.definitions[0].handler({
     agent: { id: 'session-1' },
     rawInput: ' status',
-    signal: { aborted: false },
+    signal: new AbortController().signal,
   })
   assert.equal(result.kind, 'success')
   assert.match(result.text, new RegExp(DEAD_ENDPOINT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
@@ -1431,6 +1698,43 @@ test('the enableCommands switch is applied again when the settings save re-appli
   const off = commandRegistry()
   apply(hostContext({ commands: off }).context, Config({ endpoint: DEAD_ENDPOINT, enableCommands: false }))
   assert.equal(off.definitions.length, 0)
+})
+
+test('a volumetric config save toggles the command live through loader/volatile-update', () => {
+  // The Loader emits `loader/volatile-update` for a volatile-only save
+  // (cordis-plugin-loader does). The host half must hear it and register or
+  // unregister the command in place — no duplicate definition, no dead handler.
+  let enabled = true
+  const config = { enableCommands: { get: () => enabled } }
+  const registry = commandRegistry()
+  const { context, state } = hostContext({ commands: registry })
+  apply(context, config)
+  assert.equal(registry.definitions.length, 1, 'the command starts registered')
+
+  const fire = state.listeners.get('loader/volatile-update')
+  assert.equal(typeof fire, 'function', 'the plugin listens for volatile-only config saves')
+
+  enabled = false
+  fire()
+  assert.equal(registry.definitions.length, 0, 'turning the switch off unregisters live')
+
+  enabled = true
+  fire()
+  assert.equal(registry.definitions.length, 1, 'turning it back on registers live')
+
+  fire()
+  assert.equal(registry.definitions.length, 1, 'an unchanged answer does not duplicate the command')
+
+  // The same path starting from off: nothing at activation, registered on the
+  // first live update that enables it.
+  let offEnabled = false
+  const offRegistry = commandRegistry()
+  const offHost = hostContext({ commands: offRegistry })
+  apply(offHost.context, { enableCommands: { get: () => offEnabled } })
+  assert.equal(offRegistry.definitions.length, 0)
+  offEnabled = true
+  offHost.state.listeners.get('loader/volatile-update')()
+  assert.equal(offRegistry.definitions.length, 1)
 })
 
 test('the plugin no longer throws when the command registration fails at activation', () => {

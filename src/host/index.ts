@@ -39,7 +39,7 @@ import { RecallService } from './recall-service.ts'
 import { SessionLogService } from './session-log.ts'
 import { DoctorService } from './doctor-service.ts'
 import { readMemoryPluginVersion } from './local-state.ts'
-import { CatalogService, clampExperienceLimit, normalizeExperienceKind } from './catalog-service.ts'
+import { CatalogService, normalizeExperienceKind } from './catalog-service.ts'
 import { PreviewFailure, PreviewService } from './preview-service.ts'
 import { SearchService } from './search-service.ts'
 import {
@@ -106,9 +106,12 @@ export const Config = z.object({
    * Host-side switch: register the read-only `/viking` command.
    *
    * Unlike the `show*` fields this one is read by the host half (the command
-   * registry is a host service): a change is applied live through the Loader's
-   * `loader/volatile-update` event, so turning it off unregisters the command
-   * without a restart. It is still `.volatile()` so the same form persists it.
+   * registry is a host service). It always applies on the next plugin apply —
+   * the same save/reload path every switch uses — and it ALSO applies live when
+   * the Loader emits `loader/volatile-update` for a volatile-field save
+   * (`@deepseek-ai/cordis-plugin-loader` does). An older Loader without that
+   * event falls back to the apply/restart path; both are the same switch, no
+   * third behaviour. It is `.volatile()` so the settings form persists it.
    */
   enableCommands: z.boolean().default(true).volatile(),
 })
@@ -792,8 +795,10 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
    *     simply has no `/viking` — reaching for `ctx.commands` directly would
    *     throw at activation;
    *  2. the `enableCommands` switch is applied in both directions: off at
-   *     startup never registers, and a settings save is heard through the
-   *     Loader's `loader/volatile-update` event to register/unregister live.
+   *     startup never registers. A settings save is applied again on the next
+   *     plugin apply (the normal save/reload path), and additionally takes
+   *     effect live when the Loader emits `loader/volatile-update`; an older
+   *     Loader that emits no such event simply uses the apply/restart path.
    *
    * Any failure here is logged and contained: commands are a convenience, and
    * losing them must not lose the read-only UI.

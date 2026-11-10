@@ -67,8 +67,6 @@ export const EXPERIENCES_PATH = '/memories/experiences/'
 /** Caps one catalogue read. */
 export const RULES_MAX_SCENARIOS = 20
 export const RULES_MAX_RULES = 100
-/** Bound one route's rule-search task context (the server accepts 64000). */
-export const EXPERIENCE_URI_MAX = 4096
 
 export interface CatalogServiceOptions {
   api: OpenVikingApi
@@ -450,7 +448,13 @@ export class CatalogService {
     const abstractUri = `${uri.replace(/\/+$/, '')}/abstract.md`
     const reply = await this.options.api.readText(abstractUri)
     if (!reply.ok || reply.result === null) {
-      // A scenario without metadata is still a scenario; its id is the name.
+      // A scenario without metadata is still a scenario — its id becomes the
+      // name — but the failed read is recorded like every other catalogue read
+      // failure, so the panel can say the name may be missing.
+      warnings.push({
+        code: 'ruleScenarioUnreadable',
+        params: { uri: abstractUri, error: reply.error ?? `HTTP ${reply.status}` },
+      })
       return parseScenarioMeta(scenarioId, '')
     }
     return parseScenarioMeta(scenarioId, reply.result)

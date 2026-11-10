@@ -28,6 +28,24 @@
  * read-only tester, and a server-side format addition must not blank the whole
  * panel. Unparseable frontmatter degrades to "the whole text is the body", and
  * unknown keys are ignored rather than validated.
+ *
+ * ## Folded scalars are the normal case, not an edge case
+ *
+ * The server serializes this block with
+ * `yaml.safe_dump(..., all_unicode=True, sort_keys=False, default_flow_style=False)`
+ * (`openviking/service/rule_service.py::_render_markdown`), and PyYAML folds any
+ * scalar longer than its default `width=80` onto continuation lines:
+ *
+ *   content: Run the full test suite before reporting a change as complete, unless the
+ *     change is documentation-only.
+ *
+ * Every English rule longer than 80 characters therefore arrives wrapped. A
+ * continuation line is indented, is not a `key: value` line, and is part of the
+ * scalar that started above it; dropping it silently truncates the requirement,
+ * `applies_when`, `exception` and `description`. The parser below folds those
+ * lines back with a single space, for all three scalar styles PyYAML can emit
+ * for such a value: plain, single-quoted and double-quoted (a quoted scalar's
+ * closing quote may land on the last continuation line).
  */
 
 /** One frontmatter block: scalar fields plus the Markdown body after it. */
@@ -59,13 +77,85 @@ function keyValue(line: string): { key: string; value: string } | null {
 }
 
 /**
+ * Whether a quoted scalar ends on this piece of text.
+ *
+ * For a double-quoted scalar a quote preceded by an odd number of backslashes
+ * is escaped and does not close it. A single-quoted scalar is closed by its last
+ * `'` (an embedded quote is written as `''`, so the final character is still the
+ * delimiter).
+ */
+function closesQuoted(text: string, quote: '"' | "'"): boolean {
+  if (!text.trimEnd().endsWith(quote)) return false
+  if (quote === "'") return true
+  const trimmed = text.trimEnd()
+  let backslashes = 0
+  for (let index = trimmed.length - 2; index >= 0 && trimmed[index] === '\\'; index -= 1) backslashes += 1
+  return backslashes % 2 === 0
+}
+
+/** How many backslashes a string ends with (an odd count escapes the line break). */
+function trailingBackslashes(text: string): number {
+  let count = 0
+  for (let index = text.length - 1; index >= 0 && text[index] === '\\'; index -= 1) count += 1
+  return count
+}
+
+/** Decode the escape sequences PyYAML emits inside a double-quoted scalar. */
+function decodeDoubleQuoted(value: string): string {
+  let out = ''
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index]
+    if (char !== '\\') {
+      out += char
+      continue
+    }
+    const next = value[index + 1]
+    index += 1
+    switch (next) {
+      case 'n':
+        out += '\n'
+        break
+      case 't':
+        out += '\t'
+        break
+      case 'r':
+        out += '\r'
+        break
+      case '"':
+        out += '"'
+        break
+      case '\\':
+        out += '\\'
+        break
+      case ' ':
+        out += ' '
+        break
+      case undefined:
+        out += '\\'
+        break
+      default:
+        // Unknown escape: keep it visible rather than swallowing the character.
+        out += `\\${next}`
+        break
+    }
+  }
+  return out
+}
+
+/**
  * Parse a frontmatter document.
  *
  * Only the subset the Rule format uses is understood: scalar `key: value`
  * lines, quoted scalars, and the block scalars `|` / `>` (with the usual
- * `-`/`+` chomping spellings). Sequence values are skipped, because no field
- * this plugin reads is a list. Everything from the closing delimiter on is the
- * body, unmodified apart from one leading blank line.
+ * `-`/`+` chomping spellings). On top of those, a *folded* scalar — the style
+ * PyYAML writes for anything longer than 80 characters — is re-joined here:
+ * an indented line while no block scalar or quoted scalar is open continues
+ * the previous plain scalar with a single space, and a quoted scalar may span
+ * several lines up to its closing quote.
+ *
+ * Sequence values are skipped, because no field this plugin reads is a list.
+ * Everything from the closing delimiter on is the body, unmodified apart from
+ * one leading blank line.
  */
 export function parseRuleDocument(text: string): ParsedRuleDocument {
   const normalized = text.replace(/^\uFEFF/, '')
@@ -88,6 +178,25 @@ export function parseRuleDocument(text: string): ParsedRuleDocument {
   let blockKey: string | null = null
   let blockStyle: 'literal' | 'folded' = 'literal'
   let blockLines: string[] = []
+  /**
+   * The field a folded plain scalar is being appended to, when the previous
+   * `key: value` line's value was plain and may continue on indented lines.
+   */
+  let plainKey: string | null = null
+  /**
+   * An unterminated quoted scalar: its opening delimiter was on a `key:` line
+   * and its closing delimiter may be on a later continuation line.
+   */
+  let quoted:
+    | {
+        key: string
+        quote: '"' | "'"
+        /** The scalar split at each fold; `joins[i-1]` separates parts[i-1] and parts[i]. */
+        parts: string[]
+        /** One separator before each part after the first ('' for an escaped line break). */
+        joins: string[]
+      }
+    | null = null
 
   /** Commit the pending block scalar into its field. */
   const flushBlock = (): void => {
@@ -98,10 +207,28 @@ export function parseRuleDocument(text: string): ParsedRuleDocument {
     blockLines = []
   }
 
+  /** Commit an unterminated quoted scalar as far as it was read. */
+  const flushQuoted = (): void => {
+    if (quoted === null) return
+    let joined = quoted.parts[0] ?? ''
+    for (let index = 1; index < quoted.parts.length; index += 1) {
+      joined += (quoted.joins[index - 1] ?? ' ') + (quoted.parts[index] ?? '')
+    }
+    fields[quoted.key] = quoted.quote === '"' ? decodeDoubleQuoted(joined) : joined.replace(/''/g, "'")
+    quoted = null
+  }
+
+  /** A new mapping entry (or a blank/delimiter line) ends any folded scalar. */
+  const endFoldedScalar = (): void => {
+    flushQuoted()
+    plainKey = null
+  }
+
   for (let index = 1; index < close; index += 1) {
     const line = lines[index] ?? ''
     if (line.trim().length === 0) {
       if (blockKey !== null) blockLines.push('')
+      else endFoldedScalar()
       continue
     }
     const indented = /^\s/.test(line)
@@ -109,7 +236,36 @@ export function parseRuleDocument(text: string): ParsedRuleDocument {
       blockLines.push(line.replace(/^\s+/, ''))
       continue
     }
+    if (quoted !== null && indented) {
+      let piece = line.replace(/^\s+/, '')
+      const closed = closesQuoted(piece, quoted.quote)
+      if (closed) piece = piece.trimEnd().slice(0, -1)
+      // A double-quoted line ending in an odd number of backslashes continues on
+      // the next line with NO folded space (`\` at EOL is YAML's escaped line
+      // break); PyYAML emits exactly that when it wraps a double-quoted scalar.
+      let escapedBreak = false
+      if (quoted.quote === '"') {
+        const previous = quoted.parts[quoted.parts.length - 1] ?? ''
+        if (trailingBackslashes(previous) % 2 === 1) {
+          quoted.parts[quoted.parts.length - 1] = previous.slice(0, -1)
+          escapedBreak = true
+        }
+      }
+      quoted.joins.push(escapedBreak ? '' : ' ')
+      quoted.parts.push(piece)
+      if (closed) flushQuoted()
+      continue
+    }
+    if (indented && plainKey !== null) {
+      // PyYAML's width=80 folding: the continuation belongs to the previous
+      // plain scalar and a line break folds to one space.
+      const piece = line.replace(/^\s+/, '').trimEnd()
+      fields[plainKey] = `${fields[plainKey] ?? ''} ${piece}`.trim()
+      continue
+    }
+
     flushBlock()
+    endFoldedScalar()
 
     const entry = keyValue(line)
     if (entry === null) continue
@@ -127,9 +283,32 @@ export function parseRuleDocument(text: string): ParsedRuleDocument {
       fields[entry.key] = ''
       continue
     }
-    fields[entry.key] = unquote(raw)
+    const opensDouble = raw.startsWith('"') && !closesQuoted(raw, '"')
+    const opensSingle = raw.startsWith("'") && !closesQuoted(raw, "'")
+    if (opensDouble || opensSingle) {
+      // A quoted scalar can wrap too: its closing delimiter is on a later line.
+      quoted = {
+        key: entry.key,
+        quote: opensDouble ? '"' : "'",
+        parts: [raw.slice(1)],
+        joins: [],
+      }
+      continue
+    }
+    if (raw.startsWith('"')) {
+      fields[entry.key] = decodeDoubleQuoted(unquote(raw))
+      continue
+    }
+    if (raw.startsWith("'")) {
+      fields[entry.key] = unquote(raw).replace(/''/g, "'")
+      continue
+    }
+    // A plain scalar: remembered in case the next line continues it.
+    fields[entry.key] = raw
+    plainKey = entry.key
   }
   flushBlock()
+  flushQuoted()
 
   const body = lines
     .slice(close + 1)

@@ -372,7 +372,7 @@ const zh: Record<string, string> = {
   'config.showExplore': '探索 tab',
   'config.showExploreHint': '右侧栏的统一搜索、规则测试、技能目录与 Experience 浏览。',
   'config.enableCommands': '/viking 命令',
-  'config.enableCommandsHint': '注册只读的 /viking 命令（status、doctor、recall、open）。关闭后立即移除。',
+  'config.enableCommandsHint': '注册只读的 /viking 命令（status、doctor、recall、open）。保存后在下次插件应用时生效；Loader 支持时也可即时生效。',
 
   // ---- v0.4: URI 预览 ----------------------------------------------------
   'preview.tabTitle': '预览',
@@ -464,6 +464,7 @@ const zh: Record<string, string> = {
   'notice.attrsUnavailable': '元数据读取失败：{error}',
   'notice.ruleListFailed': '读取规则目录 {uri} 失败：{error}',
   'notice.ruleUnreadable': '读取规则文件 {uri} 失败：{error}',
+  'notice.ruleScenarioUnreadable': '读取规则场景 {uri} 失败，已用目录名代替场景名：{error}',
   'notice.rulesUnavailable': '规则检索不可用：{error}',
   'notice.keywordsUnavailable': '服务端不支持关键词检索，已退回语义检索：{error}',
   'error.notFound': 'OpenViking 里没有这个条目。',
@@ -820,7 +821,7 @@ const en: Record<string, string> = {
   'config.showExplore': 'Explore tab',
   'config.showExploreHint': 'The right-sidebar unified search, rule tester, skill catalogue and Experience browser.',
   'config.enableCommands': '/viking command',
-  'config.enableCommandsHint': 'Register the read-only /viking command (status, doctor, recall, open). Removing it takes effect live.',
+  'config.enableCommandsHint': 'Register the read-only /viking command (status, doctor, recall, open). Takes effect on the next plugin apply, or live when the Loader supports it.',
 
   // ---- v0.4: URI preview -------------------------------------------------
   'preview.tabTitle': 'Preview',
@@ -912,6 +913,7 @@ const en: Record<string, string> = {
   'notice.attrsUnavailable': 'Metadata could not be read: {error}',
   'notice.ruleListFailed': 'Listing the rules directory {uri} failed: {error}',
   'notice.ruleUnreadable': 'Reading rule file {uri} failed: {error}',
+  'notice.ruleScenarioUnreadable': 'Reading the rule scenario {uri} failed; the directory name is used instead: {error}',
   'notice.rulesUnavailable': 'Rule search is unavailable: {error}',
   'notice.keywordsUnavailable': 'Keyword search is not supported by this server; semantic search was used instead: {error}',
   'error.notFound': 'OpenViking has no such entry.',
