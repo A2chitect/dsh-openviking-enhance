@@ -181,6 +181,12 @@ export interface WriteServiceOptions {
   transport: () => boolean
   /** The actor peer for a DSH session, when the memory plugin knows it. */
   actorPeer?: (sessionId: string | undefined) => string | undefined
+  /**
+   * v0.9 review B3: whether this DSH session was last observed under another
+   * scope. A mismatched session must not be written to (no cross-scope writes),
+   * so prepare/execute/undo refuse with the stable `session-scope-mismatch` code.
+   */
+  sessionScopeMismatch?: (sessionId: string | undefined) => boolean
   /** Status sink for the client's "write in flight" guard. */
   onStateChange?: () => void
   /**
@@ -248,6 +254,45 @@ export class WriteService {
   }
 
   /**
+   * v0.9: how many confirmation tokens are pending or executing.
+   *
+   * The scope-switch guard reads this (plus the shared mutation gate): a switch
+   * is refused while any curation action is unresolved, and a token prepared
+   * under the previous identity stays visible but refuses with
+   * `identity-changed` after an allowed switch (sign-off 3).
+   */
+  unresolvedCount(): number {
+    // v0.9 review B4: an abandoned dialog leaves a pending token that expires on
+    // its own. Count only tokens that can still be confirmed/executed; otherwise
+    // an expired token blocks every scope switch until a restart.
+    this.purge()
+    let count = 0
+    const now = this.now()
+    for (const record of this.tokens.values()) {
+      if (record.status === 'executing') count += 1
+      else if (record.status === 'pending' && record.expiresAt > now) count += 1
+    }
+    return count
+  }
+
+  /**
+   * v0.9 review B3: the host-side session-scope write boundary.
+   *
+   * The client also disables the buttons, but the host must enforce it: the DSH
+   * session's conversation memories are captured by the official plugin under
+   * whichever scope observed them, and a write here would land under a different
+   * identity. A missing callback (older composition/tests) means "cannot tell".
+   */
+  private sessionMismatchError(sessionId: string | null | undefined): OveError | null {
+    if (sessionId === undefined || sessionId === null || sessionId.length === 0) return null
+    if (this.options.sessionScopeMismatch?.(sessionId) !== true) return null
+    return err(
+      'session-scope-mismatch',
+      'This DSH session was last seen under another scope; switch back before writing to it.',
+    )
+  }
+
+  /**
    * The action a still-usable token was prepared for, or null.
    *
    * Read-only and side-effect free apart from purging expired entries. Command
@@ -303,6 +348,12 @@ export class WriteService {
     // taking a snapshot against a state that is about to change (review S5).
     if (this.mutationGate.busy) {
       return { ok: false, error: err('write-in-flight', 'A write or undo is already executing; wait for it to settle.') }
+    }
+    // v0.9: no cross-scope writes for a session captured under another scope.
+    const sessionMismatch = this.sessionMismatchError(request.sessionId)
+    if (sessionMismatch !== null) {
+      this.auditDenied(request.action, request.target, request.sessionId ?? null, sessionMismatch)
+      return { ok: false, error: sessionMismatch }
     }
     // Every snapshot-backed action needs the capability before the token exists;
     // a force commit does not touch file content and is gated only by health.
@@ -657,6 +708,12 @@ export class WriteService {
       this.auditDenied(token.action, token.target, token.sessionId, error)
       return { ok: false, error }
     }
+    // v0.9: a token for a session captured under another scope must not execute.
+    const sessionMismatch = this.sessionMismatchError(token.sessionId)
+    if (sessionMismatch !== null) {
+      this.auditDenied(token.action, token.target, token.sessionId, sessionMismatch)
+      return { ok: false, error: sessionMismatch }
+    }
     // The documented "three writes per minute" is enforced HERE, at execution
     // time (review round 2, N1): preparing several tokens does not let them
     // burst past it. A rate rejection keeps the token pending, so it remains
@@ -771,6 +828,12 @@ export class WriteService {
       const error = err('identity-changed', 'Undo is refused after an identity switch; switch back to the original profile.')
       this.auditDenied('undo', record.target, record.sessionId, error)
       return { ok: false, error }
+    }
+    // v0.9: same session-scope boundary as prepare/execute (undo writes too).
+    const sessionMismatch = this.sessionMismatchError(record.sessionId)
+    if (sessionMismatch !== null) {
+      this.auditDenied('undo', record.target, record.sessionId, sessionMismatch)
+      return { ok: false, error: sessionMismatch }
     }
     if (this.mutationGate.busy) {
       return { ok: false, error: err('write-in-flight', 'Another write or undo started while this undo was prepared.') }

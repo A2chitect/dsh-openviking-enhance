@@ -12,6 +12,8 @@
  */
 import {
   CLIENT_API_PREFIX,
+  SCOPE_HEADER,
+  SCOPE_RESPONSE_HEADER,
   TIMELINE_DEFAULT,
   type ArchiveSummary,
   type ApiResult,
@@ -81,20 +83,166 @@ import {
   type SnapshotIgnorePayload,
   type SnapshotLogPayload,
   type SnapshotShowPayload,
+  type ScopesPayload,
+  type ScopeIdentityRequest,
+  type SessionScopePayload,
+  type AclPayload,
+  type ScopeKeyInfo,
 } from '../shared/protocol.ts'
 
 /** Relative base: no leading slash, so `<base href>` keeps working. */
 const BASE = CLIENT_API_PREFIX
 
+/* ========================================================================
+ * v0.9: the scope-aware request layer
+ *
+ * Every plugin host call already goes through the two helpers below, so the
+ * v0.9 isolation rules live here once instead of in ~60 call sites:
+ *
+ *  - the active scope key rides `x-dsh-openviking-scope` on every request
+ *    (reads and mutations);
+ *  - a monotonic generation is captured before the request and checked after
+ *    it: a response that resolves across a scope switch is dropped as
+ *    `scope-changed` instead of being rendered under the new scope;
+ *  - in-flight reads hold an AbortController and a switch aborts them all;
+ *  - a response labelled with another scope (or a 409 `scope-changed`) aborts
+ *    the surface and asks the scope store to refresh — never renders the payload.
+ * ==================================================================== */
+
+/** What the request layer needs from the scope store (registered at import). */
+export interface ScopeTransport {
+  /** The active scope key, or null before the first `/scope` answer. */
+  key: () => string | null
+  /** Monotonic scope-switch generation. */
+  generation: () => number
+  /** Called when the host says the scope moved under this request. */
+  onScopeChanged: () => void
+}
+
+let scopeTransport: ScopeTransport | null = null
+
+/** Wire the scope store in (called once when `scope-store.ts` is imported). */
+export function registerScopeTransport(transport: ScopeTransport | null): void {
+  scopeTransport = transport
+}
+
+/** One in-flight read; a scope switch aborts every entry. */
+const SCOPE_READS = new Set<AbortController>()
+
+/** Abort all in-flight scoped reads (a scope switch is starting). */
+export function abortScopedReads(): void {
+  for (const controller of [...SCOPE_READS]) {
+    try {
+      controller.abort()
+    } catch {
+      // An already-aborted controller is fine.
+    }
+  }
+  SCOPE_READS.clear()
+}
+
+/** The host refused because the active scope moved (never rendered). */
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')
+}
+
+export class ScopeChangedError extends Error {
+  constructor() {
+    super('scope-changed')
+    this.name = 'ScopeChangedError'
+  }
+}
+
+function isScopeChangedBody(body: unknown): boolean {
+  if (body === null || typeof body !== 'object') return false
+  const record = body as Record<string, unknown>
+  const error = record.error
+  return error !== null && typeof error === 'object' && (error as Record<string, unknown>).code === 'scope-changed'
+}
+
+/**
+ * One scope-aware fetch.
+ *
+ * Abortable reads register their controller; mutations (`abortable: false`) do
+ * not, because aborting a POST after it reached the host could hide a settled
+ * write/op from the user (the switch guard refuses while one is pending anyway).
+ */
+export interface ScopedFetchOptions {
+  /** Abort this request on a scope switch (reads: true; mutations: false). */
+  abortable?: boolean
+  /**
+   * v0.9 review B1: a discovery request (`/scope`, `/scopes`) may be answered with
+   * a scope key different from the one it carried — that is precisely how the
+   * client learns about a host-side switch. The response is adopted, never
+   * rejected as stale; only the generation guard still applies.
+   */
+  discovery?: boolean
+  /**
+   * v0.9 review B1: a mutation that *itself* changes the scope (identity
+   * override, profile CRUD) replies with the new scope. Its response header is
+   * therefore expected to differ; the caller adopts the body instead of dropping
+   * it as a stale response.
+   */
+  allowScopeChange?: boolean
+}
+
+async function scopedFetch(url: string, init?: RequestInit, options: ScopedFetchOptions = {}): Promise<Response> {
+  const abortable = options.abortable !== false
+  const generation = scopeTransport?.generation() ?? 0
+  const key = scopeTransport?.key() ?? null
+  const controller = abortable ? new AbortController() : null
+  if (controller !== null) SCOPE_READS.add(controller)
+  const external = init?.signal
+  const cancel = (): void => controller?.abort()
+  if (controller !== null) {
+    if (external?.aborted === true) controller.abort()
+    else external?.addEventListener('abort', cancel, { once: true })
+  }
+  const headers = new Headers(init?.headers ?? {})
+  if (key !== null && key.length > 0) headers.set(SCOPE_HEADER, key)
+  try {
+    const response = await fetch(url, { ...init, headers, ...(controller === null ? {} : { signal: controller.signal }) })
+    const tolerant = options.discovery === true || options.allowScopeChange === true
+    if (abortable && (scopeTransport?.generation() ?? 0) !== generation) {
+      // A switch happened while this request was in flight. Discovery/scope-
+      // changing calls are re-read by the switch flow itself; ordinary reads are
+      // dropped and the store refreshes.
+      if (!tolerant) scopeTransport?.onScopeChanged()
+      throw new ScopeChangedError()
+    }
+    const repliedScope = response.headers.get(SCOPE_RESPONSE_HEADER)
+    if (!tolerant && repliedScope !== null && key !== null && repliedScope !== key) {
+      scopeTransport?.onScopeChanged()
+      throw new ScopeChangedError()
+    }
+    if (!tolerant && response.status === 409) scopeTransport?.onScopeChanged()
+    return response
+  } finally {
+    if (controller !== null) SCOPE_READS.delete(controller)
+    external?.removeEventListener('abort', cancel)
+  }
+}
+
 async function readJson<T>(url: string, init?: RequestInit): Promise<ApiResult<T>> {
   try {
-    const response = await fetch(url, init)
+    // A legacy success body (`{ok:true, …}`) carries no scope error envelope;
+    // a 409 is answered below with the stable `scope-changed` string.
+    const response = await scopedFetch(url, init)
     const body = (await response.json()) as ApiResult<T>
+    if (body !== null && typeof body === 'object' && 'ok' in body && body.ok === false && isScopeChangedBody(body)) {
+      scopeTransport?.onScopeChanged()
+      return { ok: false, error: 'scope-changed' }
+    }
     if (!body || typeof body !== 'object' || !('ok' in body)) {
       return { ok: false, error: `unexpected response from ${url}` }
     }
+    if (!response.ok) return { ok: false, error: `HTTP ${response.status}` }
     return body
   } catch (error) {
+    if (error instanceof ScopeChangedError) return { ok: false, error: 'scope-changed' }
+    // A read aborted by a scope switch is dropped as a scope change, so callers
+    // never render it under the new scope (review B1 test).
+    if (isAbortError(error)) return { ok: false, error: 'scope-changed' }
     return { ok: false, error: error instanceof Error ? error.message : String(error) }
   }
 }
@@ -376,15 +524,23 @@ export function fetchExperience(
  * ===================================================================== */
 
 /** Parse a v0.5 envelope (`{ok:true, …}` or `{ok:false, error:{code,message}}`). */
-async function readOve<T>(url: string, init?: RequestInit): Promise<OveResult<T>> {
+async function readOve<T>(url: string, init?: RequestInit, options: ScopedFetchOptions = {}): Promise<OveResult<T>> {
   try {
-    const response = await fetch(url, init)
-    const body = (await response.json()) as OveResult<T>
+    const response = await scopedFetch(url, init, options)
+    const raw: unknown = await response.json()
+    const body = raw as OveResult<T>
     if (body === null || typeof body !== 'object' || !('ok' in body)) {
       return { ok: false, error: { code: 'unexpected-response', message: `unexpected response from ${url}` } }
     }
+    if (body.ok === false && isScopeChangedBody(body)) {
+      if (options.discovery !== true && options.allowScopeChange !== true) scopeTransport?.onScopeChanged()
+      return { ok: false, error: { code: 'scope-changed', message: 'The active scope changed; reload the surface.' } }
+    }
     return body
   } catch (error) {
+    if (error instanceof ScopeChangedError || isAbortError(error)) {
+      return { ok: false, error: { code: 'scope-changed', message: 'The active scope changed; reload the surface.' } }
+    }
     return {
       ok: false,
       error: { code: 'transport-error', message: error instanceof Error ? error.message : String(error) },
@@ -392,14 +548,30 @@ async function readOve<T>(url: string, init?: RequestInit): Promise<OveResult<T>
   }
 }
 
-/** POST one JSON body to a mutation route. */
-function postOve<T>(url: string, body: unknown, signal?: AbortSignal): Promise<OveResult<T>> {
-  return readOve<T>(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-    ...(signal === undefined ? {} : { signal }),
-  })
+/**
+ * POST one JSON body to a mutation route.
+ *
+ * Mutations are deliberately **not** abortable on a scope switch: aborting a
+ * request the host may already have executed would hide a settled write/op (the
+ * switch guard refuses while one is pending; a stale mutation is refused
+ * host-side with `scope-changed` before any token lookup).
+ */
+function postOve<T>(
+  url: string,
+  body: unknown,
+  signal?: AbortSignal,
+  options: ScopedFetchOptions = {},
+): Promise<OveResult<T>> {
+  return readOve<T>(
+    url,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      ...(signal === undefined ? {} : { signal }),
+    },
+    { abortable: false, ...options },
+  )
 }
 
 export interface ScopeResponse {
@@ -408,7 +580,8 @@ export interface ScopeResponse {
 
 /** The active identity, health, capability map and the write gates. */
 export function fetchScope(fresh = false): Promise<OveResult<ScopeResponse>> {
-  return readOve<ScopeResponse>(`${BASE}/scope${fresh ? '?fresh=1' : ''}`)
+  // Discovery: answers the *current* host scope even if our stored key is stale.
+  return readOve<ScopeResponse>(`${BASE}/scope${fresh ? '?fresh=1' : ''}`, undefined, { discovery: true })
 }
 
 export interface ProfilesResponse {
@@ -419,6 +592,63 @@ export interface ProfilesResponse {
 export function fetchProfiles(): Promise<OveResult<ProfilesResponse>> {
   return readOve<ProfilesResponse>(`${BASE}/profiles`)
 }
+
+export interface ScopesResponse {
+  scopes: ScopesPayload
+}
+
+/** v0.9: the scope list + identity rules + official-plugin advisory facts. */
+export function fetchScopes(fresh = false): Promise<OveResult<ScopesResponse>> {
+  return readOve<ScopesResponse>(`${BASE}/scopes${fresh ? '?fresh=1' : ''}`, undefined, { discovery: true })
+}
+
+export interface ScopeIdentityResponse {
+  changed: boolean
+  from: string
+  to: string
+  scope: ScopePayload
+  scopes: ScopesPayload
+}
+
+/**
+ * v0.9: apply one in-server identity override (a LOCAL plugin mutation).
+ *
+ * Rides the authenticated transport like the v0.5/v0.8 mutations; the host
+ * validates the auth-mode rules, writes the 0600 scope state and refuses while a
+ * write/ops action is pending.
+ */
+export function switchScopeIdentity(request: ScopeIdentityRequest): Promise<OveResult<ScopeIdentityResponse>> {
+  // The response header is the NEW scope key by design: adopt the body.
+  return postOve<ScopeIdentityResponse>(`${BASE}/scope/identity`, request, undefined, { allowScopeChange: true })
+}
+
+/** v0.9: the session-scope mismatch facts for one DSH session. */
+export interface SessionScopeResponse {
+  sessionScope: SessionScopePayload
+}
+
+export function fetchSessionScope(sessionId: string): Promise<OveResult<SessionScopeResponse>> {
+  return readOve<SessionScopeResponse>(`${BASE}/session-scope?sessionId=${encodeURIComponent(sessionId)}`)
+}
+
+/** v0.9: the read-only ACL report for one selected resource URI. */
+export interface AclResponse {
+  acl: AclPayload
+}
+
+export function fetchAcl(
+  uri: string,
+  options: { fresh?: boolean; signal?: AbortSignal } = {},
+): Promise<OveResult<AclResponse>> {
+  const fresh = options.fresh === true ? '&fresh=1' : ''
+  return readOve<AclResponse>(
+    `${BASE}/acl?uri=${encodeURIComponent(uri)}${fresh}`,
+    options.signal === undefined ? undefined : { signal: options.signal },
+  )
+}
+
+/** v0.9: the active scope key, exported for tests/surfaces that need it. */
+export type { ScopeKeyInfo }
 
 export interface TasksResponse {
   tasks: ActivityTask[]
@@ -601,11 +831,12 @@ export interface SaveProfileRequest {
 }
 
 export function saveProfile(request: SaveProfileRequest): Promise<OveResult<{ profiles: ProfileSummary[] }>> {
-  return postOve<{ profiles: ProfileSummary[] }>(`${BASE}/profiles/save`, request)
+  // Editing the active profile can change its identity/scope key.
+  return postOve<{ profiles: ProfileSummary[] }>(`${BASE}/profiles/save`, request, undefined, { allowScopeChange: true })
 }
 
 export function deleteProfileRequest(id: string): Promise<OveResult<{ profiles: ProfileSummary[] }>> {
-  return postOve<{ profiles: ProfileSummary[] }>(`${BASE}/profiles/delete`, { id })
+  return postOve<{ profiles: ProfileSummary[] }>(`${BASE}/profiles/delete`, { id }, undefined, { allowScopeChange: true })
 }
 
 export interface ProfileTestResponse {
@@ -956,7 +1187,13 @@ export async function downloadPack(
   fileName: string,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   try {
-    const response = await fetch(`${BASE}/ops/download?token=${encodeURIComponent(downloadId)}`)
+    // The scope header is attached for consistency; the one-time token is
+    // identity-bound and the broker closes on a switch (documented binary
+    // exception: the stream cannot answer a JSON scope-changed envelope).
+    const scopeKey = scopeTransport?.key() ?? null
+    const response = await fetch(`${BASE}/ops/download?token=${encodeURIComponent(downloadId)}`, {
+      headers: scopeKey === null || scopeKey.length === 0 ? undefined : { [SCOPE_HEADER]: scopeKey },
+    })
     if (!response.ok) {
       let detail = `HTTP ${response.status}`
       try {

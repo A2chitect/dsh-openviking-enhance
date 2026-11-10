@@ -51,6 +51,7 @@ import { OpenVikingPanel } from './native-panel.tsx'
 import {
   attachNativeLayout,
   resetNative,
+  resetToOverview,
   setNativeSwitches,
   type LayoutLike,
 } from './native-store.ts'
@@ -58,12 +59,15 @@ import { setRightTabOpener } from './tab-store.ts'
 import { OnboardingSetupSection } from './onboarding-card.tsx'
 import { CommitStatusPill } from './commit-status.tsx'
 // Exported for the server-rendered component tests; the shell only reads apply/inject.
-export { DiffEntry, DiffView } from './commit-status.tsx'
-export { PreviewPanel, previewUriParam } from './preview-panel.tsx'
+export { DiffEntry, DiffView, forceCommitEnabled } from './commit-status.tsx'
+export { curationActionsReady, PreviewPanel, previewUriParam } from './preview-panel.tsx'
 export { ExplorePanel } from './explore-panel.tsx'
 export { VikingUriLink } from './viking-uri-link.tsx'
 export { getPreviewTarget, openPreview, resetPreviewStore, setPreviewTarget } from './preview-store.ts'
-export { ScopeChip } from './scope-chip.tsx'
+export { ScopeBanner, ScopeChip, ScopeMenu, ScopeSwitchNoticeLine } from './scope-chip.tsx'
+export { planSwitchBack, SessionScopeBanner, sessionScopeMismatch } from './session-scope.tsx'
+export { AccessPanel } from './access-panel.tsx'
+export { setOpsPending, hasPendingOps } from './ops-store.ts'
 export { ActivityPanel } from './activity-panel.tsx'
 export { OpenVikingPanel, NativeCockpit } from './native-panel.tsx'
 export { NativeOverview } from './native-overview.tsx'
@@ -90,7 +94,17 @@ export {
 export { WriteDialog } from './write-dialog.tsx'
 export { WriteToast } from './write-toast.tsx'
 export { VikingCommandCard, parseEnvelope } from './viking-command-card.tsx'
-export { getScopeState, __setScopeStateForTests } from './scope-store.ts'
+export {
+  activeScope,
+  getScopeState,
+  scopeGeneration,
+  scopeKey,
+  setScopeBannerEnabled,
+  setScopeSwitcherEnabled,
+  __resetScopeForTests,
+  __setScopeStateForTests,
+} from './scope-store.ts'
+export { __setSessionScopeForTests } from './session-scope.tsx'
 export { getWriteState, __setWriteStateForTests } from './write-store.ts'
 import { RecallPanel } from './recall-panel.tsx'
 import { RecallExplainTail } from './recall-explain.tsx'
@@ -99,13 +113,20 @@ import { PluginHealthSection } from './plugin-health.tsx'
 import { PreviewPanel } from './preview-panel.tsx'
 import { ExplorePanel } from './explore-panel.tsx'
 import { setPreviewOpener } from './preview-store.ts'
+import { resetSessionScopes } from './session-scope.tsx'
 import { ConfigPage } from './config-page.tsx'
 import { ScopeChip } from './scope-chip.tsx'
 import { ActivityPanel } from './activity-panel.tsx'
 import { WriteDialog } from './write-dialog.tsx'
 import { WriteToast } from './write-toast.tsx'
 import { VikingCommandCard, type VikingCommandNodeLike } from './viking-command-card.tsx'
-import { refreshScope, registerProfileSwitcher, setScopeBannerEnabled } from './scope-store.ts'
+import {
+  refreshScope,
+  registerProfileSwitcher,
+  registerScopeSwitchHandler,
+  setScopeBannerEnabled,
+  setScopeSwitcherEnabled,
+} from './scope-store.ts'
 import { attachLocale, t } from './locale.ts'
 import {
   DEFAULT_FEATURE_FLAGS,
@@ -404,6 +425,30 @@ export function apply(context: ClientContext): void {
     } catch (error) {
       report(context, error)
       return false
+    }
+  }
+
+  /**
+   * v0.9: close every open plugin right-sidebar page.
+   *
+   * A recall/preview/health/activity page is bound to the scope it was opened
+   * under; it must not stay open after a switch. The settings-switch machinery
+   * (`hiddenPageKinds`) is not reused here because these pages are not hidden —
+   * the surfaces stay mounted and simply start on their empty state.
+   */
+  function closePluginPages(): void {
+    const right = sidebarRight
+    if (right === undefined) return
+    try {
+      const active = right.active?.()
+      if (active === undefined) return
+      for (const kind of PLUGIN_PAGE_KINDS) {
+        if (!isPage(active, kind)) continue
+        right.close?.(active.id)
+        return
+      }
+    } catch (error) {
+      report(context, error)
     }
   }
 
@@ -812,6 +857,15 @@ export function apply(context: ClientContext): void {
     )
   }
 
+  /** v0.9: every right-sidebar page kind the plugin owns. */
+  const PLUGIN_PAGE_KINDS: readonly string[] = [
+    RECALL_TAB_KIND,
+    HEALTH_TAB_KIND,
+    PREVIEW_TAB_KIND,
+    EXPLORE_TAB_KIND,
+    ACTIVITY_TAB_KIND,
+  ]
+
   const mounts: Record<MountedFeature, () => () => void> = {
     sidebarEntry: mountSidebarEntry,
     commitStatus: mountCommitStatus,
@@ -907,6 +961,9 @@ export function apply(context: ClientContext): void {
     setNativeSwitches({ nativeViews: flags.nativeViews, onboarding: flags.onboarding, ops: flags.ops })
     // The banner switch hides the chip everywhere; the dialogs repeat the scope.
     setScopeBannerEnabled(flags.scopeBanner)
+    // v0.9: the switcher switch hides only the menu; the banner keeps its own
+    // switch and dialog/evidence scope blocks are never hidden.
+    setScopeSwitcherEnabled(flags.scopeSwitcher)
     const profile = typeof value.activeProfile === 'string' ? value.activeProfile : ''
     const key = `${flags.writes}|${profile}`
     if (lastScopeKey !== null && lastScopeKey !== key) void refreshScope()
@@ -923,6 +980,30 @@ export function apply(context: ClientContext): void {
   let stopWatching = (): void => {}
   try {
     stopWatching = watchFeatureFlags(context, SETTINGS_NAMESPACE, applyFlags)
+  } catch (error) {
+    report(context, error)
+  }
+
+  /**
+   * v0.9: a successful (or host-initiated) scope switch resets the cockpit to
+   * Overview and closes the plugin's right-sidebar pages. URIs/session ids are
+   * scope-specific, so no selection is preserved; the "switched from X to Y"
+   * notice is rendered by the cockpit (`ScopeSwitchNoticeLine`).
+   */
+  try {
+    disposers.push(
+      registerScopeSwitchHandler(() => {
+        try {
+          resetToOverview()
+          closePluginPages()
+          // Review B3: mismatch flags are scope-dependent state; drop every
+          // cached answer so the session surfaces re-fetch under the new scope.
+          resetSessionScopes()
+        } catch (error) {
+          report(context, error)
+        }
+      }),
+    )
   } catch (error) {
     report(context, error)
   }

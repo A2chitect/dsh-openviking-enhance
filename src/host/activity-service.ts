@@ -199,6 +199,17 @@ export class ActivityService {
     this.cacheTtlMs = options.cacheTtlMs ?? 10_000
   }
 
+  /**
+   * v0.9 review B5: drop the metrics cache on a scope switch.
+   *
+   * The cache holds account-wide aggregates from one server; a switch that keeps
+   * it would serve the previous scope's numbers for the TTL. `applyActiveScope`
+   * calls this beside every other service's `resetCaches()`.
+   */
+  resetCaches(): void {
+    this.metricsCache = null
+  }
+
   /** One bounded, optionally filtered task page. */
   async tasks(
     filters: { taskType?: string; status?: string; limit?: number; cursor?: string } = {},

@@ -59,6 +59,7 @@ import { copyText } from './clipboard.ts'
 import { OpenVikingIcon } from './openviking-icon.tsx'
 import { VikingUriLink } from './viking-uri-link.tsx'
 import { ensureScope, useScope } from './scope-store.ts'
+import { ensureSessionScope, useSessionScope } from './session-scope.tsx'
 import { canSelectPanel, openNative } from './native-store.ts'
 import { openWriteConfirm } from './write-store.ts'
 import { writeErrorText } from './locale.ts'
@@ -79,6 +80,18 @@ interface FailureView {
   cancelled: boolean
 }
 
+/**
+ * v0.9 review B3: the force-commit gate. Same three facts as the preview actions:
+ * writes on, transport present, and this session not observed under another scope.
+ */
+export function forceCommitEnabled(input: {
+  writesEnabled: boolean
+  transport: boolean
+  scopeMismatch: boolean
+}): boolean {
+  return input.writesEnabled && input.transport && !input.scopeMismatch
+}
+
 export function CommitStatusPill({ sessionId }: CommitStatusProps) {
   const [status, setStatus] = useState<CommitStatus | null>(null)
   const [tasks, setTasks] = useState<CommitTask[]>([])
@@ -90,6 +103,18 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
   const [commitError, setCommitError] = useState<string | null>(null)
   const [captureLine, setCaptureLine] = useState<string | null>(null)
   const scope = useScope()
+  // v0.9: a session last seen under another scope must not offer a force-commit
+  // (the write would land under a different identity than the conversation was
+  // captured under); the mismatch banner explains how to switch back.
+  const sessionScope = useSessionScope(sessionId ?? '')
+  const scopeMismatch = sessionScope.payload?.mismatch === true
+  // v0.9 review B3: a switch must force-refetch the session-scope facts; the
+  // previous answer is scope-dependent state.
+  const scopeKey = scope.scope?.identity.fingerprint ?? ''
+  useEffect(() => {
+    if (!sessionId) return
+    void ensureSessionScope(sessionId, true)
+  }, [sessionId, scopeKey])
   const [selected, setSelected] = useState<string | null>(null)
   /** How many commit records to fetch counts for; the popover widens this on demand. */
   const [summaryLimit, setSummaryLimit] = useState(TIMELINE_DEFAULT)
@@ -315,7 +340,11 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
                 {t('native.openSessionInCockpit')}
               </button>
             ) : null}
-            {scope.scope !== null && scope.scope.writes.enabled && scope.scope.writes.transport ? (
+            {forceCommitEnabled({
+              writesEnabled: scope.scope !== null && scope.scope.writes.enabled,
+              transport: scope.scope !== null && scope.scope.writes.transport,
+              scopeMismatch,
+            }) ? (
               <button
                 type="button"
                 className="ove-diff-action"
@@ -329,7 +358,9 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
                 {t('pill.commitNow')}
               </button>
             ) : (
-              <span className="ove-row-count">{t('pill.commitDisabled')}</span>
+              <span className="ove-row-count">
+                {scopeMismatch ? t('scope.session.actionsDisabled') : t('pill.commitDisabled')}
+              </span>
             )}
           </div>
           {commitError !== null ? <div className="ove-empty ove-error">{commitError}</div> : null}

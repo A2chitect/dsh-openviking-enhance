@@ -56,6 +56,16 @@ const SCOPE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$/
 /** A peer id becomes a path segment; no slashes, no dots-only. */
 const PEER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._@:-]{0,127}$/
 
+/** Whether a value is a legal account/user selector (a header value). */
+export function isValidScopeName(value: string): boolean {
+  return SCOPE_PATTERN.test(value)
+}
+
+/** Whether a value is a legal peer id (a path segment and a header value). */
+export function isValidPeerId(value: string): boolean {
+  return PEER_PATTERN.test(value)
+}
+
 /** Whether an endpoint is a usable http(s) origin. */
 export function isHttpEndpoint(value: string): boolean {
   try {

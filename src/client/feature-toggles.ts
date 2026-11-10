@@ -55,6 +55,11 @@ export interface FeatureFlags {
   /** v0.5: the persistent scope chip in the composer dock. */
   readonly scopeBanner: boolean
   /**
+   * v0.9: the scope menu/switcher (toolbar chip menu + Overview menu). Off hides
+   * only the menu; the banner still shows the active scope (sign-off 6).
+   */
+  readonly scopeSwitcher: boolean
+  /**
    * v0.5: `enableWrites`. Carried here for the action bars and buttons; the
    * host reads the same value live for every mutation, so the client switch can
    * never authorize a write the host refuses.
@@ -83,7 +88,10 @@ export interface FeatureFlags {
  * mounts rather than mounting anything themselves (a hidden `scopeBanner` still
  * leaves the dialogs' scope block, by design).
  */
-export type MountedFeature = Exclude<keyof FeatureFlags, 'commands' | 'writes' | 'nativeViews' | 'ops'>
+export type MountedFeature = Exclude<
+  keyof FeatureFlags,
+  'commands' | 'writes' | 'nativeViews' | 'ops' | 'scopeSwitcher'
+>
 
 /** The state before any settings answer, and the fallback when there is none. */
 export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
@@ -97,6 +105,7 @@ export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   commands: true,
   activityPanel: true,
   scopeBanner: true,
+  scopeSwitcher: true,
   // v0.5 writes are opt-in: before a settings answer arrives, every write
   // surface stays hidden (the host's default is the same `false`).
   writes: false,
@@ -127,6 +136,7 @@ export const FEATURE_CONFIG_FIELDS = {
   commands: 'enableCommands',
   activityPanel: 'enableActivity',
   scopeBanner: 'showScopeBanner',
+  scopeSwitcher: 'showScopeSwitcher',
   writes: 'enableWrites',
   nativeViews: 'showNativeViews',
   onboarding: 'showOnboarding',
@@ -180,6 +190,7 @@ export function featureFlagsFrom(value: unknown): FeatureFlags {
     commands: flagOf(config, FEATURE_CONFIG_FIELDS.commands),
     activityPanel: flagOf(config, FEATURE_CONFIG_FIELDS.activityPanel),
     scopeBanner: flagOf(config, FEATURE_CONFIG_FIELDS.scopeBanner),
+    scopeSwitcher: flagOf(config, FEATURE_CONFIG_FIELDS.scopeSwitcher),
     writes: flagOf(config, FEATURE_CONFIG_FIELDS.writes, false),
     nativeViews: flagOf(config, FEATURE_CONFIG_FIELDS.nativeViews),
     onboarding: flagOf(config, FEATURE_CONFIG_FIELDS.onboarding),
@@ -200,6 +211,7 @@ export function sameFeatureFlags(left: FeatureFlags, right: FeatureFlags): boole
     left.commands === right.commands &&
     left.activityPanel === right.activityPanel &&
     left.scopeBanner === right.scopeBanner &&
+    left.scopeSwitcher === right.scopeSwitcher &&
     left.writes === right.writes &&
     left.nativeViews === right.nativeViews &&
     left.onboarding === right.onboarding &&

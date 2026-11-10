@@ -47,6 +47,8 @@ import { MetricCard, MetricsCards } from './metrics-view.tsx'
 import { nextPollDelay } from './poll-policy.ts'
 import { ScopeChip } from './scope-chip.tsx'
 import { useScope } from './scope-store.ts'
+import { forceCommitEnabled } from './commit-status.tsx'
+import { ensureSessionScope, SessionScopeBanner, useSessionScope } from './session-scope.tsx'
 import { openWriteConfirm } from './write-store.ts'
 
 export interface ActivityPanelProps {
@@ -262,6 +264,15 @@ function TaskEvents({ events, dropped }: { events: TaskEvent[] | null; dropped: 
 
 function TasksSection({ sessionId }: { sessionId: string }) {
   const scope = useScope()
+  // v0.9 round 2 (N4): the Activity page's "commit now" must obey the same
+  // session-scope boundary as the commit pill (the host refuses it anyway, but the
+  // README's "write actions are disabled" should be true in the UI too).
+  const sessionScope = useSessionScope(sessionId)
+  const scopeMismatch = sessionScope.payload?.mismatch === true
+  const scopeKey = scope.scope?.identity.fingerprint ?? ''
+  useEffect(() => {
+    void ensureSessionScope(sessionId, true)
+  }, [sessionId, scopeKey])
   const [tasks, setTasks] = useState<ActivityTask[] | null>(null)
   const [available, setAvailable] = useState(true)
   const [note, setNote] = useState<string | null>(null)
@@ -346,7 +357,11 @@ function TasksSection({ sessionId }: { sessionId: string }) {
     else setCommitError(writeErrorText(answer.error))
   }, [sessionId])
 
-  const writesReady = scope.scope?.writes.enabled === true && scope.scope.writes.transport
+  const writesReady = forceCommitEnabled({
+    writesEnabled: scope.scope?.writes.enabled === true,
+    transport: scope.scope?.writes.transport === true,
+    scopeMismatch,
+  })
 
   return (
     <div className="ove-act-section">
@@ -401,7 +416,11 @@ function TasksSection({ sessionId }: { sessionId: string }) {
       </div>
       {commitError !== null && <p className="ove-act-error">{commitError}</p>}
       {scope.scope !== null && !writesReady && (
-        <p className="ove-act-note">{t('activity.commitDisabled', { reason: scope.scope.writes.reason ?? 'writes-disabled' })}</p>
+        <p className="ove-act-note">
+          {scopeMismatch
+            ? t('scope.session.actionsDisabled')
+            : t('activity.commitDisabled', { reason: scope.scope.writes.reason ?? 'writes-disabled' })}
+        </p>
       )}
       {tasks === null && <p className="ove-act-note">{t('activity.loading')}</p>}
       {tasks !== null && !available && <p className="ove-act-note">{t('activity.tasksUnavailable')}</p>}
@@ -553,6 +572,7 @@ export function ActivityPanel({ sessionId }: ActivityPanelProps) {
 
   return (
     <div className="ove-act">
+      <SessionScopeBanner sessionId={sessionId} />
       <div className="ove-act-head">
         <div className="ove-act-tabs" role="tablist" aria-label={t('activity.tabTitle')}>
           <button

@@ -116,6 +116,7 @@ if (sessionId) {
 await checkV05(base, sessionId)
 await checkV07(base)
 await checkV08(base)
+await checkV09(base)
 await checkFence(base)
 
 server.close()
@@ -231,6 +232,10 @@ async function checkDegraded(base) {
     ['observability', `${prefix}/observability?days=1`],
     ['pack history', `${prefix}/pack/history`],
     ['evidence', `${prefix}/task/evidence?taskId=probe`],
+    // v0.9 reads: the scope list, the session-scope facts and the ACL report.
+    ['scopes', `${prefix}/scopes`],
+    ['session scope', `${prefix}/session-scope?sessionId=probe`],
+    ['acl', `${prefix}/acl?uri=${encodeURIComponent('viking://resources/probe')}`],
   ]
   for (const [label, path] of routes) {
     const body = await get(`${base}${path}`)
@@ -824,6 +829,57 @@ async function pickSession(config) {
   const items = Array.isArray(list?.result) ? list.result : []
   const anyDsh = items.find((item) => typeof item?.session_id === 'string' && item.session_id.startsWith('dsh-'))
   return anyDsh ? anyDsh.session_id.replace(/^dsh-/, '') : null
+}
+
+/**
+ * v0.9 "Native II — multi-scope" smoke checks, redacted by construction.
+ *
+ * Two facts a unit test cannot observe on this machine: the scopes route answers
+ * the switcher contract (active key + rows) with no admin call, and a request
+ * naming another scope is refused with `scope-changed` before any work. No live
+ * write, no store mutation, no session/URI leaf in the output.
+ */
+async function checkV09(base) {
+  const prefix = '/api/openviking-enhance'
+  const check = (ok, message) => {
+    console.log(`[v09] ${ok ? 'ok  ' : 'FAIL'} ${message}`)
+    if (!ok) process.exitCode = 1
+  }
+  const scopes = await get(`${base}${prefix}/scopes`)
+  const activeKey = scopes?.scopes?.active?.scopeKey
+  check(
+    scopes?.ok === true && typeof activeKey === 'string' && activeKey.startsWith('sha256:'),
+    'the scopes route reports the active scope key',
+  )
+  check(
+    Array.isArray(scopes?.scopes?.scopes) && scopes.scopes.scopes.every((row) => typeof row.endpoint === 'string' && typeof row.isActive === 'boolean'),
+    `the scopes route lists labelled scopes (${scopes?.scopes?.scopes?.length ?? '?'} row(s))`,
+  )
+  check(
+    scopes?.scopes?.overrides?.allowed !== undefined && Array.isArray(scopes?.scopes?.warnings),
+    'the scopes route carries the identity rules and warnings',
+  )
+  check(!/"apiKey"/.test(JSON.stringify(scopes)), 'no scope payload ever returns a key')
+  check(!JSON.stringify(scopes).includes('/admin'), 'no scope payload names an admin endpoint')
+
+  const wrongScope = await fetch(`${base}${prefix}/browse?uri=${encodeURIComponent('viking://user/default/memories')}`, {
+    headers: { 'x-dsh-openviking-scope': `sha256:${'0'.repeat(64)}` },
+  })
+  const wrongBody = await wrongScope.json().catch(() => null)
+  check(
+    wrongScope.status === 409 && wrongBody?.error?.code === 'scope-changed',
+    `a request naming another scope is refused (${wrongScope.status}/${wrongBody?.error?.code ?? '?'})`,
+  )
+  const sessionScope = await get(`${base}${prefix}/session-scope?sessionId=probe`)
+  check(
+    sessionScope?.ok === true && sessionScope.sessionScope?.active?.scopeKey?.startsWith('sha256:') && typeof sessionScope.sessionScope.mismatch === 'boolean',
+    'the session-scope route answers the mismatch facts',
+  )
+  const acl = await get(`${base}${prefix}/acl?uri=${encodeURIComponent('viking://resources/probe')}`)
+  check(
+    acl?.ok === true && typeof acl.acl?.state === 'string' && acl.acl.sharingAvailable === false,
+    `the ACL route answers a classified state (${acl?.acl?.state ?? '?'}) and states there is no sharing API`,
+  )
 }
 
 async function get(url) {

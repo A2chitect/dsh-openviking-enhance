@@ -105,6 +105,8 @@ export class SessionsService {
       sortBy: 'mtime',
       sortOrder: 'desc',
       timeoutMs: FS_TIMEOUT_MS,
+      // v0.9: the sessions browser is a sessionless read (peer READ selector).
+      readPeer: true,
       ...(signal === undefined ? {} : { signal }),
     })
     if (signal?.aborted === true) throw new BrowseFailure('aborted', 'aborted')

@@ -44,6 +44,16 @@ export interface OvConnection {
    * the v0.4 behaviour (send them) is kept.
    */
   authMode?: string | null
+  /**
+   * v0.9 peer READ selector.
+   *
+   * Applied by `OpenVikingApi` as `X-OpenViking-Actor-Peer` **only** to
+   * sessionless read methods (directory listings, content reads, ACL). Writes
+   * and session-scoped reads keep the session's actor peer from the official
+   * memory plugin, so this field can never change where a write lands (Lead
+   * sign-off 2).
+   */
+  peerId?: string | null
 }
 
 /** The connection plus a secret-free record of where each field came from. */

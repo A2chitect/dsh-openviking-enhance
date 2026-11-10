@@ -37,6 +37,7 @@ import {
   type SearchPayload,
   type SkillCatalogue,
 } from '../shared/protocol.ts'
+import { ScopeChip } from './scope-chip.tsx'
 import { fetchExperience, fetchRules, fetchRulesSearch, fetchSearch, fetchSkills } from './host-api.ts'
 import { errorText, noticeText, t } from './locale.ts'
 import { VikingUriLink } from './viking-uri-link.tsx'
@@ -124,6 +125,9 @@ export function ExplorePanel(_props: ExplorePanelProps) {
   const [segment, setSegment] = useState<Segment>('search')
   return (
     <div className="ove-explore">
+      <div className="ove-explore-scope-row">
+        <ScopeChip compact />
+      </div>
       <div className="ove-explore-nav" role="tablist" aria-label={t('explore.tabTitle')}>
         {SEGMENTS.map((candidate) => (
           <button

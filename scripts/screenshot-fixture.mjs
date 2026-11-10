@@ -78,6 +78,17 @@ const STUDIO_BLOCKED = process.env.OV_FIXTURE_STUDIO_BLOCKED === '1'
  * so the pre-v0.8 fixtures stay byte-identical by default.
  */
 const OPS_MODE = process.env.OV_FIXTURE_OPS === '1'
+/**
+ * v0.9 evidence: run a second invented scope/server instance with distinct
+ * identities and data (scope B). Additive; pre-v0.9 request sets never call it.
+ */
+const SCOPE_B = process.env.OV_FIXTURE_SCOPE_B === '1'
+/**
+ * v1.0 evidence: a degraded/empty server mode (server-side read failures plus one
+ * empty browse directory) for the unified degraded-state screenshots. Additive;
+ * pre-v1.0 request sets never set it.
+ */
+const DEGRADED = process.env.OV_FIXTURE_DEGRADED === '1'
 /** A compile-managed output file whose version history the Operate view reads. */
 const COMPILE_OUTPUT_URI = 'viking://resources/compiled/dsh-plugin.mdc'
 /** Poll counter so one operation first reads `running`, then `completed`. */
@@ -958,6 +969,28 @@ if (NATIVE) {
   }
 }
 
+// The account-shared resources root must exist for the v0.9 Access/ACL evidence
+// (selecting a file under viking://resources/**); the released reads never list it.
+for (const [uri, modTime] of [
+  ['viking://resources', '2026-10-01T09:00:00Z'],
+  ['viking://resources/compiled', '2026-11-08T10:00:00Z'],
+]) {
+  if (!STORE.has(uri)) {
+    STORE.set(uri, {
+      uri,
+      name: uri.slice(uri.lastIndexOf('/') + 1),
+      size: 0,
+      mode: 493,
+      modTime,
+      isDir: true,
+      count: 0,
+      contextType: 'resource',
+      tags: [],
+      memory: {},
+    })
+  }
+}
+
 /** Direct children of a store directory, sorted (recomputed on every read). */
 function childrenOf(dirUri) {
   const out = []
@@ -1555,149 +1588,75 @@ if (OPS_MODE) {
   })
 }
 
+// v0.9 evidence-only additions (second scope data + read-only ACL route).
+if (SCOPE_B) {
+  // Scope B is a different invented server with a DIFFERENT in-server identity
+  // (demo-b/demo-b), so its data lives under viking://user/demo-b/**.
+  const U = 'viking://user/demo-b'
+  const bfile = (uri, text, modTime, extra = {}) =>
+    STORE.set(uri, {
+      uri,
+      name: uri.slice(uri.lastIndexOf('/') + 1),
+      size: Buffer.byteLength(text),
+      mode: 420,
+      modTime,
+      isDir: false,
+      contextType: 'memory',
+      tags: extra.tags ?? ['scope=scope-b'],
+      memory: extra.memory ?? { memory_type: 'entity' },
+      text,
+      abstract: extra.abstract ?? 'Invented scope-B data.',
+    })
+  const broot = (uri, modTime) =>
+    STORE.set(uri, {
+      uri,
+      name: uri.slice(uri.lastIndexOf('/') + 1),
+      size: 0,
+      mode: 493,
+      modTime,
+      isDir: true,
+      count: 0,
+      contextType: 'memory',
+      tags: ['scope=scope-b'],
+      memory: {},
+    })
+  broot(`${U}/memories`, '2026-11-10T11:00:00Z')
+  broot(`${U}/memories/entities`, '2026-11-10T11:00:00Z')
+  broot(`${U}/memories/entities/project`, '2026-11-10T11:00:00Z')
+  broot(`${U}/memories/entities/project/scope-b`, '2026-11-10T11:00:00Z')
+  bfile(
+    `${U}/memories/entities/project/scope-b/scope-b-brief.md`,
+    '# Scope B brief\n\nThis file exists only on the second invented server (scope B, identity demo-b/demo-b).',
+    '2026-11-10T11:00:00Z',
+    { memory: { memory_type: 'entity', category: 'project' } },
+  )
+  bfile(
+    `${U}/memories/entities/project/scope-b/scope-b-release.md`,
+    '# Scope B release notes\n\nDistinct content proves per-scope isolation in Browse.',
+    '2026-11-10T10:55:00Z',
+    { memory: { memory_type: 'entity', category: 'project' } },
+  )
+  broot(`${U}/memories/experiences`, '2026-11-10T10:50:00Z')
+  broot(`${U}/memories/preferences`, '2026-11-10T10:50:00Z')
+  broot(`${U}/memories/rules`, '2026-11-10T10:50:00Z')
+  broot(`${U}/memories/trajectories`, '2026-11-10T10:50:00Z')
+  broot(`${U}/peers`, '2026-11-10T10:40:00Z')
+  broot(`${U}/sessions`, '2026-11-10T10:40:00Z')
+  broot(`${U}/sessions/scope-b-session-alpha`, '2026-11-10T10:40:00Z')
+  broot(`${U}/sessions/scope-b-session-beta`, '2026-11-10T10:35:00Z')
+  bfile(
+    'viking://resources/scope-b-report.md',
+    '# Scope B resource\n\nInvented resource only served by the second scope.',
+    '2026-11-10T10:50:00Z',
+    { memory: { memory_type: 'resource' }, tags: ['scope=scope-b'] },
+  )
+}
+
 createServer((req, res) => {
   const url = new URL(req.url ?? '/', `http://127.0.0.1:${PORT}`)
   const path = url.pathname
 
-  /* ==================================================================
-   * v0.5 write / control endpoints — stateful mock ONLY.
-   *
-   * These never reach a real memory store: the process's STORE map is the
-   * whole persistence layer, and snapshot restore really rolls it back.
-   * ================================================================== */
-
-  // DELETE /api/v1/fs?uri=&recursive= — idempotent, permanent in the mock.
-  if (req.method === 'DELETE' && path === '/api/v1/fs') {
-    const uri = canonical(url.searchParams.get('uri') ?? '')
-    const recursive = url.searchParams.get('recursive') === 'true'
-    if (!uri.startsWith('viking://') || uri === USER) {
-      return json(res, failure('INVALID_ARGUMENT', `Cannot delete: ${uri}`), 400)
-    }
-    if (STORE.has(uri)) {
-      const entry = STORE.get(uri)
-      if (entry.isDir && !recursive) {
-        return json(res, failure('INVALID_ARGUMENT', `Cannot delete directory without recursive=true: ${uri}`, { type: 'directory', resource: uri }), 400)
-      }
-      let deleted = 0
-      const victims = entry.isDir ? [...STORE.keys()].filter((key) => key === uri || key.startsWith(`${uri}/`)) : [uri]
-      for (const victim of victims) {
-        STORE.delete(victim)
-        deleted += 1
-      }
-      return json(res, {
-        status: 'ok',
-        result: { uri, ...(entry.isDir ? { estimated_deleted_count: deleted } : {}) },
-      })
-    }
-    // The real server is idempotent for a valid but absent URI.
-    return json(res, { status: 'ok', result: { uri } })
-  }
-
-  // POST /api/v1/content/write — replace/append a memory file body.
-  if (path === '/api/v1/content/write') {
-    return withJsonBody(req, res, (body) => {
-      if (typeof body.uri !== 'string' || body.uri.trim().length === 0) {
-        return json(res, failure('INVALID_ARGUMENT', 'uri is required'), 400)
-      }
-      const uri = canonical(body.uri)
-      if (!/^viking:\/\/user\/demo\/memories\/[^/]/.test(uri) || !/\.(md|txt|json|yaml|yml|toml)$/i.test(uri)) {
-        return json(res, failure('INVALID_ARGUMENT', `write target is not a curatable memory file: ${uri}`, { type: 'file', resource: uri }), 400)
-      }
-      const existing = STORE.get(uri)
-      if (existing !== undefined && existing.isDir) {
-        return json(res, failure('INVALID_ARGUMENT', `Cannot read directory as file: ${uri}`, { expected: 'file', actual: 'directory' }), 400)
-      }
-      const content = typeof body.content === 'string' ? body.content : ''
-      const mode = body.mode === 'append' ? 'append' : 'replace'
-      ensureParents(uri)
-      const base =
-        existing ?? {
-          uri,
-          name: uri.slice(uri.lastIndexOf('/') + 1),
-          mode: 420,
-          modTime: new Date().toISOString(),
-          isDir: false,
-          contextType: 'memory',
-          tags: [],
-          memory: { memory_type: 'entity' },
-        }
-      const text = mode === 'append' ? `${existing?.text ?? ''}${content}` : content
-      STORE.set(uri, touched({ ...base, uri, isDir: false, text }))
-      return json(res, {
-        status: 'ok',
-        result: {
-          uri,
-          root_uri: parentOf(uri),
-          context_type: 'memory',
-          mode,
-          written_bytes: Buffer.byteLength(content),
-          content_updated: true,
-          semantic_status: 'complete',
-          vector_status: 'complete',
-          queue_status: { Semantic: { processed: 1, error_count: 0, errors: [] } },
-        },
-      })
-    })
-  }
-
-  // POST /api/v1/content/set_tags — replace/append/clear the tag list.
-  if (path === '/api/v1/content/set_tags' || path === '/api/v1/fs/attrs/set_tags') {
-    return withJsonBody(req, res, (body) => {
-      const uri = canonical(typeof body.uri === 'string' ? body.uri : '')
-      const entry = STORE.get(uri)
-      if (entry === undefined) {
-        return json(res, failure('NOT_FOUND', `Resource not found: ${uri}`, { type: 'resource', resource: uri }), 404)
-      }
-      const mode = body.mode === 'clear' ? 'clear' : body.mode === 'append' ? 'append' : 'replace'
-      const tags = Array.isArray(body.tags) ? body.tags.filter((tag) => typeof tag === 'string') : []
-      if (mode === 'clear') entry.tags = []
-      else if (mode === 'append') entry.tags = [...new Set([...entry.tags, ...tags])]
-      else if (tags.length > 0) entry.tags = [...tags]
-      entry.modTime = new Date().toISOString()
-      return json(res, {
-        status: 'ok',
-        result: {
-          uri,
-          updated_uris: [uri],
-          root_uri: parentOf(uri),
-          context_type: entry.contextType,
-          tags: entry.tags,
-          mode,
-          success_count: 1,
-          skipped_count: 0,
-          failed_count: 0,
-          tags_updated: true,
-        },
-      })
-    })
-  }
-
-  // POST /api/v1/snapshot/commit — a real commit into the mock's history.
-  if (path === '/api/v1/snapshot/commit') {
-    return withJsonBody(req, res, (body) => {
-      if (typeof body.message !== 'string' || body.message.trim().length === 0) {
-        return json(res, failure('INVALID_ARGUMENT', 'message is required'), 400)
-      }
-      if (body.paths !== undefined && body.paths !== null && !Array.isArray(body.paths)) {
-        return json(res, failure('INVALID_ARGUMENT', 'paths must be an array'), 400)
-      }
-      return json(res, { status: 'ok', result: commitSnapshot(body.message, body.paths ?? null) })
-    })
-  }
-
-  // POST /api/v1/snapshot/restore — dry-run plan or applied restore.
-  if (path === '/api/v1/snapshot/restore') {
-    return withJsonBody(req, res, (body) => {
-      if (typeof body.project_dir !== 'string' || typeof body.source_commit !== 'string') {
-        return json(res, failure('INVALID_ARGUMENT', 'project_dir and source_commit are required'), 400)
-      }
-      const out = restoreSnapshot(body.project_dir, body.source_commit, body.dry_run === true)
-      if (out.error !== undefined) return json(res, out.error, 404)
-      return json(res, out)
-    })
-  }
-
-  // GET /api/v1/snapshot/log — commit list; an empty branch is 404 git_ref.
+  // ---- restored v0.3-v0.5 read routes (byte-compatible additive surfaces) ----
   if (path === '/api/v1/snapshot/log') {
     if (SNAPSHOTS.length === 0) {
       return jsonError(res, 404, 'NOT_FOUND', 'Git_ref not found: main', { type: 'git_ref', resource: 'main' })
@@ -1713,8 +1672,6 @@ createServer((req, res) => {
     }))
     return json(res, { status: 'ok', result: rows })
   }
-
-  // GET /api/v1/snapshot/show — commit metadata or one historical blob.
   if (path === '/api/v1/snapshot/show') {
     const ref = url.searchParams.get('target_ref') ?? ''
     const snap = SNAPSHOTS.find((candidate) => candidate.oid === ref) ?? SNAPSHOTS[0]
@@ -1746,8 +1703,6 @@ createServer((req, res) => {
       },
     })
   }
-
-  // GET /api/v1/snapshot/diff — one file as a unified diff between commits.
   if (path === '/api/v1/snapshot/diff') {
     const fileUri = canonical(url.searchParams.get('path') ?? '')
     const from = SNAPSHOTS.find((snap) => snap.oid === (url.searchParams.get('from') ?? ''))
@@ -1757,206 +1712,73 @@ createServer((req, res) => {
     }
     const fromEntry = from.tree.get(fileUri)
     const toEntry = to.tree.get(fileUri)
-    const fromText = fromEntry?.text ?? null
-    const toText = toEntry?.text ?? null
-    const changeType =
-      fromText === null && toText === null ? 'unchanged' : fromText === null ? 'added' : toText === null ? 'deleted' : fromText === toText ? 'unchanged' : 'modified'
     return json(res, {
       status: 'ok',
       result: {
         path: fileUri,
         from_commit: from.oid,
         to_commit: to.oid,
-        change_type: changeType,
-        diff_text: mockUnifiedDiff(fileUri, fromText, toText),
+        change_type: fromEntry === undefined ? 'added' : toEntry === undefined ? 'deleted' : 'modified',
+        diff_text: mockUnifiedDiff(fileUri, fromEntry?.text ?? null, toEntry?.text ?? null),
       },
     })
   }
-
-  // GET /api/v1/snapshot/diff-paths (0.5.3): changed source files between refs.
-  if (path === '/api/v1/snapshot/diff-paths') {
-    const toRef = url.searchParams.get('to') ?? ''
-    if (toRef.length === 0) {
-      // A present route validating its arguments (this is the v0.8 capability
-      // probe; pre-v0.8 builds never call it).
-      return jsonError(res, 400, 'INVALID_ARGUMENT', 'to is required', { field: 'to' })
-    }
-    const to = SNAPSHOTS.find((snap) => snap.oid === toRef)
-    if (to === undefined) {
-      return jsonError(res, 404, 'NOT_FOUND', 'commit not found', { type: 'git_commit', resource: toRef })
-    }
-    const fromRef = url.searchParams.get('from') ?? ''
-    const from = fromRef.length === 0 ? new Map() : (SNAPSHOTS.find((snap) => snap.oid === fromRef)?.tree ?? new Map())
-    const changes = []
-    for (const [uri, entry] of to.tree) {
-      const before = from.get(uri)
-      if (before === undefined) changes.push({ uri, change_type: 'added' })
-      else if (!sameStoreEntry(entry, before)) changes.push({ uri, change_type: 'modified' })
-    }
-    for (const uri of from.keys()) if (!to.tree.has(uri)) changes.push({ uri, change_type: 'deleted' })
-    return json(res, {
-      status: 'ok',
-      result: { changes: changes.slice(0, 50), offset: 0, limit: 50, total: changes.length, has_more: changes.length > 50, next_offset: null },
-    })
-  }
-
-  // GET /api/v1/snapshot/versions (0.5.3): compile-output version history.
-  if (path === '/api/v1/snapshot/versions') {
-    const uri = canonical(url.searchParams.get('uri') ?? '')
-    if (uri.length === 0) {
-      // The v0.8 capability probe: a present route answers a validation error.
-      return jsonError(res, 400, 'INVALID_ARGUMENT', 'uri is required', { field: 'uri' })
-    }
-    if (uri !== COMPILE_OUTPUT_URI) {
-      return jsonError(res, 400, 'FAILED_PRECONDITION', 'not a compile-managed file', { type: 'file', resource: uri })
-    }
-    return json(res, {
-      status: 'ok',
-      result: {
-        uri,
-        to: 'viking://user/demo/memories',
-        current_version: 'ver-0003',
-        total: 3,
-        versions: [
-          { version_id: 'ver-0003', version_number: 3, snapshot_id: 'snap-c003', snapshot_path: uri, created_at: 1762218030, source: 'compile', actor: 'demo' },
-          { version_id: 'ver-0002', version_number: 2, snapshot_id: 'snap-c002', snapshot_path: uri, created_at: 1762217000, source: 'compile', actor: 'demo' },
-          { version_id: 'ver-0001', version_number: 1, snapshot_id: 'snap-c001', snapshot_path: uri, created_at: 1762216000, source: 'compile', actor: 'demo' },
-        ],
-        next_before_version: null,
-      },
-    })
-  }
-
-  // GET /api/v1/snapshot/ignore — empty ignore-file body on this mock.
   if (path === '/api/v1/snapshot/ignore') {
-    if (OPS_MODE) {
-      return json(res, { status: 'ok', result: '# .ovgitignore for the demo account\n# generated evidence fixture\n*.tmp\n' })
-    }
-    return json(res, { status: 'ok', result: '' })
+    return json(res, { status: 'ok', result: OPS_MODE ? '# .ovgitignore for the demo account\n' : '' })
   }
-
-  // POST /api/v1/sessions/{id}/commit — force commit: archive + async task.
-  if (req.method === 'POST' && path.startsWith('/api/v1/sessions/') && path.endsWith('/commit')) {
-    const ovSessionId = decodeURIComponent(path.split('/')[4] ?? 'demo-session')
-    const task = createTask({
-      taskType: 'session_commit',
-      resourceId: ovSessionId,
-      status: 'running',
-      stage: 'archive',
-      settleMs: 3000,
-      result: {
-        session_id: ovSessionId,
-        archive_uri: `${USER}/sessions/${ovSessionId}/history/archive_004`,
-        memories_extracted: { memory_write: 2, memory_edit: 1 },
-        memory_diff_uri: `${USER}/sessions/${ovSessionId}/history/archive_004/memory_diff.json`,
-        token_usage: { total: { input: 1902, output: 88 } },
-      },
-      events: [
-        { kind: 'created', status: 'pending', stage: 'queued' },
-        { kind: 'status_changed', status: 'running', stage: 'archive' },
-      ],
-    })
-    return json(res, {
-      status: 'ok',
-      result: {
-        session_id: ovSessionId,
-        status: 'accepted',
-        task_id: task.task_id,
-        archive_uri: `${USER}/sessions/${ovSessionId}/history/archive_004`,
-        archived: true,
-      },
+  if (path === '/api/v1/snapshot/restore') {
+    return withJsonBody(req, res, (body) => {
+      if (typeof body.project_dir !== 'string' || typeof body.source_commit !== 'string') {
+        return json(res, failure('INVALID_ARGUMENT', 'project_dir and source_commit are required'), 400)
+      }
+      const out = restoreSnapshot(body.project_dir, body.source_commit, body.dry_run === true)
+      if (out.error !== undefined) return json(res, out.error, 404)
+      return json(res, out)
     })
   }
-
-  // GET /api/v1/tasks/{id} (+ optional execution events).
-  if (req.method === 'GET' && path.startsWith('/api/v1/tasks/') && !path.endsWith('/cancel')) {
+  if (req.method === 'GET' && path.startsWith('/api/v1/tasks/')) {
     const taskId = decodeURIComponent(path.slice('/api/v1/tasks/'.length))
     const task = TASKS.get(taskId)
-    if (task === undefined) {
-      return json(res, failure('NOT_FOUND', `Task not found: ${taskId}`, { type: 'task', resource: taskId }), 404)
-    }
-    const includeEvents = ['1', 'true'].includes(url.searchParams.get('include_events') ?? '')
-    const view = taskView(task)
-    if (!includeEvents) return json(res, { status: 'ok', result: view })
-    // The 0.5.3 contract puts the event container inside `result`
-    // (`result.execution_events`); keep the top-level copy too for older readers.
-    const events = taskEvents(task)
+    if (task === undefined) return jsonError(res, 404, 'NOT_FOUND', `Task not found: ${taskId}`, { type: 'task', resource: taskId })
     return json(res, {
       status: 'ok',
-      result: { ...view, result: { ...(view.result ?? {}), execution_events: events }, execution_events: events },
+      result: { ...taskView(task), task_id: taskId, execution_events: taskEvents(task) },
     })
   }
-
-  // POST /api/v1/tasks/{id}/cancel — cooperative cancel (mock succeeds).
-  if (req.method === 'POST' && path.startsWith('/api/v1/tasks/') && path.endsWith('/cancel')) {
-    const taskId = decodeURIComponent(path.slice('/api/v1/tasks/'.length, -'/cancel'.length))
-    const task = TASKS.get(taskId)
-    if (task === undefined) {
-      return json(res, failure('NOT_FOUND', `Task not found: ${taskId}`, { type: 'task', resource: taskId }), 404)
-    }
-    if (['completed', 'failed', 'cancelled'].includes(task.status)) {
-      return json(res, failure('FAILED_PRECONDITION', `Task is already ${task.status}: ${taskId}`, { type: 'task', resource: taskId }), 412)
-    }
-    task.status = 'cancelled'
-    task.stage = 'cancelled'
-    task.updated_at = nowSeconds()
-    return json(res, { status: 'ok', result: taskView(task) })
-  }
-
-  // GET /api/v1/console/dashboard/summary — F11 metric card.
   if (path === '/api/v1/console/dashboard/summary') {
     return json(res, {
       status: 'ok',
       result: {
-        context_counts: { files: 42, skills: 2, memories: 9, total: 53 },
-        today_tokens: { vlm_input: 3210, vlm_output: 980, embedding_input: 640, total: 4830 },
-        today_retrievals: { find: 12, search: 31, total: 43 },
+        context_counts: { memories: 9, resources: 2, skills: 2, sessions: 1 },
+        total_sessions: 1,
+        total_memories: 9,
+        total_resources: 2,
+        total_tokens: 4830,
+        total_retrievals: 43,
+        recent_commits: 3,
       },
     })
   }
-
-  // GET /api/v1/observer/queue?format=json — F11 metric card.
   if (path === '/api/v1/observer/queue') {
     return json(res, {
       status: 'ok',
       result: {
         name: 'queue',
         is_healthy: true,
-        has_errors: false,
         status: {
-          queues: [
-            { queue: 'memory_extract', pending: 1, in_progress: 0, processed: 14, requeued: 0, errors: 0, total: 15 },
-            { queue: 'semantic', pending: 0, in_progress: 0, processed: 9, requeued: 1, errors: 0, total: 10 },
-            { queue: 'vector', pending: 2, in_progress: 1, processed: 22, requeued: 0, errors: 1, total: 25 },
-          ],
+          queues: ['memory_extract', 'semantic', 'vector'],
+          table: [['queue', 'pending', 'in_progress', 'processed', 'errors'], ['memory_extract', 1, 0, 14, 0], ['semantic', 0, 0, 9, 0], ['vector', 2, 1, 22, 1]],
         },
       },
     })
   }
-
-  // GET /api/v1/stats/memories — F11 metric card.
   if (path === '/api/v1/stats/memories') {
-    return json(res, {
-      status: 'ok',
-      result: {
-        total_memories: 9,
-        by_category: { profile: 1, preferences: 2, entities: 4, events: 1, cases: 0, patterns: 0, tools: 1, skills: 0 },
-        hotness_distribution: { cold: 5, warm: 3, hot: 1 },
-        staleness: { not_accessed_7d: 4, not_accessed_30d: 2, oldest_memory_age_days: 38 },
-      },
-    })
+    return json(res, { status: 'ok', result: { total_memories: 9, by_type: { entity: 6, resource: 2, skill: 1 } } })
   }
-
-  // GET /api/v1/stats/sessions/{id} — F11 metric card.
   if (path.startsWith('/api/v1/stats/sessions/')) {
-    const sessionId = decodeURIComponent(path.slice('/api/v1/stats/sessions/'.length))
-    return json(res, {
-      status: 'ok',
-      result: { session_id: sessionId, total_turns: 1, memories_extracted: 9 },
-    })
+    return json(res, { status: 'ok', result: { session_id: decodeURIComponent(path.split('/').pop() ?? ''), messages: 2, tokens: 4830, commits: 3 } })
   }
-
-  // GET /api/v1/acl?uri= — resources-only; unavailable on the mock (like dev).
+// GET /api/v1/acl?uri= — resources-only; unavailable on the mock (like dev).
   if (path === '/api/v1/acl') {
     const uri = canonical(url.searchParams.get('uri') ?? '')
     if (!uri.startsWith('viking://resources')) {
@@ -1970,6 +1792,30 @@ createServer((req, res) => {
     // Rules / Experience capability probes enable.
     return json(res, { status: 'ok', healthy: true, version: '0.5.3', auth_mode: 'dev' })
   }
+  if (DEGRADED) {
+    // Degraded/empty evidence: key composed reads fail with server errors and one
+    // browse directory is empty, so the cockpit shows the unified degraded copy.
+    if (
+      path === '/api/v1/system/status' ||
+      path === '/api/v1/skills' ||
+      path.startsWith('/api/v1/observer/') ||
+      path.startsWith('/api/v1/console/') ||
+      path === '/api/v1/tasks' ||
+      path.startsWith('/api/v1/tasks/')
+    ) {
+      return jsonError(res, 500, 'INTERNAL', 'fixture degraded: server-side read failed', { type: 'degraded' })
+    }
+    if (path === '/api/v1/fs/ls') {
+      const degradedUri = canonical(url.searchParams.get('uri') ?? '')
+      if (degradedUri === `${USER}/memories`) {
+        return json(res, { status: 'ok', result: { items: [], has_more: false, offset: 0, next_offset: null } })
+      }
+      if (degradedUri === `${USER}/sessions` || degradedUri === `${USER}/resources`) {
+        return jsonError(res, 500, 'INTERNAL', 'fixture degraded: listing failed', { type: 'degraded' })
+      }
+    }
+  }
+
   if (path === '/api/v1/system/status') {
     return json(res, { status: 'ok', result: { initialized: true, user: 'demo' }, error: null })
   }
@@ -2508,6 +2354,34 @@ createServer((req, res) => {
       if (body !== undefined) return json(res, { status: 'ok', result: body })
     }
   }
+
+// GET /api/v1/acl?uri= — read-only ACL report (v0.9 Access tab; additive route).
+if (path === '/api/v1/acl') {
+  const aclUri = url.searchParams.get('uri') ?? ''
+  if (!aclUri.startsWith('viking://resources')) {
+    return jsonError(res, 400, 'INVALID_ARGUMENT', 'ACL is only available for viking://resources/** entries', { field: 'uri' })
+  }
+  if (aclUri.includes('/denied')) {
+    return jsonError(res, 403, 'FORBIDDEN', 'ACL management is not permitted for this identity', { type: 'acl', uri: aclUri })
+  }
+  return json(res, {
+    status: 'ok',
+    result: {
+      uri: aclUri,
+      acl_mode: 'restricted',
+      direct_entries: [
+        { principal: 'user:demo', level: 'read' },
+        { principal: 'group:release', level: 'write' },
+      ],
+      inherited_entries: [{ principal: 'role:viewer', level: 'read' }],
+      effective_entries: [
+        { principal: 'user:demo', level: 'write' },
+        { principal: 'group:release', level: 'write' },
+        { principal: 'role:viewer', level: 'read' },
+      ],
+    },
+  })
+}
 
   return json(res, { error: { message: `mock: no route for ${path}` } }, 404)
 }).listen(PORT, '127.0.0.1', () => {

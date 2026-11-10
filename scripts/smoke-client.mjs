@@ -692,6 +692,12 @@ for (const route of [
 ]) {
   check(code.includes(route), `the browser half knows the v0.8 route ${route}`)
 }
+// v0.9 multi-scope reads/mutations are document-relative too; the scope header is
+// attached by the shared request layer rather than each call site.
+for (const route of ['/scopes', '/scope/identity', '/session-scope', '/acl']) {
+  check(code.includes(route), `the browser half knows the v0.9 route ${route}`)
+}
+check(code.includes('x-dsh-openviking-scope'), 'the browser half sends the scope fingerprint header')
 // The second Plugins-page section is registered under its own id, just above the
 // v0.3 health summary; it is the setup surface older-DSH users fall back to.
 const detailSections = liveOf(onState, 'plugins.detail.section').map((held) => held.options)
@@ -700,6 +706,11 @@ check(detailSections.some((options) => options.id === 'openviking-setup' && opti
 check(detailSections.some((options) => options.id === 'openviking-health' && options.order === 40), 'and the health summary still sits below it')
 check(liveOf(onState, 'main').length === 1, 'exactly one main panel remains (no second sidebar row)')
 check(typeof exports.ScopeChip === 'function', 'the scope chip ships')
+for (const name of ['ScopeMenu', 'ScopeBanner', 'ScopeSwitchNoticeLine', 'SessionScopeBanner', 'AccessPanel']) {
+  check(typeof exports[name] === 'function', `the bundle ships the v0.9 surface ${name}`)
+}
+check(typeof exports.setScopeSwitcherEnabled === 'function' && typeof exports.setScopeBannerEnabled === 'function', 'the two scope switches are exposed to the harness')
+check(typeof exports.scopeKey === 'function', 'the browser half can read the active scope key')
 check(typeof exports.WriteDialog === 'function' && typeof exports.WriteToast === 'function', 'the write dialog and undo toast ship')
 // The shared URI link and the preview store are the v0.4 deep-link seam. The
 // shell only reads apply/inject; the extra exports exist for these harnesses.
@@ -763,6 +774,11 @@ check(injectedCss?.includes('.ove-diff-line-add') && injectedCss?.includes('.ove
 // v0.5 styles: the scope chip, the write dialog/toast, the Activity tab, the
 // command card and the settings profile editor all ship their own CSS.
 for (const className of ['.ove-scope-chip', '.ove-write-dialog', '.ove-write-editor', '.ove-toast', '.ove-act-task', '.ove-cmd', '.ove-config-profile-row']) {
+  check(injectedCss?.includes(className), `installs the ${className} styles`)
+}
+// v0.9 styles: the scope menu/banner/switch notice, the session mismatch banner
+// and the read-only ACL Access tab.
+for (const className of ['.ove-scope-menu', '.ove-scope-banner', '.ove-scope-switch-notice', '.ove-scope-session-banner', '.ove-acl-panel']) {
   check(injectedCss?.includes(className), `installs the ${className} styles`)
 }
 check(injectedCss?.includes('pointer-events: auto'), 'the click-through overlay entries opt back into pointer events')

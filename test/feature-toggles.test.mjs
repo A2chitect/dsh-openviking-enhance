@@ -39,6 +39,7 @@ const ALL_ON = {
   commands: true,
   activityPanel: true,
   scopeBanner: true,
+  scopeSwitcher: true,
   nativeViews: true,
   onboarding: true,
   // Writes (v0.5) and ops (v0.8) are the opt-in switches: absence means OFF.
@@ -56,6 +57,7 @@ const ALL_OFF = {
   commands: false,
   activityPanel: false,
   scopeBanner: false,
+  scopeSwitcher: false,
   nativeViews: false,
   onboarding: false,
   writes: false,
@@ -74,6 +76,7 @@ const FORM_ALL_ON = {
   enableCommands: true,
   enableActivity: true,
   showScopeBanner: true,
+  showScopeSwitcher: true,
   showNativeViews: true,
   showOnboarding: true,
   enableWrites: true,
@@ -90,6 +93,7 @@ const FORM_ALL_OFF = {
   enableCommands: false,
   enableActivity: false,
   showScopeBanner: false,
+  showScopeSwitcher: false,
   showNativeViews: false,
   showOnboarding: false,
   enableWrites: false,
@@ -114,6 +118,7 @@ test('each surface names the Config field that carries it', () => {
     commands: 'enableCommands',
     activityPanel: 'enableActivity',
     scopeBanner: 'showScopeBanner',
+    scopeSwitcher: 'showScopeSwitcher',
     writes: 'enableWrites',
     nativeViews: 'showNativeViews',
     onboarding: 'showOnboarding',
@@ -162,6 +167,7 @@ test('only a literal boolean false hides a surface', () => {
       commands: false,
       activityPanel: true,
       scopeBanner: true,
+      scopeSwitcher: true,
       nativeViews: true,
       onboarding: true,
       writes: false,
@@ -205,6 +211,7 @@ test('a missing value, missing fields or a malformed container mean on', () => {
     commands: true,
     activityPanel: true,
     scopeBanner: true,
+    scopeSwitcher: true,
     nativeViews: true,
     onboarding: true,
     writes: false,
@@ -230,6 +237,7 @@ test('sameFeatureFlags compares surface by surface', () => {
   assert.equal(sameFeatureFlags(ALL_ON, { ...ALL_ON, commands: false }), false)
   assert.equal(sameFeatureFlags(ALL_ON, { ...ALL_ON, activityPanel: false }), false)
   assert.equal(sameFeatureFlags(ALL_ON, { ...ALL_ON, scopeBanner: false }), false)
+  assert.equal(sameFeatureFlags(ALL_ON, { ...ALL_ON, scopeSwitcher: false }), false)
   assert.equal(sameFeatureFlags(ALL_ON, { ...ALL_ON, nativeViews: false }), false)
   assert.equal(sameFeatureFlags(ALL_ON, { ...ALL_ON, onboarding: false }), false)
   assert.equal(sameFeatureFlags(ALL_ON, { ...ALL_ON, writes: true }), false)

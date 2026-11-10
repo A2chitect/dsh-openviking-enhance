@@ -369,6 +369,7 @@ test('the mutation routes are registered only through ctx.connection.fetch', asy
       '/api/openviking-enhance/profiles/delete',
       '/api/openviking-enhance/profiles/save',
       '/api/openviking-enhance/profiles/test',
+      '/api/openviking-enhance/scope/identity',
       '/api/openviking-enhance/task/cancel',
       '/api/openviking-enhance/write/cancel',
       '/api/openviking-enhance/write/execute',

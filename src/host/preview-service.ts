@@ -207,7 +207,9 @@ export class PreviewService {
     }
 
     const { api } = this.options
-    const request = options.signal === undefined ? {} : { signal: options.signal }
+    // v0.9: every read this route composes is a sessionless preview read, so the
+    // peer READ selector applies (and is only ever a read lens).
+    const request = { readPeer: true, ...(options.signal === undefined ? {} : { signal: options.signal }) }
     const offset = clampOffset(options.offset)
     const limit = clampPageLines(options.limit)
     const [stat, attrs, abstract, overview, read] = await Promise.all([

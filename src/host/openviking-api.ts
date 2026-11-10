@@ -99,6 +99,13 @@ export type OvCommitTask = CommitTask & { task_type?: string }
 export interface RequestOptions {
   /** Actor peer for peer-scoped sessions. Omitted when the peer is unknown. */
   actorPeerId?: string | undefined
+  /**
+   * v0.9: mark this as a sessionless read so the active scope's peer READ
+   * selector is sent as `X-OpenViking-Actor-Peer`. Writes and session-scoped
+   * reads never set it: they keep the session's actor peer from the official
+   * memory plugin (a peer switch is a read lens, not a write authority).
+   */
+  readPeer?: boolean | undefined
   timeoutMs?: number
   /**
    * Caller-owned cancellation. When it aborts, the in-flight fetch aborts with
@@ -141,6 +148,9 @@ export class OpenVikingApi {
       if (this.connection.user) headers['X-OpenViking-User'] = this.connection.user
     }
     if (options.actorPeerId) headers['X-OpenViking-Actor-Peer'] = options.actorPeerId
+    // v0.9 peer READ selector: only sessionless reads opt in, and an explicit
+    // actor peer always wins (a session's own peer must never be overridden).
+    else if (options.readPeer === true && this.connection.peerId) headers['X-OpenViking-Actor-Peer'] = this.connection.peerId
     return headers
   }
 
@@ -762,10 +772,17 @@ export class OpenVikingApi {
 
   /* ---- v0.5: ACL read (read-only "not enabled" state only) --------------- */
 
-  /** The ACL report for a resource URI; resources only, and inert by default. */
+  /**
+   * The ACL report for a resource URI; resources only, and inert by default.
+   *
+   * v0.9 review S1: ACL is a **sessionless read**, so it follows the peer READ
+   * selector like Browse/Preview — the plan omitted it and the Access tab then
+   * reported the default peer's ACL while Browse showed the override peer's tree.
+   */
   async getAcl(uri: string, options: RequestOptions = {}): Promise<OvResult<OvAclReport>> {
     return this.request<OvAclReport>(`/api/v1/acl?uri=${encodeURIComponent(uri)}`, {
       timeoutMs: STATUS_TIMEOUT_MS,
+      readPeer: true,
       ...options,
     })
   }

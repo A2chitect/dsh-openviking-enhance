@@ -26,6 +26,7 @@ import type {
 import { fetchBrowsePage, fetchBrowseRoots, fetchBrowseSubtree } from './host-api.ts'
 import { t, writeErrorText } from './locale.ts'
 import { navigate, useNative } from './native-store.ts'
+import { AccessPanel } from './access-panel.tsx'
 import { formatBytes, PreviewBody } from './preview-body.tsx'
 import { openPreview } from './preview-store.ts'
 import { openRightTab } from './tab-store.ts'
@@ -144,6 +145,11 @@ export function NativeBrowse(props: NativeBrowseProps) {
   const [nodes, setNodes] = useState<Record<string, NodeState>>({})
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [selected, setSelected] = useState<string | null>(null)
+  /** v0.9: the preview pane's tab — Preview, or the read-only Access (ACL) tab. */
+  const [previewTab, setPreviewTab] = useState<'preview' | 'access'>('preview')
+  useEffect(() => {
+    setPreviewTab('preview')
+  }, [selected, props.refreshKey])
   const [subtree, setSubtree] = useState<SubtreeState | null>(null)
   const [warnings, setWarnings] = useState<PluginNotice[]>([])
   const [wide, setWide] = useState(true)
@@ -551,7 +557,29 @@ export function NativeBrowse(props: NativeBrowseProps) {
             <div className="ove-browse-breadcrumb" title={selected}>
               {selected}
             </div>
-            {showDirectoryTools && (
+            {selected.startsWith('viking://resources') && (
+              <div className="ove-browse-preview-tabs" role="tablist" aria-label={t('browse.previewTabs')}>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={previewTab === 'preview'}
+                  className={`ove-browse-tab${previewTab === 'preview' ? ' ove-browse-tab-active' : ''}`}
+                  onClick={() => setPreviewTab('preview')}
+                >
+                  {t('browse.tab.preview')}
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={previewTab === 'access'}
+                  className={`ove-browse-tab${previewTab === 'access' ? ' ove-browse-tab-active' : ''}`}
+                  onClick={() => setPreviewTab('access')}
+                >
+                  {t('browse.tab.access')}
+                </button>
+              </div>
+            )}
+            {showDirectoryTools && previewTab === 'preview' && (
               <DirectoryTools
                 uri={selected}
                 entryCount={childCount}
@@ -560,13 +588,17 @@ export function NativeBrowse(props: NativeBrowseProps) {
                 onSubtree={() => void loadSubtree(selected)}
               />
             )}
-            <PreviewBody
-              uri={selected}
-              readOnly
-              refreshKey={props.refreshKey}
-              onOpenInActions={(uri) => openPreview(uri)}
-              className="ove-native-preview-body"
-            />
+            {previewTab === 'access' ? (
+              <AccessPanel uri={selected} refreshKey={props.refreshKey} />
+            ) : (
+              <PreviewBody
+                uri={selected}
+                readOnly
+                refreshKey={props.refreshKey}
+                onOpenInActions={(uri) => openPreview(uri)}
+                className="ove-native-preview-body"
+              />
+            )}
           </>
         )}
       </div>
