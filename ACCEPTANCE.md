@@ -65,7 +65,7 @@ run without Studio; a person reviews and merges."*
 | v0.6 | No AGPL-derived code; tarball verified clean; matrix documented | independence gate, `verify:install`, README final matrix, `VERIFICATION.md` | Verified |
 | v0.7 | Core read tasks without the iframe; fallback documented | native cockpit tests + Studio-off walkthrough + README fallback text | Design-verified |
 | v0.8 | Operational tasks possible with confirmations and exportable evidence | fake-server ops E2E, audit/evidence tests, fixture screenshots | Fixture-only (no real-store writes by design) |
-| v0.9 | Multiple servers/scopes isolated and visibly labelled | fake two-server E2E, scope header refusal, banner inventory, switch walkthrough; PR #7 review blockers B1–B5 + ACL S2 fixed in the fixed base `b64d9cf` with regression tests (see §13) | Verified (guards) + Fixture-only (second scope) |
+| v0.9 | Multiple servers/scopes isolated and visibly labelled | fake two-server E2E, scope header refusal, banner inventory, switch walkthrough; PR #7 review blockers B1–B5 + ACL S2 fixed in the fixed base `845f7e6` with regression tests (see §13) | Verified (guards) + Fixture-only (second scope) |
 | v1.0 | Expected goals met; core tasks without Studio; human review/merge | §3–§8 + sign-off | Design-verified + CI-verified; **human merge pending** |
 
 ## 6. Original report success criteria (honest handling)
@@ -167,7 +167,7 @@ appearance is manual evidence.
 ## 13. Review status (fixed v0.9 base + this PR's round)
 
 The acceptance record must not vouch for an unfixed base. At this revision v1.0
-is rebased onto the **fixed v0.9 head `b64d9cf`**, which carries the fixes for
+is rebased onto the fixed v0.9 line — the reviewed round-1 tip **`845f7e6`** (the PR #7 review fixes) and the current round-2 head **`cfd7e71`** — which carries the fixes for
 PR #7's review round 1 — **B1** client scope switch chain (discovery reads +
 adopt-the-reply), **B2** peer read lens never becomes write authority, **B3**
 session-scope mismatch gates preview/force-commit and is enforced host-side,
@@ -182,15 +182,19 @@ unknown; 401 and 5xx are distinguished). Regression evidence:
 **Verified against the fixed base** with those regression tests; the two-server
 scenario itself stays **Fixture-only**.
 
-This PR (v1.0) review round 1 raised **N1** (hidden-tab zero-delay polling
-self-loop), **N2** (mount-time focus steal in the scope chips) and suggestions
-S1–S9. All are addressed in this revision; what changed and the tests that pin it
-are listed in the CHANGELOG "Fixed (PR #8 review round 1)" entry. Two evidence
-gaps are stated rather than papered over: N2's effect wiring is covered by the
-pure `shouldRestoreFocus` helper plus a DOM-free component contract (no jsdom in
-this repository, so the rendered focus move itself is manual), and the hidden
+This PR's review rounds raised **N1** (hidden-tab zero-delay polling self-loop),
+**N2** (mount-time focus steal in the scope chips), **B1** (round 2: the diff
+filter lost its click handler while moving from a tablist to a filter group) and
+suggestions S1–S9/P2–P3. All are addressed in this revision; what changed and the
+tests that pin it are listed in the CHANGELOG "Fixed (PR #8 review round 1)" and
+"(PR #8 review round 2)" entries. Evidence limits are stated rather than papered
+over: N2's rendered focus move cannot be automated here (no jsdom), so the pure
+`shouldRestoreFocus` decision, its unit matrix, and a structural wiring guard
+(both `scope-chip.tsx` call sites invoke the helper and track `wasOpen`) are the
+automated contract, while the rendered move stays manual (§10). The hidden
 zero-schedule property is proven with a fake-clock scheduler test plus a
-structural timer-ownership guard (both automated).
+structural timer-ownership guard; the diff filter now has a pure
+`filterDiffGroups` unit test plus a source guard that its buttons remain wired.
 
 ## 14. Known limitations / not verified
 
@@ -204,6 +208,10 @@ structural timer-ownership guard (both automated).
 - First-paint timing not instrumented; performance budgets are request/cache
   assertions, not benchmarks. Hidden-tab scheduling is fake-clock tested, not
   browser-throttling tested.
+- Browse shortcut rows ("Sessions", "Explore") are labelled `treeitem`s rendered
+  outside the arrow-key tree model: they remain a separate Tab stop inside the
+  tree region rather than being reachable with Up/Down. Documented rather than
+  claimed as fully modelled.
 - `/viking` output English (documented).
 - Transcripts, OVPack backup/import/restore, compile config, rules compile,
   ACL/admin, resource upload/edit: **not shipped** (upstream dependency table in
@@ -228,7 +236,7 @@ Required before the `v1.0.0` tag (all PRs in the stack merged in order
       unmeasured/externally-unverified and will not be claimed elsewhere.
 - [ ] I have linked the CI run id and the browser evidence set in
       `VERIFICATION.md` (1.0.0 row).
-- [ ] I confirm the fixed v0.9 base (`b64d9cf`) carries PR #7's review fixes with
+- [ ] I confirm the fixed v0.9 base (`845f7e6`) carries PR #7's review fixes with
       regression tests, and that PR #8's review round-1 items are addressed
       (§13 / CHANGELOG "Fixed (PR #8 review round 1)").
 - [ ] I confirm this diff adds no dependency, no new write path and touches no live

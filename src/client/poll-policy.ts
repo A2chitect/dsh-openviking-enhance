@@ -95,6 +95,11 @@ export interface PollScheduler {
   onVisibilityChange(listener: () => void): () => void
 }
 
+/** The current visibility fact for callers that compute a policy delay. */
+export function pollHidden(): boolean {
+  return defaultPollScheduler()?.isHidden() ?? false
+}
+
 /** The browser scheduler; null in a server render / older harness (no DOM). */
 export function defaultPollScheduler(): PollScheduler | null {
   if (typeof window === 'undefined' || typeof document === 'undefined') return null
@@ -136,6 +141,7 @@ export function startScheduledPoll(
   load: () => Promise<void> | void,
   nextDelay: () => number,
   scheduler: PollScheduler | null = defaultPollScheduler(),
+  options: { immediate?: boolean } = {},
 ): () => void {
   if (scheduler === null) return () => {}
   let closed = false
@@ -165,6 +171,11 @@ export function startScheduledPoll(
     loading = true
     try {
       await load()
+    } catch {
+      // A throwing loader must not kill the single polling primitive: the loop
+      // keeps its backoff decision (callers count failures themselves), and the
+      // rejection is swallowed after logging the state transition. Unhandled
+      // rejections would otherwise stop the loop silently.
     } finally {
       loading = false
     }
@@ -190,8 +201,11 @@ export function startScheduledPoll(
   }
   const unsubscribe = scheduler.onVisibilityChange(onVisibility)
   // Initial scheduling respects the hidden state (no timer), so mounting a
-  // hidden tab never starts a loop.
-  schedule(nextDelay())
+  // hidden tab never starts a loop. `immediate` performs the first load now and
+  // then schedules from the *fresh* facts (activity: first response decides
+  // whether the cadence is 5 s or 30 s, instead of always starting at 30 s).
+  if (options.immediate === true && !scheduler.isHidden()) void tick()
+  else schedule(nextDelay())
   return () => {
     if (closed) return
     closed = true

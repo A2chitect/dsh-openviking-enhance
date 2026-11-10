@@ -44,7 +44,7 @@ import {
 } from '../shared/protocol.ts'
 import { fetchCommits, fetchDiff, fetchSessionControl, prepareWrite, type CommitsPayload } from './host-api.ts'
 import { t } from './locale.ts'
-import { nextPollDelay, startScheduledPoll } from './poll-policy.ts'
+import { nextPollDelay, pollHidden, startScheduledPoll } from './poll-policy.ts'
 import {
   deriveClientPhase,
   describeFailure,
@@ -55,6 +55,7 @@ import {
   taskTime,
 } from '../shared/commit-state.ts'
 import { lineDiff, type DiffRow } from '../shared/text-diff.ts'
+import { filterDiffGroups, type DiffFilter, type DiffGroup } from './diff-filter.ts'
 import { copyText } from './clipboard.ts'
 import { OpenVikingIcon } from './openviking-icon.tsx'
 import { VikingUriLink } from './viking-uri-link.tsx'
@@ -156,12 +157,15 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
     }
     // The scheduler owns visibility and the "do not schedule" contract, so a
     // hidden document owns no timer and the active cadence follows the latest
-    // successful answer (review S2 pattern, shared with Activity).
-    const dispose = startScheduledPoll(() => run(false), () =>
-      nextPollDelay({ working: lastWorking, hidden: false, errorCount: lastErrorCount }),
+    // successful answer (review S2 pattern, shared with Activity). The first
+    // load is immediate and fresh.
+    const dispose = startScheduledPoll(
+      () => run(false),
+      () => nextPollDelay({ working: lastWorking, hidden: pollHidden(), errorCount: lastErrorCount }),
+      undefined,
+      { immediate: true },
     )
     refreshRef.current = () => void run(true)
-    void run(false)
     return () => {
       cancelled = true
       controller.abort()
@@ -527,15 +531,6 @@ function FailureDetail({ failure, task }: { failure: ArchiveFailure | null; task
   )
 }
 
-/** The three change kinds, in the order the diff browser shows them. */
-type DiffFilter = 'all' | 'adds' | 'updates' | 'deletes'
-
-interface DiffGroup {
-  key: Exclude<DiffFilter, 'all'>
-  title: string
-  entries: MemoryDiffEntry[]
-}
-
 /**
  * One commit's memory changes, with the part the old popover never showed: the
  * text before and after.
@@ -558,7 +553,7 @@ export function DiffView({ diff }: { diff: MemoryDiff }) {
     { key: 'deletes', title: t('pill.group.deletes'), entries: diff.deletes },
   ]
   const total = summary.totalAdds + summary.totalUpdates + summary.totalDeletes
-  const visible = filter === 'all' ? groups : groups.filter((group) => group.key === filter)
+  const visible = filterDiffGroups(groups, filter)
   const shown = visible.reduce((count, group) => count + group.entries.length, 0)
   return (
     <div className="ove-section">
@@ -592,6 +587,7 @@ export function DiffView({ diff }: { diff: MemoryDiff }) {
                   key={candidate}
                   type="button"
                   aria-pressed={filter === candidate}
+                  onClick={() => setFilter(candidate)}
                   className={`ove-diff-filter${filter === candidate ? ' ove-diff-filter-active' : ''}`}
                 >
                   {t(`pill.filter.${candidate}`)}

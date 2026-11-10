@@ -187,8 +187,12 @@ test('the source tree ships no hardcoded user-facing string that bypasses the co
   // symbols/punctuation (arrows, bullets, ×, ↻) and proper nouns (OpenViking,
   // Studio, a scope/profile label). This reads the shipped sources, so it fails
   // when a new surface skips the copy layer.
-  const files = ['native-panel.tsx', 'native-overview.tsx', 'native-browse.tsx', 'scope-chip.tsx', 'activity-panel.tsx']
-  const allowed = new Set(['OpenViking', 'Studio', 'JSON', 'MCP'])
+  // Every client tsx file (the old five-file sample missed surfaces); TS
+  // generics/code fragments inside the tag heuristic are skipped by the filters.
+  const files = readdirSync(new URL('../src/client/', import.meta.url))
+    .filter((name) => name.endsWith('.tsx'))
+    .sort()
+  const allowed = new Set(['OpenViking', 'Studio', 'JSON', 'MCP', 'OVPack', 'DSH'])
   for (const name of files) {
     const source = readFileSync(new URL(`../src/client/${name}`, import.meta.url), 'utf8')
     const jsxText = [...source.matchAll(/>([^<>{}\n]+)</g)]
@@ -196,7 +200,10 @@ test('the source tree ships no hardcoded user-facing string that bypasses the co
       .filter((text) => text.length > 0)
       // Only plain prose candidates: code fragments like `=> (item as X)` are
       // picked up by the tag heuristic but are not JSX text.
-      .filter((text) => /^[A-Za-z][A-Za-z0-9 ,.!?&%'()\-]*$/.test(text))
+      .filter((text) => /^[A-Za-z][A-Za-z0-9 ,.!?&%'\-]*$/.test(text))
+      // A member-expression fragment (`document.querySelector`) is code caught
+      // between a TS generic's `>` and the next `<`, not JSX prose.
+      .filter((text) => !/^[a-z][A-Za-z0-9]*\.[a-zA-Z]/.test(text))
     for (const text of jsxText) {
       const words = text.replace(/[0-9.,;:!?()\[\]{}×→←▾▸▴▾…·—\-+/%°⌘⚠🔒©®™'"#*|&]/g, ' ').match(/[A-Za-z]{3,}/g) ?? []
       for (const word of words) {

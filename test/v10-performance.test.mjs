@@ -276,6 +276,37 @@ test('the loop recomputes the delay after every load, so a running task switches
   dispose()
 })
 
+test('immediate start loads before scheduling, so the first cadence uses fresh facts (review round 2)', async () => {
+  const clock = fakeScheduler()
+  const facts = { working: false }
+  let loads = 0
+  const dispose = startScheduledPoll(
+    () => {
+      loads += 1
+      facts.working = true
+    },
+    () => nextPollDelay({ working: facts.working, hidden: false, errorCount: 0 }),
+    clock.scheduler,
+    { immediate: true },
+  )
+  await Promise.resolve()
+  await Promise.resolve()
+  assert.equal(loads, 1, 'the first load runs immediately')
+  assert.equal(clock.pending(), 1)
+  assert.equal(clock.state.timers[0].delayMs, POLL_ACTIVE_MS, 'the first schedule already uses the running-task cadence')
+  // Hidden mount: immediate must not bypass the no-timer/no-load guarantee.
+  const hiddenClock = fakeScheduler({ hidden: true })
+  let hiddenLoads = 0
+  const hiddenDispose = startScheduledPoll(() => {
+    hiddenLoads += 1
+  }, () => POLL_ACTIVE_MS, hiddenClock.scheduler, { immediate: true })
+  await Promise.resolve()
+  assert.equal(hiddenLoads, 0)
+  assert.equal(hiddenClock.created(), 0)
+  hiddenDispose()
+  dispose()
+})
+
 test('only poll-policy may own a recurring timer, and the polling consumers use the scheduler', () => {
   // Structural guard for review S5: the old regex only saw setInterval, so a
   // recursive setTimeout loop (N1) slipped through. Non-polling timers are

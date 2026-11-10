@@ -44,7 +44,7 @@ import {
 } from './host-api.ts'
 import { formatDateTime, t, writeErrorText } from './locale.ts'
 import { useA11yTabs } from './a11y.ts'
-import { nextPollDelay, startScheduledPoll, startVisibleInterval } from './poll-policy.ts'
+import { nextPollDelay, pollHidden, startScheduledPoll, startVisibleInterval } from './poll-policy.ts'
 import { MetricCard, MetricsCards } from './metrics-view.tsx'
 import { ScopeChip } from './scope-chip.tsx'
 import { useScope } from './scope-store.ts'
@@ -331,12 +331,16 @@ function TasksSection({ sessionId }: { sessionId: string }) {
         errorCount.current += 1
       }
     }
-    // One scheduler owns the loop: hidden documents create no timers, and the
-    // delay is recomputed after every load from live refs.
-    const dispose = startScheduledPoll(load, () =>
-      nextPollDelay({ working: workingRef.current, hidden: false, errorCount: errorCount.current }),
+    // One scheduler owns the loop: hidden documents create no timers, the first
+    // load is immediate so the cadence starts from the real answer (a task that
+    // is already running polls at 5 s from the first response), and the delay is
+    // recomputed after every load from live refs.
+    const dispose = startScheduledPoll(
+      load,
+      () => nextPollDelay({ working: workingRef.current, hidden: pollHidden(), errorCount: errorCount.current }),
+      undefined,
+      { immediate: true },
     )
-    void load()
     return () => {
       cancelled = true
       controller.abort()

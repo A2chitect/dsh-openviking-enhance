@@ -58,6 +58,28 @@ test('a rendered host warning never shows the raw code instead of its copy', () 
   attachLocale(undefined)
 })
 
+test('every err(code) the host can emit has localized wcode copy (mechanical scan)', () => {
+  // The notice side scans every `code:` value; this is the matching mechanical
+  // scan for error envelopes, so a new write/ops error cannot ship untranslated
+  // (review round 2: the hand-picked list is now exhaustive).
+  const codes = new Set()
+  const dir = new URL('../src/host/', import.meta.url)
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith('.ts')) continue
+    const text = readFileSync(new URL(name, dir), 'utf8')
+    for (const match of text.matchAll(/err\(\s*'([a-zA-Z0-9_-]+)'/g)) codes.add(match[1])
+    for (const match of text.matchAll(/err\(\s*"([a-zA-Z0-9_-]+)"/g)) codes.add(match[1])
+  }
+  assert.ok(codes.size > 20, `the scan found the error vocabulary (${codes.size})`)
+  const missing = []
+  for (const code of codes) {
+    for (const [locale, dict] of Object.entries(DICTS)) {
+      if (!(`wcode.${code}` in dict)) missing.push(`${locale}:wcode.${code}`)
+    }
+  }
+  assert.deepEqual(missing, [], `missing error copy: ${missing.join(', ')}`)
+})
+
 test('write/ops error envelopes use localized copy when a code is known', () => {
   attachLocale({ getSnapshot: () => ({ active: 'en' }) })
   const known = [

@@ -134,7 +134,7 @@ write/ops gates are unchanged.
   panel container when the opener unmounted; the focus ring now also covers the
   dock slots (scope chip/commit pill); `/viking` placeholders that shipped
   hardcoded filter examples are localized.
-- **B0 — base review status.** The rebased v0.9 base (`b64d9cf`) carries the fixes
+- **B0 — base review status.** The rebased v0.9 line (round-1 tip `845f7e6`, round-2 head `cfd7e71`) carries the fixes
   for PR #7's five review blockers (B1 client switch chain, B2 peer/read-write
   boundary, B3 session-scope write gating, B4 expired-token purge, B5 activity
   cache reset) and the ACL S2 no-guess fix, with regression tests
@@ -143,9 +143,40 @@ write/ops gates are unchanged.
   `test/v09-scope-units.test.mjs`). `ACCEPTANCE.md`/`VERIFICATION.md` now state
   that status instead of vouching for an unfixed base.
 
+#### Fixed (PR #8 review round 2)
+
+- **B1 — commit-diff filter buttons lost their click handler.** The round-1
+  refactor from a `tablist` to a `filter group` dropped `onClick={() =>
+  setFilter(candidate)}` while keeping `aria-pressed`, so All/Adds/Updates/Deletes
+  rendered a state that never changed. The handler is restored, the selection math
+  is now the pure `filterDiffGroups(groups, filter)` in `src/client/diff-filter.ts`
+  (unit-tested: `'deletes'` keeps only delete groups, `'all'` returns a copy, empty
+  buckets render the empty state), and a source guard pins the button wiring
+  because SSR cannot observe handlers.
+  **Interaction note:** the diff-type filter is now a `role="group"` of
+  `aria-pressed` filter buttons instead of a tablist — the only user-visible
+  interaction semantics changed by v1.0.
+- **P2 — base SHA corrected.** The acceptance documents named a pre-rebase commit
+  that is not in this branch history; they now name the actual fixed v0.9 base
+  `845f7e6`, and `test/v10-docs.test.mjs` asserts the content (B1–B5 + the named
+  `test/v09-*` regression files) rather than a SHA.
+- **P3 — N2 evidence wording.** Added a structural guard that both `scope-chip.tsx`
+  call sites invoke `shouldRestoreFocus` with the `wasOpen` ref (and that the old
+  mount-time `if (!open) triggerRef.current?.focus()` cannot return); ACCEPTANCE
+  §13 now states the automated contract and the manual remainder precisely.
+- **Smaller review items taken along:** the scheduler's `tick()` now catches a
+  throwing loader instead of leaving an unhandled rejection that silently stops
+  the loop; both polling consumers compute `hidden` through the shared
+  `pollHidden()` helper (so the policy's hidden branch is live, not just the
+  scheduler guard) and start with an immediate load (`{ immediate: true }`) so the
+  first fresh answer selects the 5 s/30 s cadence instead of always starting at
+  30 s and re-fetching once on focus; the scope-chip cooldown re-render derives
+  its delay from `SCOPE_SWITCH_COOLDOWN_MS`; the degraded-copy test now scans
+  every `err('…')` host code mechanically for `wcode.*` coverage.
+
 #### Verified
 
-- `pnpm test`: typecheck, build, packaging contract, independence gate, **566**
+- `pnpm test`: typecheck, build, packaging contract, independence gate, **587**
   unit tests, client smoke and host smoke (live read-only path redacted) all
   green; new v1.0 a11y/locale/degraded/performance suites included.
 - `pnpm run verify:install`: 27/27 clean-profile steps; also runs as a CI

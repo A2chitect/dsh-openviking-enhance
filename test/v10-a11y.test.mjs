@@ -439,6 +439,25 @@ test('host warnings stay a collapsible group with a polite announcement (review 
   assert.match(markup, /<summary>[\s\S]*?role="status"[\s\S]*?aria-live="polite"/, 'the summary announces the count politely')
 })
 
+test('both scope-chip call sites route focus restore through shouldRestoreFocus (review P3)', () => {
+  // No jsdom => the rendered focus move cannot be asserted here. This structural
+  // guard is the automated contract: the chips must use the pure decision helper
+  // with a prev-open ref, and the old mount-time focus grab must not return.
+  const source = readFileSync(new URL('../src/client/scope-chip.tsx', import.meta.url), 'utf8')
+  assert.equal(
+    (source.match(/const wasOpen = useRef\(false\)/g) ?? []).length,
+    2,
+    'both ScopeChip and ScopeBanner track the previous open state',
+  )
+  assert.equal(
+    (source.match(/if \(shouldRestoreFocus\(wasOpen\.current, open\)\) triggerRef\.current\?\.focus\(\)/g) ?? []).length,
+    2,
+    'both call sites restore through the pure helper, not on any open change',
+  )
+  assert.equal((source.match(/wasOpen\.current = open/g) ?? []).length, 2)
+  assert.doesNotMatch(source, /if \(!open\) triggerRef\.current\?\.focus\(\)/, 'the mount-time focus grab is gone')
+})
+
 test('the a11y stylesheet ships structural guards (conformance remains manual)', () => {
   const { find } = loadBundle('en')
   const css = readFileSync(new URL('../src/client/styles.ts', import.meta.url), 'utf8')

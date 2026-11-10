@@ -29,6 +29,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { firstEnabledIndex, nextMenuIndex, shouldRestoreFocus } from './a11y.ts'
+import { SCOPE_SWITCH_COOLDOWN_MS } from '../shared/limits.ts'
 import type { ScopeIdentityRequest, ScopeListEntry, ScopesPayload } from '../shared/protocol.ts'
 import { fetchScopes, testProfileEndpoint } from './host-api.ts'
 import { t } from './locale.ts'
@@ -292,7 +293,9 @@ export function ScopeMenu({ onClose }: ScopeMenuProps) {
   }, [])
   useEffect(() => {
     if (blocked !== 'scope.switchCooldown') return
-    const timer = setTimeout(() => setTick((value) => value + 1), 1_100)
+    // Recompute the relative cooldown label just after the cooldown expires; the
+    // margin must move with the constant or the label sticks at "cooling down".
+    const timer = setTimeout(() => setTick((value) => value + 1), SCOPE_SWITCH_COOLDOWN_MS + 100)
     return () => clearTimeout(timer)
   }, [blocked])
   const activeScope = state.scope

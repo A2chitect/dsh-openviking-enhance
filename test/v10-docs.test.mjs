@@ -135,25 +135,59 @@ test('CHANGELOG has the final v1.0 section under Unreleased, above v0.9', () => 
   assert.match(body, /27\/27/, 'install evidence count is recorded')
 })
 
-test('the acceptance record states the fixed-base review status and this review round (B0)', () => {
+test('the acceptance record states the fixed-base review status and review rounds (B0)', () => {
   assert.match(acceptance, /## 13\. Review status/)
   assert.match(acceptance, /PR #7/)
   for (const blocker of ['B1', 'B2', 'B3', 'B4', 'B5', 'S2']) {
     assert.ok(acceptance.includes(blocker), `ACCEPTANCE §13 names PR #7 item ${blocker}`)
   }
-  assert.match(acceptance, /b64d9cf/, 'the fixed v0.9 base commit is named')
-  assert.match(acceptance, /PR #8 review round 1|review round-1 items are addressed/, 'this PR review round is named')
-  assert.match(acceptance, /shouldRestoreFocus|fake-clock/, 'the N1/N2 evidence approach is stated')
-  assert.match(acceptance, /review round-1 items are addressed/, 'the sign-off asks the reviewer to confirm review status')
+  // Content assertions, not a hard-coded SHA: the record must name the fixed
+  // v0.9 base and the regression suites that prove B1–B5/ACL S2 are fixed.
+  assert.match(acceptance, /fixed v0\.9 base/, 'the fixed v0.9 base status is named')
+  for (const path of [
+    'test/v09-client-scope.test.mjs',
+    'test/v09-component.test.mjs',
+    'test/v09-scope-routes.test.mjs',
+    'test/v09-scope-units.test.mjs',
+  ]) {
+    assert.ok(acceptance.includes(path), `ACCEPTANCE §13 cites ${path}`)
+  }
+  assert.match(acceptance, /PR #8/)
+  assert.match(acceptance, /review round 2|round 2/, 'this review round is named')
+  assert.match(acceptance, /filterDiffGroups/, 'the round-2 diff-filter evidence is stated')
+  assert.match(acceptance, /shouldRestoreFocus/, 'the N2 evidence approach is stated')
+  assert.match(acceptance, /structure|structural/, 'the structural evidence is described')
   const checkboxes = [...acceptance.matchAll(/^- \[ \]/gm)].length
   assert.ok(checkboxes >= 8, `the sign-off block lists the review-status gate (${checkboxes} checkboxes)`)
-  // VERIFICATION carries the same base-review statement.
+  // VERIFICATION carries the same base-review statement and content.
   assert.match(verification, /Base review status/)
-  assert.match(verification, /b64d9cf/)
   assert.match(verification, /PR #7/)
+  assert.match(verification, /test\/v09-/)
   assert.match(verification, /PR #8/)
-  assert.match(verification, /review round 1 addressed|review round 1/)
+  assert.match(verification, /review round/)
+  // The documents must not name a commit that is not in this branch history.
+  for (const [name, markdown] of [['ACCEPTANCE.md', acceptance], ['CHANGELOG.md', changelog], ['VERIFICATION.md', verification]]) {
+    assert.doesNotMatch(markdown, /b64d9cf/, `${name} cites the real fixed base, not a pre-rebase SHA`)
+  }
 })
+
+test('the changelog records the review-round fixes and aligned claims', () => {
+  assert.match(changelog, /#### Fixed \(PR #8 review round 1\)/)
+  assert.match(changelog, /#### Fixed \(PR #8 review round 2\)/)
+  for (const item of ['N1', 'N2', 'S1', 'S2', 'S4', 'S5', 'S9', 'B0', 'B1', 'P2', 'P3']) {
+    assert.ok(changelog.includes(item), `the changelog names review item ${item}`)
+  }
+  assert.match(changelog, /zero-delay timer|zero-delay self-loop/, 'the N1 bug is described')
+  assert.match(changelog, /fixed v0\.9 base|rebased v0\.9 base/, 'B0 base status is described')
+  // B1: the restored handler, the pure filter and the user-visible semantics note.
+  assert.match(changelog, /filterDiffGroups/)
+  assert.match(changelog, /role="group"/, 'the tablist -> filter-group interaction change is documented')
+  assert.doesNotMatch(changelog, /CURRENT_TESTS/, 'the test count placeholder is filled in')
+  // The old claims that contradicted the code are gone.
+  assert.doesNotMatch(changelog, /tablist\/tab\/tabpanel with `aria-controls`\/`aria-labelledby`/)
+  assert.match(changelog, /no dangling `aria-controls`/)
+})
+
 
 test('the changelog records the review-round fixes and aligned claims', () => {
   assert.match(changelog, /#### Fixed \(PR #8 review round 1\)/)
