@@ -46,8 +46,18 @@ import {
   type OverviewPluginFact,
   OPS_ACTIONS,
   type OpsAction,
+  SCOPE_HEADER,
+  SCOPE_RESPONSE_HEADER,
+  type AclPayload,
+  type OfficialPluginFacts,
+  type ScopeIdentityRequest,
+  type ScopesPayload,
+  type SearchPayload,
+  type SessionScopePayload,
+  type ScopeCapability,
 } from '../shared/protocol.ts'
 import {
+  ACL_URI_MAX_CHARS,
   FILE_VERSIONS_PAGE,
   OBSERVABILITY_MAX_DAYS,
   SNAPSHOT_DIFF_PATHS_PAGE,
@@ -55,12 +65,14 @@ import {
   SNAPSHOT_LOG_PAGE,
   SNAPSHOT_PATHS_MAX,
   SNAPSHOT_SHOW_MAX_BYTES,
+  SCOPE_HEALTH_TIMEOUT_MS,
   TASK_EVIDENCE_MAX_BYTES,
 } from '../shared/limits.ts'
 import {
   configSourceHealth,
   describeConnection,
   identityFingerprint,
+  normalizeEndpoint,
   resolveConnectionForProfile,
   type ConnectionOverrides,
   type ResolvedIdentity,
@@ -76,7 +88,12 @@ import { OpsService, type OpsPrepareRequest } from './ops-service.ts'
 import { ObservabilityService } from './observability-service.ts'
 import { EvidenceService } from './evidence-service.ts'
 import { PLUGIN_VERSION } from '../shared/build-info.ts'
-import { ProfileStore, isHttpEndpoint, isProbeableEndpoint } from './profiles.ts'
+import { ProfileStore, isHttpEndpoint, isProbeableEndpoint, normalizeProfileEndpoint } from './profiles.ts'
+import { ScopeStateStore } from './scope-state.ts'
+import { ScopeService, type ResolvedScope } from './scope-service.ts'
+import { SessionScopeMap } from './session-scope-map.ts'
+import { AclService } from './acl-service.ts'
+import { compareOfficialPluginFacts, projectOfficialPluginFacts } from './plugin-connection-facts.ts'
 import { SessionControlService } from './session-control.ts'
 import { WriteService } from './write-service.ts'
 import {
@@ -223,6 +240,14 @@ export const Config = z.object({
   /** v0.7 interface switch: the onboarding checklist (Overview card + Plugins Setup card). */
   showOnboarding: z.boolean().default(true).volatile(),
   /**
+   * v0.9 interface switch: the cockpit scope menu (the switcher).
+   *
+   * Default **true**. Off hides only the menu/switcher affordance — the
+   * persistent scope banner stays governed by the existing `showScopeBanner`
+   * switch, and every dialog/evidence scope block is never hidden (sign-off 6).
+   */
+  showScopeSwitcher: z.boolean().default(true).volatile(),
+  /**
    * The active identity profile id, or '' for legacy v0.4 connection
    * resolution. A named profile wins over the endpoint/apiKey/account/user
    * overrides (Lead sign-off decision A); the host re-resolves on change.
@@ -268,6 +293,7 @@ export interface EnhanceConfigInput {
   showScopeBanner?: ConfigField<boolean>
   showNativeViews?: ConfigField<boolean>
   showOnboarding?: ConfigField<boolean>
+  showScopeSwitcher?: ConfigField<boolean>
   activeProfile?: ConfigField<string>
 }
 
@@ -362,9 +388,57 @@ interface HostConnectionLike {
   fetch?: { register(route: HostConnectionFetchRoute): () => Promise<void> | void }
 }
 
+/**
+ * v0.9: the per-response scope context installed by the route wrapper.
+ *
+ * `captured` is the scope key the request started under; `current()` reads the
+ * live active key. `writeJson` labels the response with the active key and, if
+ * the scope moved while the handler was awaiting an upstream read, answers
+ * `scope-changed` instead of returning a payload from the previous scope
+ * (design §3.2 "host-side guard": no partial/stale payload ever reaches a client
+ * that asked under another key).
+ */
+interface ScopeResponder {
+  /** The identity tuple the request started under (profile/endpoint/account/user/peer). */
+  capturedTuple: string
+  /**
+   * The live scope facts. The stale check compares the identity tuple, not the
+   * raw key: the first capability probe refines the probed auth mode and with it
+   * the key, which is not a scope change (the identity did not move).
+   */
+  current: () => { key: string; tuple: string }
+}
+const SCOPE_RESPONDER = Symbol('openvikingScopeResponder')
+
+/** Refuse only when the identity itself moved, not when the probe refined the key. */
+function scopeMoved(capturedTuple: string, current: { key: string; tuple: string }): boolean {
+  return capturedTuple !== current.tuple
+}
+
 function writeJson(res: ServerResponse, status: number, body: unknown): void {
-  const payload = JSON.stringify(body)
-  res.writeHead(status, {
+  const tagged = res as ServerResponse & { [SCOPE_RESPONDER]?: ScopeResponder }
+  const responder = tagged[SCOPE_RESPONDER]
+  let nextStatus = status
+  let nextBody = body
+  if (responder !== undefined) {
+    const current = responder.current()
+    if (scopeMoved(responder.capturedTuple, current)) {
+      nextStatus = 409
+      nextBody = {
+        ok: false,
+        error: {
+          code: 'scope-changed',
+          message: 'The active scope changed while this request was in flight; reload the surface.',
+          scopeKey: current.key,
+        },
+      }
+    }
+    if (!res.headersSent && typeof res.setHeader === 'function') {
+      res.setHeader(SCOPE_RESPONSE_HEADER, current.key)
+    }
+  }
+  const payload = JSON.stringify(nextBody)
+  res.writeHead(nextStatus, {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
     'content-length': Buffer.byteLength(payload),
@@ -442,14 +516,19 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
       : null
   }
 
-  /* ---- v0.5 identity (F12 / decision A) -------------------------------- */
+  /* ---- v0.5/v0.9 identity + scope (F12 / decision A, extended by v0.9) --- */
 
   /**
-   * The plugin-owned profile file is the secret store of record. A missing or
-   * corrupt file is not an error: `resolveConnectionForProfile` then falls back
-   * to the v0.4 precedence, so the plugin keeps working on a fresh machine.
+   * The plugin-owned profile file is the credential/server unit of record (0600).
+   * A missing or corrupt file is not an error: resolution falls back to the v0.4
+   * precedence, so the plugin keeps working on a fresh machine.
    */
   const profileStore = new ProfileStore()
+  /**
+   * v0.9: the DSH-home last-scope state — the active profile plus the optional
+   * in-server identity override (0600, atomic). Secrets never live here.
+   */
+  const scopeState = new ScopeStateStore()
   const connectionOverrides = (): ConnectionOverrides => ({
     endpoint: configText(config.endpoint),
     apiKey: configText(config.apiKey),
@@ -457,23 +536,25 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
     user: configText(config.user),
   })
   const activeProfileId = (): string => configText(config.activeProfile).trim()
-  const resolveActive = (): ResolvedIdentity =>
-    resolveConnectionForProfile(profileStore.read().file.profiles, activeProfileId(), connectionOverrides())
 
-  /** The active identity. `connection`/`origins` are mutable objects so a
-   * profile switch updates every v0.4 service in place (they hold references). */
-  let resolvedIdentity: ResolvedIdentity = resolveActive()
-  const connection = resolvedIdentity.connection
-  const origins = resolvedIdentity.origins
+  /**
+   * The shared mutable connection object.
+   *
+   * It starts as the legacy v0.4 resolution and is replaced in place by the
+   * resolved scope below: every v0.4 service holds a reference to this object, so
+   * an identity switch updates every reader at once (the v0.5 mechanism).
+   */
+  const bootIdentity = resolveConnectionForProfile([], '', connectionOverrides())
+  const connection = bootIdentity.connection
+  const origins = bootIdentity.origins
   let currentApi = new OpenVikingApi(connection, { dshVersion })
 
   /**
-   * One API instance per active profile, behind a proxy.
+   * One API instance per active scope, behind a proxy.
    *
    * v0.4's services were constructed with a fixed client; making the proxy the
-   * identity seam means a `loader/volatile-update` can swap the underlying
-   * client without rebuilding every service (and without stale caches keyed to a
-   * previous profile).
+   * identity seam means a scope switch can swap the underlying client without
+   * rebuilding every service (and without stale caches keyed to a previous scope).
    */
   const api = new Proxy({} as OpenVikingApi, {
     get: (_target, property) => {
@@ -485,63 +566,165 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
 
   /** True once `ctx.connection.fetch.register` is available and our routes are on it. */
   let transportAvailable = false
-  /** Assigned once the audit log exists; audits a profile switch. */
-  let recordIdentitySwitch: (() => void) | null = null
+  /** Assigned once the audit log exists; audits a scope switch with from/to keys. */
+  let recordIdentitySwitch: ((previousKey: string, previousLabel: string | null) => void) | null = null
+  /**
+   * Lazy service refs: the scope authority is constructed before the capability
+   * probe and the mutation gate exist, but both are only *called* later, so the
+   * indirection keeps activation order simple (a boot-time throw takes the whole
+   * plugin down, so no service may depend on a half-initialised peer).
+   */
+  let capabilityServiceRef: CapabilityService | null = null
+  let scopePendingCount = (): number => 0
+  let scopeBusy = (): boolean => false
 
   /**
-   * The active identity, secret-free, with a stable fingerprint.
+   * v0.9: the active-scope authority — boot precedence, identity rules,
+   * override persistence, the switch guard and the scope list.
+   */
+  const scopeService = new ScopeService({
+    profiles: profileStore,
+    state: scopeState,
+    configActiveProfile: activeProfileId,
+    configOverrides: connectionOverrides,
+    probedAuthMode: () => capabilityServiceRef?.lastSnapshot()?.health.authMode ?? null,
+    healthy: () => capabilityServiceRef?.lastSnapshot()?.health.ok ?? true,
+    // The scope menu probes each configured server's `/health` only: a cheap
+    // liveness read with that profile's own credentials, never `/admin`.
+    probe: async (profile) => {
+      const started = Date.now()
+      try {
+        const client = new OpenVikingApi(
+          {
+            endpoint: normalizeEndpoint(normalizeProfileEndpoint(profile.endpoint)),
+            apiKey: profile.apiKey,
+            account: profile.account,
+            user: profile.user,
+            authMode: profile.authMode === 'unknown' ? null : profile.authMode,
+          },
+          { dshVersion },
+        )
+        const health = await client.health({ timeoutMs: SCOPE_HEALTH_TIMEOUT_MS })
+        return { ok: health.ok, version: health.version, latencyMs: Date.now() - started, error: health.error }
+      } catch (error) {
+        return { ok: false, version: null, latencyMs: Date.now() - started, error: message(error) }
+      }
+    },
+    activeCapabilities: () => activeCapabilityMatrix(),
+    guard: () => ({ pending: scopePendingCount(), busy: scopeBusy(), lastSwitchAt: null }),
+  })
+
+  /** The resolved active scope (profile + effective overrides + scope key). */
+  let resolvedScope: ResolvedScope = scopeService.resolveActive()
+  Object.assign(connection, resolvedScope.connection)
+  origins.splice(0, origins.length, ...resolvedScope.origins)
+  resolvedScope = { ...resolvedScope, connection, origins }
+  currentApi = new OpenVikingApi(connection, { dshVersion })
+
+  /**
+   * The active identity, secret-free, with the stable scope key.
    *
-   * The fingerprint hashes the probed auth mode when one exists (so a profile
-   * whose key changed is a different identity) and falls back to the configured
-   * expectation; it never contains the key. Every token/undo/audit entry stores
-   * it, which is what makes "undo after an identity switch" impossible.
+   * The key is the v0.5 identity fingerprint (`sha256:` over the profile
+   * descriptor + probed auth mode + effective overrides): it contains no secret,
+   * so it is safe in chips, dialogs, audit and evidence. Every token/undo/audit
+   * entry stores it — which is what makes "a token from the previous identity is
+   * refused" work for identity overrides exactly as it does for profiles.
    */
   const identityScope = (): IdentityScope => {
-    const probedAuthMode = capability.lastSnapshot()?.health.authMode ?? null
+    const probedAuthMode = capabilityServiceRef?.lastSnapshot()?.health.authMode ?? null
     // The API client reads `connection.authMode` for its header policy; refreshing
-    // it here means every gate that confirms an identity (prepare/execute/scope)
-    // also corrects the headers the next request carries.
-    connection.authMode = probedAuthMode ?? resolvedIdentity.authModeHint
+    // it here means every gate that confirms an identity corrects the headers the
+    // next request carries.
+    connection.authMode = probedAuthMode ?? resolvedScope.authModeHint
+    const fingerprint = identityFingerprint(
+      { profileId: resolvedScope.profileId, connection, peerId: resolvedScope.peerId },
+      probedAuthMode,
+      resolvedScope.authModeHint,
+    )
+    if (fingerprint !== resolvedScope.scopeKey) resolvedScope = { ...resolvedScope, scopeKey: fingerprint }
     return {
-      profileId: resolvedIdentity.profileId,
-      profileLabel: resolvedIdentity.profileLabel,
+      profileId: resolvedScope.profileId,
+      profileLabel: resolvedScope.profileLabel,
       endpoint: connection.endpoint,
-      authMode: probedAuthMode ?? resolvedIdentity.authModeHint,
+      authMode: connection.authMode ?? null,
       account: connection.account,
       user: connection.user,
-      peer: resolvedIdentity.peerId,
-      fingerprint: identityFingerprint(resolvedIdentity, probedAuthMode, resolvedIdentity.authModeHint),
+      peer: resolvedScope.peerId,
+      fingerprint,
     }
   }
 
-  /** Re-resolve the connection after `activeProfile` (or a legacy field) changed. */
-  const resolveActiveIdentity = (): void => {
-    const next = resolveActive()
-    Object.assign(connection, next.connection)
-    origins.splice(0, origins.length, ...next.origins)
-    resolvedIdentity = { ...next, connection, origins }
-    currentApi = new OpenVikingApi(connection, { dshVersion })
-    capability.invalidate()
-    // v0.4 caches are keyed by session, not by identity: an answer read under
-    // the previous profile must not survive the switch.
-    service.resetCaches()
-    recall.resetCaches()
-    // v0.7: every native read is identity-scoped too (roots carry the user, a
-    // cached directory page names the previous account's tree).
-    browse.resetCaches()
-    sessions.resetCaches()
-    recentCommits.resetCaches()
-    studioStatus.resetCaches()
-    overview.resetCaches()
-    observability.resetCaches()
-    // A profile switch invalidates every outstanding one-time pack download: the
-    // capability token is bound to an identity fingerprint, and a temp file must
-    // never be served after the identity it was exported under changed.
-    packBroker.close()
-    recordIdentitySwitch?.()
+  /** The live secret-free scope key (the request header/response label). */
+  const scopeKeyNow = (): string => identityScope().fingerprint
+
+  /**
+   * The identity tuple behind the key: only these fields moving is a real scope
+   * change. The probed auth mode (part of the key) is discovered lazily; the
+   * first probe must not look like a switch.
+   */
+  const scopeTupleNow = (): string =>
+    JSON.stringify([
+      resolvedScope.profileId,
+      connection.endpoint,
+      connection.account,
+      connection.user,
+      resolvedScope.peerId,
+    ])
+
+  /**
+   * The local best-effort DSH-session → scope map: written when a session
+   * surface reads under the active scope, so a later switch can warn that this
+   * conversation was last seen under another server (sign-off 4). No bodies, no
+   * keys, bounded LRU; a missing record means "unknown", never "matches".
+   */
+  const sessionScopes = new SessionScopeMap()
+  const observeSessionScope = (sessionId: string | undefined): void => {
+    if (sessionId === undefined || sessionId.length === 0) return
+    try {
+      const scope = identityScope()
+      // "First reads under a scope": once a session is recorded under one scope,
+      // a read under a *different* scope must not overwrite the record — the
+      // record is the warning source ("this conversation was captured there"),
+      // and overwriting it would make the mismatch silently disappear.
+      const existing = sessionScopes.get(sessionId)
+      if (existing !== null && existing.scopeKey !== scope.fingerprint) return
+      sessionScopes.record({
+        sessionId,
+        scopeKey: scope.fingerprint,
+        profileId: scope.profileId,
+        label: scope.profileLabel,
+        account: scope.account,
+        user: scope.user,
+        peer: scope.peer,
+      })
+    } catch {
+      // Best effort by design: a full/slow disk must not fail a read.
+    }
   }
 
-  logger?.info?.(`[openviking-enhance] ${JSON.stringify(describeConnection(connection))}`)
+  /**
+   * v0.9 §3.4: compare the official memory plugin's (allowlisted, secret-free)
+   * connection facts with the active scope. Advisory only: a missing projection
+   * says "unknown", and this plugin never rewrites the official plugin's config.
+   */
+  const officialPluginComparison = (): { facts: OfficialPluginFacts | null; pipelineMismatch: boolean } =>
+    compareOfficialPluginFacts(projectOfficialPluginFacts(memoryRuntime()), {
+      endpoint: connection.endpoint,
+      account: connection.account,
+      user: connection.user,
+      peer: resolvedScope.peerId,
+    })
+
+  /** v0.9 §5: read-only ACL/Access proxy; its cache is keyed per scope. */
+  const aclService = new AclService({
+    api,
+    scopeKey: scopeKeyNow,
+    serverFacts: () => ({
+      version: capabilityServiceRef?.lastSnapshot()?.health.version ?? null,
+      role: capabilityServiceRef?.lastSnapshot()?.health.role ?? null,
+    }),
+  })
+
   const studioPath = normalizeStudioPath(configText(config.studioPath))
 
   const memoryRuntime = (): OpenVikingMemoryRuntime | null => {
@@ -614,6 +797,8 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
     configSources: () => [
       ...configSourceHealth(),
       profileStore.sourceHealth(),
+      // v0.9: the last-scope state file is a config source too (corrupt → Doctor).
+      scopeState.sourceHealth(),
       ...localStateHealth(),
     ],
   })
@@ -626,6 +811,25 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
 
   const audit = new AuditLog()
   const capability = new CapabilityService({ api, transport: () => transportAvailable })
+  capabilityServiceRef = capability
+  /**
+   * v0.9: the live capability matrix of the **active** scope.
+   *
+   * Capability matrices are per scope (sign-off 5): this callback is what the
+   * scope list reads for the active row, and every switch invalidates the probe
+   * (`capability.invalidate()`), so a matrix can never describe a previous
+   * server. Inactive rows show their last-known matrix or "probe on switch".
+   */
+  const activeCapabilityMatrix = (): Record<string, ScopeCapability> => {
+    const snapshot = capability.lastSnapshot()
+    if (snapshot === null) return {}
+    return scopeCapabilities(
+      snapshot,
+      transportAvailable,
+      configField(config.enableWrites) === true,
+      configField(config.enableOps) === true,
+    )
+  }
   const sessionControl = new SessionControlService({ api, commit: service })
   const activity = new ActivityService({ api })
 
@@ -673,6 +877,9 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
     activeUser: () => connection.user,
   })
   const observability = new ObservabilityService({ api })
+  /** v0.9: the switch guard reads both services' unresolved tokens + the gate. */
+  scopePendingCount = () => writeService.unresolvedCount() + opsService.unresolvedCount()
+  scopeBusy = () => mutationGate.busy
   const evidence = new EvidenceService({
     api,
     audit,
@@ -687,13 +894,60 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
   })
 
   /**
+   * v0.9: the one place a profile/identity change becomes the live scope.
+   *
+   * Re-resolves profile + overrides, swaps the API client, invalidates the
+   * capability probe (clear-all cache fallback: the approved simple path when a
+   * per-scope LRU retrofit is too invasive, sign-off 5), clears every service
+   * cache, drops one-time downloads, persists the last scope (a profile switch
+   * resets the identity overrides) and audits the from/to switch. Ordered so no
+   * cache can serve the previous scope's data after the client re-reads `/scope`.
+   */
+  const applyActiveScope = (): void => {
+    const previousKey = resolvedScope.scopeKey
+    const previousLabel = resolvedScope.profileLabel
+    const next = scopeService.resolveActive()
+    Object.assign(connection, next.connection)
+    origins.splice(0, origins.length, ...next.origins)
+    resolvedScope = { ...next, connection, origins }
+    currentApi = new OpenVikingApi(connection, { dshVersion })
+    capability.invalidate()
+    // v0.4–v0.8 caches are all identity-scoped: an answer read under the previous
+    // scope must not survive the switch (approved clear-all fallback).
+    service.resetCaches()
+    recall.resetCaches()
+    browse.resetCaches()
+    sessions.resetCaches()
+    recentCommits.resetCaches()
+    studioStatus.resetCaches()
+    overview.resetCaches()
+    observability.resetCaches()
+    // ACL reports carry principal ids: never cached across scopes.
+    aclService.clear()
+    // One-time pack downloads are bound to an identity fingerprint.
+    packBroker.close()
+    // Persist the last scope. `persistProfile` writes `scope-state.json` and
+    // resets the identity overrides when the profile actually changed.
+    try {
+      scopeService.persistProfile(resolvedScope.profile?.id ?? '')
+    } catch (error) {
+      logger?.warn?.('[openviking-enhance] could not persist the active scope', error)
+    }
+    // The double-click cooldown starts here (the client guard reads the clock
+    // too; this keeps a same-instant second switch refused host-side).
+    scopeService.noteSwitch()
+    recordIdentitySwitch?.(previousKey, previousLabel)
+  }
+
+  /**
    * Audit identity activation and every later switch (F12: "switching account
    * never silently mixes data" — the trail is how a reviewer can prove what
    * identity a write ran under). Deduplicated by fingerprint, because the
-   * resolver may be asked to re-resolve for an unrelated volatile field.
+   * resolver may be asked to re-resolve for an unrelated volatile field; v0.9
+   * adds the from/to scope keys and labels (a hash and a profile label only).
    */
   let lastAuditedFingerprint = ''
-  const auditIdentitySwitch = (): void => {
+  const auditIdentitySwitch = (previousKey?: string | null, previousLabel?: string | null): void => {
     const scope = identityScope()
     if (scope.fingerprint === lastAuditedFingerprint) return
     const first = lastAuditedFingerprint === ''
@@ -719,9 +973,18 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
       result: 'ok',
       error: null,
       undo: null,
+      switch: first
+        ? null
+        : { from: previousKey ?? null, fromLabel: previousLabel ?? null, to: scope.fingerprint, toLabel: scope.profileLabel },
     })
   }
   recordIdentitySwitch = auditIdentitySwitch
+  // Boot: remember the resolved last scope and record the activation identity.
+  try {
+    scopeService.persistProfile(resolvedScope.profile?.id ?? '')
+  } catch (error) {
+    logger?.warn?.('[openviking-enhance] could not persist the initial scope', error)
+  }
   auditIdentitySwitch()
 
   const vikingCommand = new VikingCommand({
@@ -758,6 +1021,11 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
       writesEnabled: configField(config.enableWrites) === true,
       activeProfileId: scope.profileId,
       authMode: scope.authMode,
+      // v0.9: the scope facts the toolbar/banner can render without a second call.
+      scopeKey: scope.fingerprint,
+      profileLabel: scope.profileLabel,
+      peer: scope.peer,
+      overrides: resolvedScope.overrides.active,
       warnings,
     }
   }
@@ -818,6 +1086,46 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
     return Number.isFinite(raw) ? Math.min(Math.max(Math.trunc(raw), 1), max) : fallback
   }
 
+  /**
+   * v0.9 §3.3: the readable-root allowlist a search result must stay inside.
+   *
+   * There is no federated search: every request goes to the active endpoint with
+   * the active identity. The URI check is defence in depth against a misconfigured
+   * server or a stale cache; the server's ACL remains the real boundary.
+   */
+  const readableRootPrefixes = (): string[] => [
+    'viking://resources',
+    'viking://agent',
+    `viking://user/${connection.user}`,
+  ]
+  const isReadableResultUri = (uri: string): boolean => {
+    const normalized = uri.trim()
+    if (!normalized.startsWith('viking://')) return false
+    return readableRootPrefixes().some((prefix) => normalized === prefix || normalized.startsWith(`${prefix}/`))
+  }
+  /** Drop out-of-scope hits and report one bounded warning. */
+  const filterCrossScopeResults = (input: SearchPayload): { payload: SearchPayload; dropped: number } => {
+    let dropped = 0
+    const buckets = input.buckets.map((bucket) => ({
+      ...bucket,
+      items: bucket.items.filter((item) => {
+        if (isReadableResultUri(item.uri)) return true
+        dropped += 1
+        return false
+      }),
+    }))
+    if (dropped === 0) return { payload: input, dropped: 0 }
+    return {
+      payload: {
+        ...input,
+        buckets,
+        total: Math.max(0, input.total - dropped),
+        warnings: [...input.warnings, { code: 'crossScopeResultDropped', params: { count: dropped } }],
+      },
+      dropped,
+    }
+  }
+
   const routes: WebRoute[] = [
     {
       kind: 'exact',
@@ -868,6 +1176,8 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
           writeJson(res, 400, { ok: false, error: 'sessionId is required' } satisfies ApiResult<never>)
           return
         }
+        // v0.9: record which scope first observed this session (best effort).
+        observeSessionScope(sessionId)
         try {
           const status = await service.status(sessionId, { fresh: query(req).get('fresh') === '1' })
           writeJson(res, 200, { ok: true, status })
@@ -886,6 +1196,7 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
           writeJson(res, 400, { ok: false, error: 'sessionId is required' } satisfies ApiResult<never>)
           return
         }
+        observeSessionScope(sessionId)
         try {
           // `summaries` bounds the timeline's fan-out: the popover asks for
           // TIMELINE_DEFAULT on its poll and for more only when the user expands.
@@ -913,6 +1224,7 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
           writeJson(res, 400, { ok: false, error: 'sessionId and archive are required' } satisfies ApiResult<never>)
           return
         }
+        observeSessionScope(sessionId)
         const ovSessionId = service.ovSessionId(sessionId)
         if (!isArchiveUriForSession(archiveUri, ovSessionId)) {
           writeJson(res, 400, { ok: false, error: 'archive is not part of this session history' } satisfies ApiResult<never>)
@@ -943,6 +1255,7 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
           writeJson(res, 400, { ok: false, error: 'sessionId is required' } satisfies ApiResult<never>)
           return
         }
+        observeSessionScope(sessionId)
         try {
           // `query` is absent for the session's own last prompt; `limit` bounds
           // each bucket, so a crafted request cannot ask for the whole library.
@@ -968,6 +1281,7 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
           writeJson(res, 400, { ok: false, error: 'sessionId is required' } satisfies ApiResult<never>)
           return
         }
+        observeSessionScope(sessionId)
         const requested = params.get('source')
         const source =
           requested === 'turn' || requested === 'session' || requested === 'manual' ? requested : undefined
@@ -993,6 +1307,7 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
           writeJson(res, 400, { ok: false, error: 'sessionId is required' } satisfies ApiResult<never>)
           return
         }
+        observeSessionScope(sessionId)
         try {
           const log = await sessionLog.log(sessionId, { fresh: params.get('fresh') === '1' })
           writeJson(res, 200, { ok: true, log })
@@ -1101,7 +1416,7 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
             ...(buckets === undefined ? {} : { buckets }),
             ...(typeof body.limit === 'number' ? { limit: body.limit } : {}),
           })
-          writeJson(res, 200, { ok: true, search: payload })
+          writeJson(res, 200, { ok: true, search: filterCrossScopeResults(payload).payload })
         } catch (error) {
           writeJson(res, 200, { ok: false, error: message(error) } satisfies ApiResult<never>)
         }
@@ -1226,25 +1541,82 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
             : null
     return {
       identity: scope,
-      activeProfileId: resolvedIdentity.profileId,
+      activeProfileId: resolvedScope.profileId,
       role: snapshot.health.role,
       version: snapshot.health.version,
       healthy: snapshot.health.ok,
       writes: { enabled: writesEnabled, transport, reason },
       ops: { enabled: opsEnabled, transport, reason: opsReason },
       capabilities: scopeCapabilities(snapshot, transport, writesEnabled, opsEnabled),
-      warnings,
+      // v0.9 resolution warnings (missing profile, ignored overrides) are part of
+      // the scope block so the chip can never silently show another identity.
+      warnings: [...warnings, ...resolvedScope.warnings],
       observedAt: new Date(snapshot.observedAt).toISOString(),
     }
   }
 
-  /** The redacted profile list; the runtime config value wins over the file header. */
+  /**
+   * v0.9: build the switcher's full payload (`GET ${API_PREFIX}/scopes`).
+   *
+   * One cheap `/health` probe per configured profile (cached for
+   * `SCOPE_PROBE_TTL_MS`; `fresh=1` forces), the active scope's live capability
+   * matrix, the identity-override rules and the advisory official-plugin facts.
+   * No `/admin` request is ever made: identity choices come from local profiles.
+   */
+  const scopesPayload = async (fresh: boolean): Promise<ScopesPayload> => {
+    const rows = await scopeService.listScopes({ fresh })
+    const scope = identityScope()
+    const official = officialPluginComparison()
+    const warnings: PluginNotice[] = [...resolvedScope.warnings]
+    if (!official.pipelineMismatch && official.facts === null) {
+      warnings.push({ code: 'officialPluginUnknown' })
+    }
+    return {
+      scopes: rows,
+      active: scopeService.scopeInfo(resolvedScope),
+      overrides: scopeService.overridesPayload(resolvedScope),
+      officialPlugin: official.facts,
+      warnings,
+      observedAt: new Date().toISOString(),
+    }
+  }
+
+  /**
+   * v0.9: the session-scope mismatch facts for the right-sidebar surfaces.
+   *
+   * Best effort: a session never observed under a scope has `record: null` and
+   * the UI shows the generic active-scope banner. A recorded different scope
+   * disables the session's recall/write actions until the user switches back —
+   * no cross-scope writes and no silent rebind.
+   */
+  const sessionScopePayload = (sessionId: string): SessionScopePayload => {
+    const active = identityScope()
+    const record = sessionScopes.get(sessionId)
+    const official = officialPluginComparison()
+    const mismatch = record !== null && record.scopeKey !== active.fingerprint
+    const warnings: PluginNotice[] = []
+    if (mismatch) warnings.push({ code: 'sessionScopeMismatch', params: { label: record.label ?? 'unknown' } })
+    if (official.pipelineMismatch) warnings.push({ code: 'officialPluginMismatch', params: { host: official.facts?.endpointHost ?? 'unknown' } })
+    return {
+      sessionId,
+      record,
+      active: scopeService.scopeInfo(resolvedScope),
+      mismatch,
+      officialPlugin: official.facts,
+      pipelineMismatch: official.pipelineMismatch,
+      warnings,
+      observedAt: new Date().toISOString(),
+    }
+  }
+
+  /**
+   * The redacted profile list; the boot precedence (Config → scope state → file
+   * header) decides the active id, so the settings form and the scope menu can
+   * never disagree about which profile is active.
+   */
   const profilesPayload = (): ProfilesPayload => {
     const payload = profileStore.describe()
-    const configured = activeProfileId()
-    if (configured.length === 0) return payload
-    const exists = payload.profiles.some((profile) => profile.id === configured)
-    return { ...payload, activeProfileId: exists ? configured : null }
+    return { ...payload, activeProfileId: resolvedScope.profileId }
   }
 
   /** A profile save/delete response body from a store outcome. */
@@ -1252,7 +1624,9 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
     outcome: { ok: true; profiles: ProfileSummary[] } | { ok: false; code: string; message: string },
   ): OveResult<{ profiles: ProfileSummary[] }> => {
     if (!outcome.ok) return { ok: false, error: { code: outcome.code, message: outcome.message } }
-    if (outcome.profiles.some((profile) => profile.id === activeProfileId())) resolveActiveIdentity()
+    // Editing the profile the plugin is running under changes its identity: apply
+    // the new resolution (and persist/reset overrides) exactly like a switch.
+    if (outcome.profiles.some((profile) => profile.id === resolvedScope.profileId)) applyActiveScope()
     return { ok: true, profiles: outcome.profiles }
   }
 
@@ -1352,6 +1726,7 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
     },
     readRoute(`${API_PREFIX}/metrics`, async (params) => {
       const sessionId = (params.get('sessionId') ?? '').trim()
+      observeSessionScope(sessionId)
       const metrics = await activity.metrics({
         ...(sessionId.length === 0 ? {} : { sessionId, ovSessionId: service.ovSessionId(sessionId) }),
         fresh: params.get('fresh') === '1',
@@ -1389,6 +1764,7 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
     readRoute(`${API_PREFIX}/session-control`, async (params) => {
       const sessionId = (params.get('sessionId') ?? '').trim()
       if (sessionId.length === 0) return { ok: false, error: { code: 'invalid-request', message: 'sessionId is required' } }
+      observeSessionScope(sessionId)
       const payload: SessionControlPayload = await sessionControl.read(sessionId)
       return { ok: true, ...payload }
     }),
@@ -1872,11 +2248,49 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
   ]
   routes.push(...v08Routes)
 
+  /* ======================================================================
+   * v0.9 "Native II — multi-scope" read routes
+   *
+   * All read-only: the scope list (health/capability summaries only — never a
+   * store read on another server beyond `/health`), the best-effort session-scope
+   * facts and the read-only ACL report for one user-selected resource. No admin,
+   * account or group endpoint is ever called (tests assert zero `/admin` paths).
+   * ==================================================================== */
+
+  const v09Routes: WebRoute[] = [
+    readRoute(`${API_PREFIX}/scopes`, async (params) => ({
+      ok: true,
+      scopes: await scopesPayload(params.get('fresh') === '1'),
+    })),
+    readRoute(`${API_PREFIX}/session-scope`, async (params) => {
+      const sessionId = (params.get('sessionId') ?? '').trim()
+      if (sessionId.length === 0) return { ok: false, error: { code: 'invalid-request', message: 'sessionId is required' } }
+      // Deliberately does NOT call `observeSessionScope`: reading the mismatch
+      // facts must not overwrite the record that produced the warning.
+      return { ok: true, sessionScope: sessionScopePayload(sessionId) }
+    }),
+    readRoute(`${API_PREFIX}/acl`, async (params) => {
+      const uri = (params.get('uri') ?? '').trim()
+      if (uri.length === 0) return { ok: false, error: { code: 'invalid-request', message: 'uri is required' } }
+      if (uri.length > ACL_URI_MAX_CHARS) {
+        return { ok: false, error: { code: 'invalid-request', message: 'uri is too long' } }
+      }
+      const acl: AclPayload = await aclService.report(uri, { fresh: params.get('fresh') === '1' })
+      return { ok: true, acl }
+    }),
+  ]
+  routes.push(...v09Routes)
+
   /* ---- authenticated mutation routes (decision B) ----------------------- */
 
   const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }
-  const jsonResponse = (status: number, body: unknown): Response =>
-    new Response(JSON.stringify(body), { status, headers: JSON_HEADERS })
+  /** A mutation response, labelled with the scope it settled under (v0.9). */
+  const jsonResponse = (status: number, body: unknown, scopeKey?: string): Response =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers:
+        scopeKey === undefined ? JSON_HEADERS : { ...JSON_HEADERS, [SCOPE_RESPONSE_HEADER]: scopeKey },
+    })
 
   /** Read one bounded JSON object body off a Fetch route; null on any refusal. */
   const readMutationBody = async (request: Request): Promise<Record<string, unknown> | null> => {
@@ -1895,20 +2309,53 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
     }
   }
 
-  /** Wrap one mutation handler: POST + JSON + size cap, and no throw ever. */
+  /** The scope-changed error body every scoped refusal uses. */
+  const scopeChangedBody = (current: string): OveResult<never> => ({
+    ok: false,
+    error: {
+      code: 'scope-changed',
+      message: 'The active scope changed; reload the surface before retrying.',
+      details: { scopeKey: current },
+    },
+  })
+
+  /**
+   * Wrap one mutation handler: POST + JSON + size cap, no throw ever, and the
+   * v0.9 scope rules.
+   *
+   * The scope header is checked **before the body is read and before any token
+   * lookup**: a mutation prepared under another scope is refused with
+   * `scope-changed`, never with a token/identity answer. A mutation that itself
+   * changes the scope (identity override, profile CRUD) opts out of the
+   * response-time stale check via `allowScopeChange`, because its own new key is
+   * the correct label.
+   */
   const mutation = (
     handler: (body: Record<string, unknown>) => Promise<unknown>,
+    options: { allowScopeChange?: boolean } = {},
   ): ((request: Request) => Promise<Response>) => {
     return async (request: Request): Promise<Response> => {
       try {
         if (request.method !== 'POST') {
           return jsonResponse(405, { ok: false, error: { code: 'method-not-allowed', message: 'POST only' } })
         }
+        const capturedTuple = scopeTupleNow()
+        const current = scopeKeyNow()
+        const requested = (request.headers.get(SCOPE_HEADER) ?? '').trim()
+        if (requested.length > 0 && requested !== current) {
+          return jsonResponse(409, scopeChangedBody(current), current)
+        }
         const body = await readMutationBody(request)
         if (body === null) {
-          return jsonResponse(400, { ok: false, error: { code: 'invalid-body', message: 'A JSON object body below 64 KiB is required.' } })
+          return jsonResponse(400, { ok: false, error: { code: 'invalid-body', message: 'A JSON object body below 64 KiB is required.' } }, current)
         }
-        return jsonResponse(200, await handler(body))
+        const result = await handler(body)
+        const settledTuple = scopeTupleNow()
+        const settled = scopeKeyNow()
+        if (options.allowScopeChange !== true && settledTuple !== capturedTuple) {
+          return jsonResponse(409, scopeChangedBody(settled), settled)
+        }
+        return jsonResponse(200, result, settled)
       } catch (error) {
         return jsonResponse(200, {
           ok: false,
@@ -1929,14 +2376,18 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
     const register = connectionService.fetch?.register
     if (typeof register !== 'function') return []
     const disposers: Array<() => Promise<void> | void> = []
-    const add = (path: string, handler: (body: Record<string, unknown>) => Promise<unknown>): void => {
+    const add = (
+      path: string,
+      handler: (body: Record<string, unknown>) => Promise<unknown>,
+      options: { allowScopeChange?: boolean } = {},
+    ): void => {
       try {
         disposers.push(
           register.call(connectionService.fetch, {
             path,
             methods: ['POST'],
             requestBody: 'buffered',
-            fetch: mutation(handler),
+            fetch: mutation(handler, options),
           }),
         )
       } catch (error) {
@@ -2115,6 +2566,80 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
       }
       return opsService.cancel(token)
     })
+    /* ---- v0.9: the local identity-override mutation -----------------------
+     * A LOCAL plugin mutation: it writes `scope-state.json` (0600), never the
+     * OpenViking store. It rides the authenticated transport because it changes
+     * mutation authority, and the service refuses it while any curation/ops
+     * confirmation is pending. The v0.5 profile switch keeps its existing
+     * ConfigForm mechanism; this route is the in-server identity half.
+     * -------------------------------------------------------------------- */
+    add(`${API_PREFIX}/scope/identity`, async (body) => {
+      const request: ScopeIdentityRequest = {}
+      if (typeof body.account === 'string') request.account = body.account
+      if (typeof body.user === 'string') request.user = body.user
+      if (typeof body.peer === 'string') request.peer = body.peer
+      if (Array.isArray(body.clear)) {
+        request.clear = body.clear.filter(
+          (entry): entry is 'account' | 'user' | 'peer' =>
+            entry === 'account' || entry === 'user' || entry === 'peer',
+        )
+      }
+      const before = identityScope()
+      const outcome = scopeService.switchIdentity(request, resolvedScope)
+      if (!outcome.ok) {
+        // The refusal is audited as denied: an attempted identity move is exactly
+        // the kind of event the trail must be able to explain.
+        audit.append({
+          kind: 'switch',
+          action: 'identity-switch-refused',
+          target: connection.endpoint,
+          identity: {
+            profileId: before.profileId,
+            endpoint: before.endpoint,
+            authMode: before.authMode,
+            account: before.account,
+            user: before.user,
+            peer: before.peer,
+            dshSessionId: null,
+          },
+          fingerprint: before.fingerprint,
+          confirmation: null,
+          preCommit: null,
+          postCommit: null,
+          requestId: null,
+          result: 'denied',
+          error: `${outcome.code}: ${outcome.message}`,
+          undo: null,
+          switch: { from: before.fingerprint, fromLabel: before.profileLabel, to: null, toLabel: null },
+        })
+        return { ok: false, error: { code: outcome.code, message: outcome.message }, scope: before }
+      }
+      if (!outcome.changed) {
+        return {
+          ok: true,
+          changed: false,
+          from: before.fingerprint,
+          to: before.fingerprint,
+          scope: before,
+          scopes: await scopesPayload(false),
+          warnings: outcome.warnings,
+        }
+      }
+      // Apply the new scope exactly like a profile switch (caches, API client,
+      // persistence, audit from/to), then hand the client the fresh scope list.
+      applyActiveScope()
+      const after = identityScope()
+      return {
+        ok: true,
+        changed: true,
+        from: before.fingerprint,
+        to: after.fingerprint,
+        scope: after,
+        scopes: await scopesPayload(false),
+        warnings: outcome.warnings,
+      }
+    }, { allowScopeChange: true })
+
     add(`${API_PREFIX}/profiles/save`, async (body) => {
       const input = {
         id: stringField(body, 'id') ?? '',
@@ -2134,7 +2659,7 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
       }
       auditProfile('save-profile', input.id, 'ok', null)
       return profileWriteResult(outcome)
-    })
+    }, { allowScopeChange: true })
     add(`${API_PREFIX}/profiles/delete`, async (body) => {
       const id = stringField(body, 'id') ?? ''
       if (id.length === 0) return { ok: false, error: { code: 'invalid-request', message: 'id is required.' } }
@@ -2151,7 +2676,7 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
       }
       auditProfile('delete-profile', id, 'ok', null)
       return { ok: true, profiles: outcome.profiles }
-    })
+    }, { allowScopeChange: true })
     add(`${API_PREFIX}/profiles/test`, async (body) => {
       const endpoint = (stringField(body, 'endpoint') ?? '').trim().replace(/\/+$/, '')
       if (!isProbeableEndpoint(endpoint)) {
@@ -2212,8 +2737,43 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
     packBroker.close()
   }, 'openviking-enhance: pack downloads')
 
+  /**
+   * v0.9 request admission + response labelling for every plugin HTTP route.
+   *
+   * A request naming a non-active scope is refused with `scope-changed` before
+   * any handler work; a missing header stays allowed for loopback/curl use (the
+   * response is still labelled). The response-time stale guard lives in
+   * `writeJson`: a composed read that started under scope A and finishes after a
+   * switch to B answers `scope-changed` instead of A's payload.
+   */
+  const scopeAdmitted = (route: WebRoute): WebRoute => ({
+    ...route,
+    handler: async (req, res) => {
+      const active = scopeKeyNow()
+      const raw = req.headers[SCOPE_HEADER]
+      const requested = Array.isArray(raw) ? raw[0] : raw
+      if (typeof requested === 'string' && requested.trim().length > 0 && requested.trim() !== active) {
+        const current = scopeKeyNow()
+        if (typeof res.setHeader === 'function') res.setHeader(SCOPE_RESPONSE_HEADER, current)
+        writeJson(res, 409, {
+          ok: false,
+          error: {
+            code: 'scope-changed',
+            message: 'The requested scope is not the active scope.',
+            details: { scopeKey: current },
+          },
+        } satisfies OveResult<never>)
+        return
+      }
+      ;(res as ServerResponse & { [SCOPE_RESPONDER]?: ScopeResponder })[SCOPE_RESPONDER] = {
+        capturedTuple: scopeTupleNow(),
+        current: () => ({ key: scopeKeyNow(), tuple: scopeTupleNow() }),
+      }
+      await route.handler(req, res)
+    },
+  })
   host.effect(() => {
-    const disposers = routes.map((route) => host.webServer.register(route))
+    const disposers = routes.map((route) => host.webServer.register(scopeAdmitted(route)))
     return () => {
       for (const dispose of disposers.reverse()) dispose()
     }
@@ -2301,9 +2861,11 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
    */
   const onVolatileUpdate = (): void => {
     try {
-      resolveActiveIdentity()
+      // A settings save can change `activeProfile`: re-resolve the scope, persist
+      // it to the DSH home, reset the identity overrides and refresh every cache.
+      applyActiveScope()
     } catch (error) {
-      logger?.warn?.('[openviking-enhance] could not re-resolve the active identity', error)
+      logger?.warn?.('[openviking-enhance] could not re-resolve the active scope', error)
     }
     syncCommand()
   }

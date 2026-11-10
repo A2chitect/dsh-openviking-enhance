@@ -31,6 +31,24 @@ without the iframe; the OpenViking server's own Studio stays one explicit view
 (and one "open in a new tab") away, and `showNativeViews: false` restores the
 v0.6 Studio page exactly. Everything here is read-only.
 
+**Multiple servers, one explicit scope (v0.9).** Named profiles stay the
+credential/server unit; a scope is a profile plus an optional in-server identity
+override (account/user/peer read selectors). The cockpit's scope chip opens a
+first-class scope menu (servers grouped by endpoint, health/version/latency,
+warnings, switch, refresh health, test connection); a persistent banner names the
+active scope on every native view and right-sidebar tab. Switching is guarded
+(refused while a curation/ops confirmation is pending; in-flight reads are
+aborted and dropped; the cockpit returns to Overview and plugin sidebar pages
+close), every plugin request carries the scope fingerprint, and the host refuses
+a request for another scope with `scope-changed`. There is **no federated or
+cross-server search**: every read goes to the active scope. A read-only **Access**
+tab reports the server's ACL data for a selected `viking://resources/**` entry
+with four explicit states (`available` / `denied-no-manage` / `only-resources` /
+`unsupported`) and says plainly that the tested server builds have **no
+sharing/invite API**. The plugin still never calls an admin/account/group
+endpoint, never edits an ACL and never rebinds the official memory plugin's
+pipeline (it warns, read-only, when the two connections differ).
+
 ### The native read cockpit (v0.7)
 
 One sidebar row, one main panel, six internal views — no second shell seat:
@@ -441,6 +459,45 @@ ROOT/ADMIN, account-wide, non-atomic and/or need a server temp-upload flow), as
 are rules compile, compile config updates/embeddings/reindex, watches and session
 snapshot restore.
 
+### Multi-scope routes and switching (v0.9)
+
+Read routes (loopback + same-origin fence, JSON envelopes):
+
+| Route | Purpose |
+| --- | --- |
+| `GET /api/openviking-enhance/scopes?fresh=0` | the scope list: rows grouped by server (label, endpoint, probed auth mode, account/user/peer, health/version/latency, per-scope capability summary, stable warnings, active state), the identity-override rules, the active scope block and the advisory official-plugin facts. Cheap `/health` probes only (cached 10 s); **never** `/admin`. |
+| `GET /api/openviking-enhance/session-scope?sessionId=` | the best-effort local session→scope record and the mismatch verdict for a DSH session (no bodies, no keys, no endpoint). |
+| `GET /api/openviking-enhance/acl?uri=` | the read-only ACL report for one user-selected `viking://resources/**` URI, classified as `available` / `denied-no-manage` / `only-resources` / `unsupported`, plus the URI's visibility class. No mutation path. |
+
+Switching: the v0.5 profile switch keeps its proven `ConfigForm.set('activeProfile')`
+mechanism; the in-server identity override is the **local** mutation
+`POST /api/openviking-enhance/scope/identity` on the authenticated transport
+(it writes only `scope-state.json`, never OpenViking). Both are refused by the
+client guard while any curation/ops confirmation, write or undo is pending or
+executing, and the host refuses the identity route while the shared mutation gate
+has unresolved tokens. In-flight reads are aborted and any response from the
+previous scope is dropped; a slow host read that finishes after a switch answers
+`409 scope-changed` instead of a stale payload. A profile switch persists the new
+active profile in `scope-state.json` and **resets the identity overrides**.
+
+Isolation contract: every plugin request carries
+`x-dsh-openviking-scope: <scope key>` (the secret-free `sha256:` identity
+fingerprint over profile + endpoint + probed auth mode + effective
+account/user/peer); the host compares it with the active key and refuses
+mismatches with `scope-changed` before any work. Every response is labelled with
+the active key. Caches are cleared on a switch (the approved simple fallback for
+the per-scope policy; at most two scope sets are the documented bound), capability
+matrices are per scope, ACL reports are cached per scope and dropped on switch,
+and the page never offers an all-scopes search.
+
+Identity switching rules (F12 completion): `dev`/`trusted` profiles allow
+account/user header overrides (trusted needs both; **the plugin never sets a role
+header**); `api_key` is key-bound, so account/user are disabled with that reason
+while the peer selector stays a read lens; `oidc`/`ldap` are out; an unreachable
+server disables switching. The peer is **read-only**: it is sent as
+`X-OpenViking-Actor-Peer` only for sessionless reads (browse/preview/ACL), while
+writes and session-scoped calls keep the official memory plugin's actor peer.
+
 ### Timeouts and limits
 
 Every value below is exported from `src/shared/limits.ts`; `test/v06-docs.test.mjs`
@@ -524,6 +581,15 @@ from the code. Times are milliseconds; sizes are bytes unless marked.
 | PACK_BODY_INACTIVITY_TIMEOUT_MS | 30000 |
 | EVIDENCE_LOOKUP_DEADLINE_MS | 15000 |
 | TASK_EVIDENCE_CORRELATION_MAX | 20 |
+| SCOPE_STATE_VERSION | 1 |
+| SCOPE_MAX_RETAINED_CACHES | 2 |
+| SCOPE_PROBE_TTL_MS | 10000 |
+| SCOPE_SWITCH_COOLDOWN_MS | 1000 |
+| SESSION_SCOPE_MAP_MAX | 64 |
+| SCOPE_KEY_MAX_CHARS | 200 |
+| ACL_URI_MAX_CHARS | 4096 |
+| ACL_ENTRIES_MAX | 200 |
+| SCOPE_HEALTH_TIMEOUT_MS | 4000 |
 <!-- /contract:limits -->
 
 The Rules-listing deadline is a **scheduling** deadline: requests already in
@@ -548,7 +614,9 @@ rules and 20 scenarios, and an L2 preview page returns at most 1 000 lines.
 | Operate actions (v0.8) | `enableOps` **and** authenticated transport **and** healthy probed identity **and** runtime capability/role probe **and** the shared single-mutation gate | DSH 0.2.2-rc.1+; capability answer decides (snapshot route, compile `configured && can_create`, pack export probe) | reads stay available; every action fails closed with `ops-disabled`/`compile-not-configured`/`pack-export-unavailable`/…; no Retry exists |
 | Task evidence / Observability | per-request read, on demand | OpenViking 0.5.1.1+ (server request log only when `/console/audit` is reachable) | evidence warns `server-request-log-unavailable`; each observability card degrades alone; `/metrics` never probed |
 | Activity tasks/metrics | `GET /tasks` and per-card probes | route present | per-card "not available"; `/metrics` is never probed |
-| ACL | not probed | never | explicit "not enabled" row |
+| ACL / Access tab (v0.9) | one `GET /acl` for a user-selected `viking://resources/**` URI | server route present **and** the identity has `manage` | four explicit states; a 403 is reported as `denied-no-manage` with both possible explanations ("ACL disabled" vs "missing manage") — the plugin never claims which; no ACL edits exist |
+| Scope switcher / scope list (v0.9) | cheap `/health` per configured profile + the active scope's capability probe | always | unreachable rows show the health error; the legacy connection is listed as a scope; missing profiles are warning rows, never auto-deleted |
+| Identity override / session-scope guards (v0.9) | probed auth mode + health + the shared mutation gate | `dev`/`trusted` for account/user; peer for reads in most modes | disabled fields with a stated reason; a session last seen under another scope shows a mismatch banner and its recall/write actions are disabled until the user switches back |
 | Native views | DSH `main`/`sidebar.panellist` slots (since v0.3) | always; `showNativeViews` (default true) | off = the exact v0.6 Studio page |
 | Browse / Sessions / Commits | per-request HTTP result of `fs/ls` | OpenViking 0.5.1.1+ | per-view "unavailable on this server" state; a 404 directory is an empty page, not an error |
 | Deep links (`ctx.layout.selectPanel`) | structural `get('layout')` + `typeof selectPanel === 'function'` | DSH 0.2.2-rc.1 (verified types) | Preview-tab fallback plus a toolbar note on older generations |
@@ -566,6 +634,12 @@ rules and 20 scenarios, and an L2 preview page returns at most 1 000 lines.
 | OVPack backup/import/restore | server (ROOT/ADMIN, account-wide) | v0.8 ships **export only**; backup/import/restore are deliberately deferred with their reasons shown in the Packs tab |
 | Task retry | no API exists in the tested builds | "re-run as new compile" only (a new operation); the Tasks tab says so |
 | Compile config update, embeddings, content reindex, rules compile, watches, session snapshot restore | server/CLI or later releases | not exposed; reads may still inspect compile configs/operations/outputs |
+| Sharing / invites / share links | no API exists in the tested server builds | never invented: the Access tab shows the visibility classification + ACL report and states explicitly that there is no sharing API |
+| Account/user/group/key administration and enumeration | server `/api/v1/admin/*` (ROOT/ADMIN, key-only) | **never called** in any mode; identity choices come from local profiles only (tests assert zero `/admin` requests) |
+| ACL grant/revoke/edit | admin operations (`/acl/grant`, `/acl/revoke`) | not exposed; the Access tab is read-only |
+| Federated / cross-server search, all-scope dashboards, parallel scope queries | no federation API exists | not shipped; every request targets the active endpoint and out-of-scope result URIs are dropped with a warning |
+| OIDC/LDAP interactive login, remote TLS/proxy configuration | external IdP / deployment | not modelled; the scope menu shows the auth mode and a cleartext/non-loopback warning instead |
+| Automatic official-memory-plugin reconfiguration or "rebind session to scope" | `@openviking/dsh-memory-plugin` owns its pipeline | never done; the plugin can only warn (read-only, allowlisted, secret-free projection) when the two connections differ |
 
 ### Data, privacy and the security boundary
 
@@ -595,14 +669,36 @@ rules and 20 scenarios, and an L2 preview page returns at most 1 000 lines.
   action/identity/URI/result, never bodies. The smoke harness is redacted by
   default (`SMOKE_VERBOSE=1` is the explicit local-only escape hatch).
 - **What the plugin persists:** `profiles.json` (0600), `audit.jsonl` (0600,
-  rotated at 1 MiB, two rotations kept) and `onboarding.json` (0600, atomic), all
-  under `${DSH_HOME:-~/.dsh}/state/dsh-openviking-enhance/`. `onboarding.json`
-  holds only check ids/status timestamps and last-check counts — never an
-  endpoint, account, user, key, peer, memory URI or memory body. Its
-  `lastOpenedAt` is written only while the `showOnboarding` switch is on (turning
-  the checklist off stops the writes); "Forget local setup state" on the
+  rotated at 1 MiB, two rotations kept), `onboarding.json` (0600, atomic),
+  `scope-state.json` (0600, atomic) and `session-scopes.json` (0600, atomic,
+  bounded 64 LRU entries), all under
+  `${DSH_HOME:-~/.dsh}/state/dsh-openviking-enhance/`. `onboarding.json` holds only
+  check ids/status timestamps and last-check counts — never an endpoint, account,
+  user, key, peer, memory URI or memory body. Its `lastOpenedAt` is written only while the `showOnboarding` switch is on
+  (turning the checklist off stops the writes); "Forget local setup state" on the
   Plugins-page Setup card deletes the file completely, and the action is recorded
-  in the local audit trail.
+  in the local audit trail. `scope-state.json` holds the active
+  profile id and the optional account/user/peer read overrides — **no endpoint and
+  no key**. `session-scopes.json` maps a DSH session id to the label/hash of the
+  scope that last observed it — no endpoint, no bodies, no keys; it is best-effort
+  local state and a missing record means "unknown", never "matches". The scope key
+  is a hash and safe to display/audit; credentials never appear in any scope
+  payload, audit entry or evidence document.
+- **The official plugin's connection is advisory only.** v0.9 reads an
+  allowlisted, secret-free projection (`baseUrl` host, account, user, peer,
+  auth-mode hint) of the mounted official memory plugin to warn when
+  "conversation memories are captured on server A while the cockpit views server
+  B". The API key and the raw config object are never read out, copied or
+  serialised; the projection fails open to "official plugin connection: unknown",
+  and this plugin never rewrites the official plugin's credentials.
+- **ACL principals are server-side identity data.** They are shown only for the
+  user-selected resource in the Access tab, bounded (`ACL_ENTRIES_MAX`), cached in
+  memory per scope only, and never written to the audit file, evidence or logs.
+- **The scope layer is not a security boundary.** Scope keys, banners and
+  per-scope caches stop *this plugin* from mixing scopes; the server's auth/ACL
+  remains the real boundary. Two profiles pointing at the same endpoint+identity
+  are different labels for the same data, and a misconfigured server is not fixed
+  by a banner.
 
 ### What the plugin sends (and what it costs)
 
@@ -709,6 +805,7 @@ The same settings can still be written by hand in your profile's patch file
 | `enableOps` | `false` | v0.8 opt-in: snapshot create/restore, compile trigger, OVPack export, file-version restore (all confirmation-gated; `enableWrites` stays curation-only) |
 | `enableActivity` | `true` | Interface switch: the Activity tab (tasks, metrics, recent actions) |
 | `showScopeBanner` | `true` | Interface switch: the persistent scope chip; write dialogs repeat the scope regardless |
+| `showScopeSwitcher` | `true` | Interface switch (v0.9): the cockpit scope menu/switcher; off hides only the menu — the banner keeps its own switch and dialog/evidence scope blocks are never hidden |
 | `showNativeViews` | `true` | Interface switch: the native read cockpit (Overview/Browse/Sessions/Commits/Stats). Off = the v0.6 Studio iframe page |
 | `showOnboarding` | `true` | Interface switch: the first-run checklist (Overview card + Plugins-page Setup card); off hides the cards without clearing local state |
 | `activeProfile` | `''` | Named credential/scope profile to use; empty = the legacy connection fields |

@@ -24,6 +24,8 @@ import type {
   SessionMemoryState,
 } from '../shared/protocol.ts'
 import { fetchDoctor, fetchSessionLog } from './host-api.ts'
+import { SessionScopeBanner } from './session-scope.tsx'
+import { ScopeChip } from './scope-chip.tsx'
 import { copyText } from './clipboard.ts'
 import { noticeText, t } from './locale.ts'
 import { canSelectPanel, openNative } from './native-store.ts'
@@ -127,8 +129,10 @@ export function HealthPanel({ sessionId }: HealthPanelProps) {
 
   return (
     <div className="ove-health" data-dsh-plugin="openviking-enhance-health">
+      <SessionScopeBanner sessionId={sessionId} />
       <div className="ove-health-bar">
         <span className="ove-health-title">{t('health.title')}</span>
+        <ScopeChip compact />
         <span className="ove-health-spacer" />
         {canSelectPanel() && (
           <button

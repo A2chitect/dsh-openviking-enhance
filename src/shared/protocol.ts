@@ -192,6 +192,14 @@ export interface EnhanceConfig {
   activeProfileId?: string | null
   /** v0.5: probed server auth mode (null while unknown). */
   authMode?: string | null
+  /** v0.9: the active secret-free scope key (the identity fingerprint). */
+  scopeKey?: string
+  /** v0.9: profile label, or null in legacy resolution. */
+  profileLabel?: string | null
+  /** v0.9: effective peer READ selector, when one is set. */
+  peer?: string | null
+  /** v0.9: true when the identity carries an in-server override. */
+  overrides?: boolean
   /** Non-fatal problems worth surfacing in the panel header. */
   warnings: PluginNotice[]
 }
@@ -502,6 +510,8 @@ export type ConfigSourceId =
   | 'profiles.json'
   | 'pending-queue'
   | 'plugin-state'
+  /* v0.9: the last-scope state file (a corrupt one falls back + is reported). */
+  | 'scope-state.json'
 
 /** How a local source read went; values only, never contents. */
 export type ConfigSourceState = 'ok' | 'missing' | 'malformed' | 'unreadable' | 'wrong-shape' | 'unknown'
@@ -1368,6 +1378,17 @@ export interface AuditEntry {
   snapshot?: { projectDir: string | null; sourceCommit: string | null; newCommit: string | null } | null
   /** Pack export/download size in bytes. */
   bytes?: number | null
+  /**
+   * v0.9 scope-switch provenance: from/to scope keys + labels (a hash and a
+   * profile label; never an endpoint secret or key). Present only for `switch`
+   * records written by the scope layer.
+   */
+  switch?: {
+    from: string | null
+    fromLabel: string | null
+    to: string | null
+    toLabel: string | null
+  } | null
 }
 
 export interface AuditPayload {
@@ -2346,3 +2367,197 @@ export const OPS_ERROR_CODES = [
   'method-not-allowed',
 ] as const
 export type OpsErrorCode = (typeof OPS_ERROR_CODES)[number]
+
+/* ========================================================================
+ * v0.9 "Native II — multi-scope" — scope key, switcher, identity overrides,
+ * session-scope map and the read-only ACL view
+ *
+ * Everything here is additive. A **scope** is the active v0.5 server profile
+ * plus an optional in-server identity override; its stable secret-free key is
+ * the existing v0.5 identity fingerprint (`sha256:` over the profile
+ * descriptor + probed auth mode). One scope is active at a time: every plugin
+ * request carries {@link SCOPE_HEADER}, the host refuses mismatches with
+ * `scope-changed`, and every response is labelled with the active scope.
+ * ===================================================================== */
+
+/**
+ * The request header carrying the caller's expected scope key.
+ *
+ * The client attaches it to every host call (reads and mutations). The host
+ * compares it with the active scope key: a mismatch is answered with the
+ * `scope-changed` error and never with another scope's payload. A missing
+ * header stays allowed for loopback/curl use, but the response is still
+ * labelled with the active scope.
+ */
+export const SCOPE_HEADER = 'x-dsh-openviking-scope'
+
+/** The response header labelling every plugin response with the active scope. */
+export const SCOPE_RESPONSE_HEADER = 'x-dsh-openviking-scope'
+
+/** Which identity fields the active auth mode lets a person switch. */
+export interface ScopeIdentityRules {
+  /** Account/user header overrides are permitted (dev/trusted only). */
+  account: boolean
+  user: boolean
+  /** The peer selector is a READ lens; writes stay on the session actor peer. */
+  peer: boolean
+  /** Stable reason code when a field is disabled; null when everything is on. */
+  reason: string | null
+  /** The probed auth mode the rules were derived from (null = not probed). */
+  authMode: string | null
+}
+
+/** The active in-server identity override, as persisted in `scope-state.json`. */
+export interface ScopeOverridesPayload {
+  account: string | null
+  user: string | null
+  peer: string | null
+  /** Which fields may be switched right now. */
+  allowed: ScopeIdentityRules
+  /** True when at least one override is active for the current scope. */
+  overrides: boolean
+}
+
+/** The reviewable, secret-free identity of one scope; `scopeKey` is the fingerprint. */
+export interface ScopeKeyInfo {
+  scopeKey: string
+  profileId: string | null
+  label: string | null
+  endpoint: string
+  authMode: string | null
+  account: string
+  user: string
+  peer: string | null
+  /** True when the identity differs from the profile's stored defaults. */
+  overrides: boolean
+}
+
+/** Health/version facts for one row of the scope menu (probe-on-demand). */
+export interface ScopeHealthInfo {
+  ok: boolean
+  version: string | null
+  latencyMs: number | null
+  error: string | null
+}
+
+/** One scope row: a profile plus its effective identity and last-known health. */
+export interface ScopeListEntry {
+  /** The profile id, or the legacy sentinel when no profile is active. */
+  id: string
+  label: string
+  endpoint: string
+  authMode: string | null
+  account: string
+  user: string
+  peer: string | null
+  /** Whether a secret is stored (the key itself never leaves the host). */
+  hasApiKey: boolean
+  health: ScopeHealthInfo
+  /** Last-known capability map for this scope (active scope is fresh). */
+  capabilities: Record<string, ScopeCapability>
+  warnings: string[]
+  isActive: boolean
+  /** True when this row's identity carries an in-server override. */
+  overrides: boolean
+}
+
+/** The allowlisted, secret-free projection of the official plugin's connection. */
+export interface OfficialPluginFacts {
+  /** False when the runtime exposed no readable facts (never guessed). */
+  known: boolean
+  endpointHost: string | null
+  account: string | null
+  user: string | null
+  peer: string | null
+  authMode: string | null
+  /** Whether the projected facts agree with the active scope; null = unknown. */
+  matches: boolean | null
+}
+
+/** `GET ${API_PREFIX}/scopes` — the list the v0.9 scope menu renders. */
+export interface ScopesPayload {
+  scopes: ScopeListEntry[]
+  active: ScopeKeyInfo
+  overrides: ScopeOverridesPayload
+  /** Advisory only: the conversation pipeline is not rebound by a cockpit switch. */
+  officialPlugin: OfficialPluginFacts | null
+  warnings: PluginNotice[]
+  observedAt: string
+}
+
+/** `POST ${API_PREFIX}/scope/identity` — a local identity-override mutation. */
+export interface ScopeIdentityRequest {
+  account?: string
+  user?: string
+  peer?: string
+  /** Set to '' to clear one override (undefined keeps the current value). */
+  clear?: Array<'account' | 'user' | 'peer'>
+}
+
+/** The stable scope error codes; `OveError.code` carries one of these. */
+export type ScopeErrorCode =
+  | 'scope-changed'
+  | 'identity-not-switchable'
+  | 'scope-switch-blocked'
+  | 'profile-missing'
+  | 'profile-unhealthy'
+  | 'admin-not-available'
+
+/** What the host knows about one DSH session's capture scope (best effort). */
+export interface SessionScopeRecord {
+  sessionId: string
+  scopeKey: string
+  profileId: string | null
+  label: string | null
+  account: string
+  user: string
+  peer: string | null
+  /** ISO timestamp of the last observation. */
+  observedAt: string
+}
+
+/** `GET ${API_PREFIX}/session-scope?sessionId=` — the mismatch-warning facts. */
+export interface SessionScopePayload {
+  sessionId: string
+  /** Null when this session was never seen under a scope (fresh install/state). */
+  record: SessionScopeRecord | null
+  active: ScopeKeyInfo
+  /** True when the recorded scope differs from the active one (actions disabled). */
+  mismatch: boolean
+  officialPlugin: OfficialPluginFacts | null
+  /** Advisory pipeline mismatch: the official plugin is captured elsewhere. */
+  pipelineMismatch: boolean
+  warnings: PluginNotice[]
+  observedAt: string
+}
+
+/** The four states of the read-only ACL probe; never "enabled/disabled". */
+export type AclViewState = 'available' | 'denied-no-manage' | 'only-resources' | 'unsupported'
+
+/** The visibility classification of one `viking://` path (no server call needed). */
+export type AclVisibilityKind = 'account-shared' | 'private-user' | 'peer' | 'agent' | 'session' | 'unknown'
+
+/** One ACL principal row; server-side identity data, shown only for the selection. */
+export interface AclEntry {
+  principal: string
+  level: string
+}
+
+/** `GET ${API_PREFIX}/acl?uri=` — the read-only Access-tab report. */
+export interface AclPayload {
+  uri: string
+  state: AclViewState
+  aclMode: 'inherit' | 'restricted' | null
+  direct: AclEntry[]
+  inherited: AclEntry[]
+  effective: AclEntry[]
+  visibility: AclVisibilityKind
+  /** Short English fact or the server refusal; the client maps known codes. */
+  detail: string | null
+  version: string | null
+  role: string | null
+  /** The unambiguous "no sharing API in the tested builds" statement anchor. */
+  sharingAvailable: false
+  observedAt: string
+  warnings: PluginNotice[]
+}

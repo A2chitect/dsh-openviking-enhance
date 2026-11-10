@@ -21,6 +21,18 @@
 
 **在 DSH 里直接读记忆。** 左侧边栏底部新增一行，打开一个**原生阅读面板**：概览、懒加载的 `viking://` 浏览树（带预览窗格）、分页会话浏览、有界最近提交浏览与统计。核心阅读任务不再需要 iframe；OpenViking 自带的 Studio 仍是一个显式视图（以及一个"在新标签页打开"），把 `showNativeViews` 设为 `false` 则精确回到 v0.6 的 Studio 页面。全部只读。
 
+**多服务器、单一显式作用域（v0.9）。** 命名配置档仍是凭据/服务器单元；作用域 =
+配置档 + 可选的服务端内身份覆写（账户/用户/peer 读取选择器）。面板头部作用域 chip
+打开一等的作用域菜单（按端点分组的服务器、健康/版本/延迟、警告、切换、刷新健康、
+测试连接）；持久作用域横幅出现在每个原生视图与右侧栏标签页。切换受保护（有策展/操作
+确认待处理时拒绝；在途读取被中止并丢弃；驾驶舱回到 Overview、插件右侧栏页面关闭），
+每个插件请求携带作用域指纹，宿主对其它作用域请求返回 `scope-changed`。**没有联邦/跨
+服务器搜索**：每个读取都走当前作用域。只读**访问（Access）**标签页为选中的
+`viking://resources/**` 条目展示服务端 ACL 数据，四种状态明确（`available` /
+`denied-no-manage` / `only-resources` / `unsupported`），并明确说明被测服务端版本
+**没有共享/邀请 API**。插件仍然从不调用 admin/账户/组端点、从不修改 ACL、也从不把
+官方记忆插件的连接"重绑"到别的服务器（只做只读的连接一致性警告）。
+
 ### 原生阅读面板（v0.7）
 
 一行侧边栏入口、一个主面板、六个内部视图——不新增 shell 座位：
@@ -326,6 +338,36 @@ dsh plugin --profile web remove dsh-openviking-enhance
 
 每个动作还受新的 **`enableOps`** 开关（默认 **false**；`enableWrites` 仍只负责策展）、认证通道、健康探测身份、运行时能力/角色探测（绝不比较版本号）以及和策展写入共享的**单一变更闸门**约束。令牌一次性、120 秒、绑定身份指纹；操作限 2 次成功执行与 6 次准备/分钟。**任何地方都没有"重试"按钮**：被测服务端没有任务重试 API，编译只能"作为新编译重跑"（新操作、新 Idempotency-Key）。OVPack **备份/导入/恢复被有意推迟**到后续版本（它们属于 ROOT/ADMIN、账户级、非原子且/或需要服务端临时上传流程），rules compile、编译配置更新/embeddings/reindex、watches 与会话快照恢复同样不提供。
 
+### 多作用域路由与切换（v0.9）
+
+只读路由（loopback + 同源围栏，JSON 信封）：
+
+| 路由 | 用途 |
+| --- | --- |
+| `GET /api/openviking-enhance/scopes?fresh=0` | 作用域列表：按服务器分组的行（名称、端点、探测到的认证模式、账户/用户/peer、健康/版本/延迟、逐作用域能力摘要、稳定警告码、是否当前），身份覆写规则，当前作用域块与官方插件连接事实（仅建议）。只做便宜的 `/health` 探测（缓存 10 秒）；**从不**请求 `/admin`。 |
+| `GET /api/openviking-enhance/session-scope?sessionId=` | 本地最佳努力的「DSH 会话 → 作用域」记录与该会话的不一致判定（无正文、无密钥、无端点）。 |
+| `GET /api/openviking-enhance/acl?uri=` | 对用户选中的 `viking://resources/**` 条目的只读 ACL 报表，分类为 `available` / `denied-no-manage` / `only-resources` / `unsupported`，并给出 URI 的可见性分类。没有变更路径。 |
+
+切换：v0.5 配置档切换沿用已验证的 `ConfigForm.set('activeProfile')` 机制；服务端内
+身份覆写是**本地**变更 `POST /api/openviking-enhance/scope/identity`，只走认证通道
+（只写 `scope-state.json`，绝不写 OpenViking）。两者都会被客户端闸门拒绝——只要还有
+策展/操作确认、写入或撤销待处理/执行中；宿主也会在共享变更闸门有未结算令牌时拒绝
+身份路由。切换时中止在途读取并丢弃旧作用域响应；宿主侧一个在切换后才完成的慢读取会
+返回 `409 scope-changed` 而不是旧数据。配置档切换会把新的当前配置档写入
+`scope-state.json`，并**重置身份覆写**。
+
+隔离契约：每个插件请求携带 `x-dsh-openviking-scope: <作用域指纹>`（由配置档 + 端点 +
+探测到的认证模式 + 生效的账户/用户/peer 组成的 `sha256:` 身份指纹，无密钥）；宿主
+在开始任何工作前比对该值，不一致即 `scope-changed`。每个响应都标注当前作用域指纹。
+切换会清空缓存（逐作用域缓存策略的已批准简化兜底；文档上限是最多保留两个作用域集）、
+能力矩阵逐作用域、ACL 报表逐作用域缓存并在切换时丢弃；界面不提供「搜索所有作用域」。
+
+身份切换规则（F12 补全）：`dev`/`trusted` 配置档允许账户/用户请求头覆写（trusted 需要
+两者同时提供；**插件从不设置 role 请求头**）；`api_key` 由密钥绑定身份，账户/用户字段
+禁用并给出原因，peer 仍是读取视角；`oidc`/`ldap` 不支持；不可达服务器禁用切换。Peer
+**只读**：仅用于无会话读取（浏览/预览/ACL）的 `X-OpenViking-Actor-Peer`；写入与会话
+级调用仍使用官方记忆插件记录的 actor peer。
+
 ### 时限与上限
 
 下表的数值都来自 `src/shared/limits.ts`；`test/v06-docs.test.mjs` 会从两份 README 中
@@ -408,6 +450,15 @@ dsh plugin --profile web remove dsh-openviking-enhance
 | PACK_BODY_INACTIVITY_TIMEOUT_MS | 30000 |
 | EVIDENCE_LOOKUP_DEADLINE_MS | 15000 |
 | TASK_EVIDENCE_CORRELATION_MAX | 20 |
+| SCOPE_STATE_VERSION | 1 |
+| SCOPE_MAX_RETAINED_CACHES | 2 |
+| SCOPE_PROBE_TTL_MS | 10000 |
+| SCOPE_SWITCH_COOLDOWN_MS | 1000 |
+| SESSION_SCOPE_MAP_MAX | 64 |
+| SCOPE_KEY_MAX_CHARS | 200 |
+| ACL_URI_MAX_CHARS | 4096 |
+| ACL_ENTRIES_MAX | 200 |
+| SCOPE_HEALTH_TIMEOUT_MS | 4000 |
 <!-- /contract:limits -->
 
 规则列表的截止时间是**调度**截止：已经发出的请求仍按各自的单请求超时跑完，所以慢服务端最多会让实际耗时再多一个在途请求的时间；每次部分结果都会在 `progress` 里给出实际耗时。
@@ -428,7 +479,9 @@ dsh plugin --profile web remove dsh-openviking-enhance
 | 操作动作（v0.8） | `enableOps` **且** 认证传输 **且** 健康探测身份 **且** 运行时能力/角色探测 **且** 共享单一变更闸门 | DSH 0.2.2-rc.1+；由能力探测决定（快照路由、compile `configured && can_create`、pack 导出探针） | 只读仍可用；所有动作以 `ops-disabled`/`compile-not-configured`/`pack-export-unavailable`/… fail closed；不存在重试 |
 | 任务证据 / 可观测性 | 按请求的只读、按需 | OpenViking 0.5.1.1+（仅当 `/console/audit` 可达时读取服务端请求日志） | 证据会警告 `server-request-log-unavailable`；每张可观测性卡片独立降级；从不探测 `/metrics` |
 | Activity 任务/指标 | `GET /tasks` 与逐卡片探测 | 路由存在 | 逐卡片「不可用」；`/metrics` 从不探测 |
-| ACL | 不探测 | 从不 | 明确的「未启用」行 |
+| ACL / 访问标签页（v0.9） | 对用户选中的 `viking://resources/**` 条目一次 `GET /acl` | 服务端路由存在**且**该身份有 `manage` | 四种明确状态；403 报为 `denied-no-manage` 并同时说明两种可能（「ACL 未启用」与「缺少 manage」），插件从不擅自判断；不存在任何 ACL 编辑 |
+| 作用域切换器 / 作用域列表（v0.9） | 对每个已配置配置档的便宜 `/health` + 当前作用域能力探测 | 总是可用 | 不可达行显示健康错误；旧连接作为作用域列出；缺失配置档以警告行显示，绝不自动删除 |
+| 身份覆写 / 会话作用域保护（v0.9） | 探测到的认证模式 + 健康 + 共享变更闸门 | `dev`/`trusted` 允许账户/用户；多数模式允许 peer 读取 | 字段禁用并说明原因；会话上次在其它作用域下使用时显示不一致横幅，并禁用其召回/写入动作直到切回 |
 | Studio | `endpoint + studioPath` 的 iframe | 服务端提供 `/studio/` | 新标签页/浏览器兜底；X-Frame-Options/CSP 拒绝会如实显示 |
 
 ### 不适用（由官方记忆插件承担）
@@ -442,6 +495,12 @@ dsh plugin --profile web remove dsh-openviking-enhance
 | OVPack 备份/导入/恢复 | 服务端（ROOT/ADMIN、账户级） | v0.8 仅提供**导出**；备份/导入/恢复被有意推迟，原因显示在 Packs 页 |
 | 任务重试 | 被测版本没有任何 API | 只有"作为新编译重跑"（新操作）；Tasks 页明确说明 |
 | 编译配置更新、embeddings、内容重建索引、rules compile、watches、会话快照恢复 | 服务端/CLI 或后续版本 | 不提供；只读仍可查看编译配置/操作/输出 |
+| 共享 / 邀请 / 分享链接 | 被测服务端版本没有任何 API | 绝不发明：访问标签页展示可见性分类 + ACL 报表，并明确说明没有共享 API |
+| 账户/用户/组/密钥管理与枚举 | 服务端 `/api/v1/admin/*`（ROOT/ADMIN、仅密钥模式） | **从不调用**，任何模式都不调用；身份选项只来自本地配置档（测试断言零 `/admin` 请求） |
+| ACL grant/revoke/编辑 | 管理操作（`/acl/grant`、`/acl/revoke`） | 不提供；访问标签页只读 |
+| 联邦/跨服务器搜索、全作用域面板、并行作用域查询 | 不存在联邦 API | 不提供；每个请求都指向当前端点，作用域外的结果 URI 会被丢弃并警告 |
+| OIDC/LDAP 交互登录、远程 TLS/代理配置 | 外部 IdP / 部署 | 不建模；作用域菜单改为显示认证模式与明文/非本机警告 |
+| 自动重配官方记忆插件或「把会话重绑到作用域」 | `@openviking/dsh-memory-plugin` 拥有自己的管道 | 绝不做；只会在两套连接不一致时给出只读、白名单、无密钥的警告 |
 
 ### 数据、隐私与安全边界
 
@@ -463,11 +522,26 @@ dsh plugin --profile web remove dsh-openviking-enhance
 - **日志里没有对话或记忆正文**：本地审计文件只记录动作/身份/URI/结果，从不记录正文。
   冒烟脚本默认脱敏（`SMOKE_VERBOSE=1` 是仅供本机调试的显式开关）。
 - **插件持久化的内容**：`profiles.json`（0600）、`audit.jsonl`（0600，1 MiB 轮转、
-  保留 2 份）与 `onboarding.json`（0600，原子写），都在
+  保留 2 份）、`onboarding.json`（0600，原子写）、`scope-state.json`（0600，原子写）与
+  `session-scopes.json`（0600，原子写，最多 64 条 LRU），都在
   `${DSH_HOME:-~/.dsh}/state/dsh-openviking-enhance/` 下。`onboarding.json` 只含检查
   id/状态时间戳与上次检查计数——绝不含端点、账户、用户、密钥、peer、记忆 URI 或记忆正文。
   `lastOpenedAt` 只在 `showOnboarding` 开关打开时写入（关闭清单即停止写入）；插件页
   Setup 卡片的"遗忘本地设置状态"会完全删除该文件，动作记入本地审计。
+  `scope-state.json` 只含当前配置档 id 与可选的账户/用户/peer 读取覆写——**不含端点、
+  不含密钥**。`session-scopes.json` 只把 DSH 会话 id 映射到上次观察它的作用域标签/哈希
+  ——不含端点、不含正文、不含密钥；它是本地最佳努力状态，缺失记录只表示"未知"，绝不
+  表示"一致"。作用域指纹是哈希，可安全展示/审计；凭据从不出现在任何作用域载荷、审计
+  记录或证据文档里。
+- **官方插件的连接只作参考。** v0.9 只读取（白名单、无密钥的投影：`baseUrl` 主机、
+  account、user、peer、认证模式提示）已挂载官方记忆插件的连接事实，用于在「对话记忆
+  捕获在服务器 A、而面板查看服务器 B」时警告。API key 与原始配置对象从不被读取、复制
+  或序列化；投影失败时退化为"官方插件连接：未知"，并且本插件从不改写官方插件的凭据。
+- **ACL 主体是服务端身份数据。** 只在访问标签页针对用户选中的资源显示，有上限
+  （`ACL_ENTRIES_MAX`），只在内存中按作用域缓存，从不写入审计、证据或日志。
+- **作用域层不是安全边界。** 作用域指纹、横幅与逐作用域缓存只阻止*本插件*混用作用域；
+  服务端的认证/ACL 才是真正的边界。两个指向同一端点+身份的配置档只是同一份数据的不同
+  标签；配置错误的服务端不会因为一个横幅而被修复。
 
 ### 插件会发什么（以及代价）
 
@@ -554,6 +628,7 @@ dsh plugin --profile web remove dsh-openviking-enhance
 | `enableOps` | `false` | v0.8 手动开启：快照创建/恢复、编译触发、OVPack 导出、文件版本恢复（全部需要确认；`enableWrites` 仍只负责策展） |
 | `enableActivity` | `true` | 界面开关：「活动」tab（任务、指标、最近操作） |
 | `showScopeBanner` | `true` | 界面开关：常驻作用域 chip；写入弹窗无论是否隐藏都会重复完整作用域 |
+| `showScopeSwitcher` | `true` | 界面开关（v0.9）：驾驶舱作用域菜单/切换器；关闭只隐藏菜单——横幅仍由自己的开关控制，确认框/证据里的作用域块永不被隐藏 |
 | `showNativeViews` | `true` | 界面开关：原生阅读面板（概览/浏览/会话/提交/统计）。关闭 = v0.6 的 Studio iframe 页面 |
 | `showOnboarding` | `true` | 界面开关：首次运行检查（概览卡片 + 插件页 Setup 卡片）；关闭只隐藏卡片，不清除本地状态 |
 | `activeProfile` | `''` | 要使用的命名配置档；留空 = 使用下面的旧连接字段 |

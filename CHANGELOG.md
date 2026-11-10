@@ -10,6 +10,94 @@ promotes to a dated section — see [RELEASING.md](RELEASING.md).
 
 ## Unreleased
 
+### v0.9 — Native II: multi-scope, identity overrides and the read-only ACL view (PR #7)
+
+The scope/isolation layer. A **scope** is the active v0.5 server profile plus an
+optional in-server identity override (account/user read selectors; peer read
+lens); its key is the existing secret-free identity fingerprint. Multiple servers
+and identities are now first-class, visibly labelled everywhere, and isolated —
+each plugin request carries the scope key, every response is labelled, a switch is
+guarded, and stale in-flight reads can never render under the new scope. No new
+dependency, no AGPL code, no new shell seat; every mutation path is unchanged
+(writes/ops stay identity- and scope-bound).
+
+#### Added
+
+- **Scope model + persistence.** `scope-state.json` (0600, atomic, per DSH home)
+  holds the last active profile id and the optional account/user/peer overrides;
+  boot precedence is Config override → scope state → `profiles.json` header →
+  legacy resolution (corrupt files fall back and are reported through the
+  existing config-source health surface). A profile switch persists the new scope
+  and resets the overrides; the scope key/fingerprint contains no secrets.
+- **Identity switching (F12 completion).** `dev`/`trusted` profiles allow
+  account/user header overrides (trusted needs both; the plugin still never sets
+  a role header); `api_key` is key-bound with the fields disabled and a stated
+  reason; `oidc`/`ldap` are out; unreachable disables switching. The peer selector
+  is a **read lens only** (`X-OpenViking-Actor-Peer` on sessionless reads), never a
+  write authority; the scope block always shows the effective peer. The
+  identity-override mutation is local (`POST /scope/identity`, writes only the
+  0600 state file) and rides the authenticated transport.
+- **First-class scope switcher.** Cockpit toolbar + Overview scope menu: servers
+  grouped by endpoint with label, auth mode, account/user/peer, probed
+  health/version/latency, per-scope capability summary, stable warning codes and
+  the active row; identity section with disabled fields/reasons; switch, refresh
+  health and test connection; profile creation/editing stays in the existing
+  Plugins-page editor. New `showScopeSwitcher` switch (default **true**) hides only
+  the menu; the persistent banner keeps the existing `showScopeBanner` switch.
+- **Guarded switching.** Refused while any curation/ops confirmation, write or
+  undo is pending or executing (plus a double-click cooldown); in-flight reads are
+  aborted and dropped; the cockpit resets to Overview and plugin right-sidebar
+  pages close; the switch is audited with from/to scope keys and labels;
+  the write/ops token semantics are unchanged, so previous-identity tokens/undos
+  stay visible but refuse with `identity-changed`.
+- **Isolation.** `x-dsh-openviking-scope` on every request; the host refuses
+  mismatches with `scope-changed` before any work and labels every response;
+  composed reads that finish after a switch answer `scope-changed` instead of a
+  stale payload; caches are cleared on a switch (the approved simple fallback for
+  the per-scope policy, bounded at two retained sets) with capability matrices and
+  ACL reports per scope; no federated/cross-server search; search result URIs are
+  validated against the active readable roots and out-of-scope hits are dropped
+  with one warning.
+- **Session and pipeline guards.** A bounded best-effort local
+  `session-scopes.json` (0600, no bodies/keys/endpoints) records which scope last
+  observed a DSH session; a mismatch shows a banner on the recall/preview/health/
+  activity surfaces and disables that session's recall/write actions until the
+  user switches back. An allowlisted, secret-free projection of the official
+  memory plugin's connection facts can warn that the conversation pipeline is
+  captured elsewhere; it is advisory, read-only and fails open to "unknown" — the
+  official plugin is never reconfigured.
+- **Read-only ACL / Access view.** The Browse preview gains an **Access** tab for
+  `viking://resources/**` only: the ACL report as direct/inherited/effective tables
+  when available, plus the four explicit states `available` /
+  `denied-no-manage` (the deliberate 403 ambiguity: ACL may be off **or** the
+  identity lacks manage — never guessed) / `only-resources` / `unsupported`, the
+  visibility classification (account-shared, private user tree, peer, agent,
+  session) and an explicit "no sharing/invite API exists in the tested builds"
+  statement. No ACL edits, no admin/account/group/key calls (tests assert zero
+  `/admin` requests).
+- **Docs/tests.** README EN+ZH host-contract additions (scope model, switching,
+  identity rules, isolation, session map, official-plugin advisory, ACL/sharing
+  limits, remote warning, new 0600 state files, role split), VERIFICATION row
+  scaffold, new limits in `src/shared/limits.ts` with the documented parity test;
+  new host unit/route suites with **three invented fake servers** (dev A, dev B,
+  api_key C) and component render tests for the scope menu/banners/Access tab;
+  smoke additions (offline scoped routes, wrong-scope refusal, no key in scope
+  payloads).
+
+#### Honest limitations (shipped and documented)
+
+- Auth-mode gates: account/user switching exists only in `dev`/`trusted`;
+  `api_key` is key-bound, `oidc`/`ldap` and unreachable servers disable switching.
+- **Client-side labels/caches are not a security boundary** against server ACL
+  misconfiguration; the server's auth/ACL remains the real boundary. Two profiles
+  pointing at the same endpoint+identity are different labels for the same data.
+- The session→scope map is best-effort local state: a missing record means
+  "unknown", never "matches".
+- **The official plugin's pipeline is not rebound** by a cockpit scope switch; the
+  compatibility warning is an allowlisted, advisory projection only.
+- The ACL view is resources-only and read-only; a 403 is reported as the
+  documented ambiguity, not as "ACL disabled".
+
 ### v0.8 — Operate: controlled actions on the native cockpit (PR #6)
 
 The first release that can *change* OpenViking state from DSH — behind one new

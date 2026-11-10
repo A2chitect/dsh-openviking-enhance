@@ -17,6 +17,7 @@
  *    glossed over, and there is no automatic retry anywhere.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { setOpsPending } from './ops-store.ts'
 import type { ReactNode } from 'react'
 import type {
   OpsExecutePayload,
@@ -495,6 +496,14 @@ export function OpsDialog(props: {
       mountedRef.current = false
     }
   }, [])
+
+  // v0.9: an open Operate confirmation blocks a scope switch (a switch would
+  // silently discard the prepared token). Counted on mount, released on unmount.
+  useEffect(() => {
+    if (props.request === null) return
+    setOpsPending(true)
+    return () => setOpsPending(false)
+  }, [props.request])
 
   // Prepare on open; cancel the pending token when the dialog goes away.
   useEffect(() => {

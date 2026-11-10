@@ -415,7 +415,11 @@ export function scopeCapabilities(
     snapshot: { available: snapshot.snapshot.available, detail: snapshot.snapshot.detail },
     tasks: snapshot.tasks,
     rules: { available: snapshot.rules.available, detail: snapshot.rules.detail },
-    acl: { available: false, detail: 'not-enabled' },
+    // v0.9: ACL is not a startup gate — the Access tab probes one user-selected
+    // resource and reports the four explicit states. This matrix entry must not
+    // claim "ACL disabled" (the server cannot prove that), hence the honest
+    // "probe on selection" detail.
+    acl: { available: false, detail: 'acl-probe-on-selection' },
     'mutation-transport': { available: transport, detail: transport ? null : 'transport-unavailable' },
     'writes-master': { available: writesEnabled, detail: writesEnabled ? null : 'writes-disabled' },
     /* ---- v0.8 Operate gates -------------------------------------------- */

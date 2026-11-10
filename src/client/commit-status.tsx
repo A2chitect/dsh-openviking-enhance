@@ -59,6 +59,7 @@ import { copyText } from './clipboard.ts'
 import { OpenVikingIcon } from './openviking-icon.tsx'
 import { VikingUriLink } from './viking-uri-link.tsx'
 import { ensureScope, useScope } from './scope-store.ts'
+import { ensureSessionScope, useSessionScope } from './session-scope.tsx'
 import { canSelectPanel, openNative } from './native-store.ts'
 import { openWriteConfirm } from './write-store.ts'
 import { writeErrorText } from './locale.ts'
@@ -90,6 +91,11 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
   const [commitError, setCommitError] = useState<string | null>(null)
   const [captureLine, setCaptureLine] = useState<string | null>(null)
   const scope = useScope()
+  // v0.9: a session last seen under another scope must not offer a force-commit
+  // (the write would land under a different identity than the conversation was
+  // captured under); the mismatch banner explains how to switch back.
+  const sessionScope = useSessionScope(sessionId ?? '')
+  const scopeMismatch = sessionScope.payload?.mismatch === true
   const [selected, setSelected] = useState<string | null>(null)
   /** How many commit records to fetch counts for; the popover widens this on demand. */
   const [summaryLimit, setSummaryLimit] = useState(TIMELINE_DEFAULT)
@@ -101,6 +107,7 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
 
   useEffect(() => {
     if (!sessionId) return
+    void ensureSessionScope(sessionId)
     const id = sessionId
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -315,7 +322,7 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
                 {t('native.openSessionInCockpit')}
               </button>
             ) : null}
-            {scope.scope !== null && scope.scope.writes.enabled && scope.scope.writes.transport ? (
+            {scope.scope !== null && scope.scope.writes.enabled && scope.scope.writes.transport && !scopeMismatch ? (
               <button
                 type="button"
                 className="ove-diff-action"
@@ -329,7 +336,9 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
                 {t('pill.commitNow')}
               </button>
             ) : (
-              <span className="ove-row-count">{t('pill.commitDisabled')}</span>
+              <span className="ove-row-count">
+                {scopeMismatch ? t('scope.session.actionsDisabled') : t('pill.commitDisabled')}
+              </span>
             )}
           </div>
           {commitError !== null ? <div className="ove-empty ove-error">{commitError}</div> : null}

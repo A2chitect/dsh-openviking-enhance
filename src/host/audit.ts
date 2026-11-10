@@ -53,6 +53,8 @@ export interface AuditInput {
   idempotencyKey?: string | null
   snapshot?: AuditEntry['snapshot']
   bytes?: number | null
+  /** v0.9 from/to scope keys + labels for a `switch` record. */
+  switch?: AuditEntry['switch']
 }
 
 export interface AuditLogOptions {
@@ -92,6 +94,7 @@ export function auditEntryFrom(input: AuditInput, now: number = Date.now()): Aud
     ...(input.idempotencyKey === undefined ? {} : { idempotencyKey: input.idempotencyKey }),
     ...(input.snapshot === undefined ? {} : { snapshot: input.snapshot }),
     ...(input.bytes === undefined ? {} : { bytes: input.bytes }),
+    ...(input.switch === undefined ? {} : { switch: input.switch }),
   }
 }
 

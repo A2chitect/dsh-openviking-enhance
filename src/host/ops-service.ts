@@ -151,6 +151,23 @@ export class OpsService {
   }
 
   /**
+   * v0.9: how many operational confirmation tokens are pending or executing
+   * (the scope-switch guard counts these alongside curation writes).
+   */
+  unresolvedCount(): number {
+    let count = 0
+    for (const record of this.tokens.values()) {
+      if (record.status === 'pending' || record.status === 'executing') count += 1
+    }
+    return count
+  }
+
+  /** Whether the shared gate is currently held by any mutation (write or ops). */
+  get mutationInFlight(): boolean {
+    return this.options.gate.busy
+  }
+
+  /**
    * Step 1. Every action runs the same gates, then builds the plan the user will
    * confirm; nothing is mutated here (a restore dry-run writes nothing).
    */

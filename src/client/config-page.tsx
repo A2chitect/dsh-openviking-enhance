@@ -148,6 +148,11 @@ const FEATURE_TOGGLES: readonly ToggleSpec[] = [
     hint: 'config.showScopeBannerHint',
   },
   {
+    key: 'showScopeSwitcher',
+    label: 'config.showScopeSwitcher',
+    hint: 'config.showScopeSwitcherHint',
+  },
+  {
     key: 'showNativeViews',
     label: 'config.showNativeViews',
     hint: 'config.showNativeViewsHint',

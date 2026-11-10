@@ -248,6 +248,22 @@ export class WriteService {
   }
 
   /**
+   * v0.9: how many confirmation tokens are pending or executing.
+   *
+   * The scope-switch guard reads this (plus the shared mutation gate): a switch
+   * is refused while any curation action is unresolved, and a token prepared
+   * under the previous identity stays visible but refuses with
+   * `identity-changed` after an allowed switch (sign-off 3).
+   */
+  unresolvedCount(): number {
+    let count = 0
+    for (const record of this.tokens.values()) {
+      if (record.status === 'pending' || record.status === 'executing') count += 1
+    }
+    return count
+  }
+
+  /**
    * The action a still-usable token was prepared for, or null.
    *
    * Read-only and side-effect free apart from purging expired entries. Command

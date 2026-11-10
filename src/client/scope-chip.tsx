@@ -1,27 +1,47 @@
 /**
- * F12: the persistent scope chip.
+ * F12 + v0.9: the persistent scope banner and the first-class scope menu.
  *
- * One component, three placements (design §"Scope banner"):
- *   - the composer dock, beside the commit pill (`compact`);
- *   - the plugin's main panel and the Activity/preview tab headers;
- *   - implicitly at the top of every write confirmation dialog, which repeats
- *     the full scope block regardless of this switch.
+ * One component family, every placement:
+ *   - the composer dock, beside the commit pill (`compact` chip);
+ *   - the cockpit toolbar and the Overview header (chip + scope block);
+ *   - the Activity/preview/recall/health tab headers (compact chip or banner);
+ *   - every write/ops confirmation dialog repeats the full scope block itself
+ *     (`showScopeBanner` never hides that).
  *
- * It renders the active profile label, the account/user/peer scope and a warning
- * glyph when the endpoint is not loopback or the identity is key-bound
- * (`auth_mode=api_key`) — the two cases where "which memory space is this?"
- * is easiest to get wrong. Clicking expands the detail: endpoint, auth mode,
- * role, server version, fingerprint prefix, the write gates and the profile
- * switch list.
+ * The chip renders the active profile label, account/user[/peer] and a warning
+ * glyph when the endpoint is remote, the identity is key-bound, or the scope is
+ * unhealthy. Clicking opens the v0.9 **scope menu** (a plugin overlay inside the
+ * main panel, not a new shell seat):
  *
- * The component never fetches on its own schedule beyond `ensureScope()`: the
- * store is shared, so the chip appearing in three places is still one request.
+ *   - servers grouped by endpoint, each row showing label, identity, auth mode,
+ *     health dot/version/latency, warnings and the active state;
+ *   - an identity section with the account/user read selectors (disabled with the
+ *     auth-mode reason when the server is key-bound / external-IdP / unreachable)
+ *     and the peer READ selector;
+ *   - Switch / Refresh health / Test connection actions; profile creation and
+ *     editing stay in the existing Plugins-page editor ("Manage scopes").
+ *
+ * One active scope only, a second click on the active row is a no-op, and the
+ * guard (pending confirmation/write/ops action) is enforced by the scope store.
+ * The `showScopeSwitcher` switch hides only this menu; the banner keeps showing
+ * the active scope.
  */
 import { useCallback, useEffect, useState } from 'react'
-import type { ProfileSummary, ScopePayload } from '../shared/protocol.ts'
-import { fetchProfiles } from './host-api.ts'
+import type { ScopeIdentityRequest, ScopeListEntry, ScopesPayload } from '../shared/protocol.ts'
+import { fetchScopes, testProfileEndpoint } from './host-api.ts'
 import { t } from './locale.ts'
-import { ensureScope, isScopeBannerEnabled, switchProfile, useScope } from './scope-store.ts'
+import {
+  dismissSwitchNotice,
+  ensureScope,
+  ensureScopes,
+  isScopeBannerEnabled,
+  isScopeSwitcherEnabled,
+  refreshScopes,
+  scopeSwitchBlockedReason,
+  switchIdentity,
+  switchProfile,
+  useScope,
+} from './scope-store.ts'
 import { hasPendingWrite } from './write-store.ts'
 
 /** Whether an endpoint points at another machine (the loud-warning case). */
@@ -41,12 +61,10 @@ export function isRemoteEndpoint(endpoint: string): boolean {
   )
 }
 
-/** The warning a scope needs, or null. */
-export function scopeWarning(scope: ScopePayload): string | null {
-  if (isRemoteEndpoint(scope.identity.endpoint)) return t('scope.warnRemote')
-  if (scope.identity.authMode === 'api_key') return t('scope.warnKeyBound')
-  if (scope.writes.reason === 'profile-unhealthy') return t('scope.warnUnhealthy')
-  return null
+/** The endpoint's host[:port], for a compact banner. */
+export function endpointHost(endpoint: string): string {
+  const match = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]+)/i.exec(endpoint.trim())
+  return (match?.[1] ?? endpoint).toLowerCase()
 }
 
 /** A short fingerprint for display: `sha256:1a2b3c4d5e6f…`. */
@@ -55,27 +73,391 @@ export function fingerprintPrefix(fingerprint: string): string {
   return `sha256:${hex.slice(0, 12)}…`
 }
 
-function ScopeDetail({ scope, onClose }: { scope: ScopePayload; onClose: () => void }) {
-  const [profiles, setProfiles] = useState<ProfileSummary[] | null>(null)
+/** A warning glyph for a list of host warning codes (v0.9 rows). */
+function warningGlyph(warnings: readonly string[]): string | null {
+  const order = ['unreachable', 'remote-endpoint', 'cleartext-http', 'key-bound-identity']
+  const known = order.filter((code) => warnings.includes(code))
+  return known.length > 0 ? '⚠' : null
+}
+
+/** A warning title from the host's stable row codes. */
+function warningText(code: string): string {
+  const key = `scope.rowWarn.${code}`
+  const text = t(key)
+  return text === key ? code : text
+}
+
+/** One identity field, or the profile default when the override is unset. */
+function fieldValue(override: string | null, fallback: string): string {
+  return override ?? fallback
+}
+
+function IdentityEditor({ scopes, onClose }: { scopes: ScopesPayload; onClose: () => void }) {
+  const scope = useScope()
+  const active = scopes.active
+  const allowed = scopes.overrides.allowed
+  const [account, setAccount] = useState(fieldValue(scopes.overrides.account, active.account))
+  const [user, setUser] = useState(fieldValue(scopes.overrides.user, active.user))
+  const [peer, setPeer] = useState(scopes.overrides.peer ?? '')
   const [note, setNote] = useState<string | null>(null)
-  const pending = hasPendingWrite()
-
+  const [busy, setBusy] = useState(false)
   useEffect(() => {
-    let cancelled = false
-    void fetchProfiles().then((answer) => {
-      if (!cancelled && answer.ok) setProfiles(answer.profiles.profiles)
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  const choose = useCallback(async (id: string) => {
+    setAccount(fieldValue(scopes.overrides.account, active.account))
+    setUser(fieldValue(scopes.overrides.user, active.user))
+    setPeer(scopes.overrides.peer ?? '')
+  }, [scopes, active.account, active.user])
+  const identityEnabled = allowed.account && allowed.user
+  const apply = useCallback(async () => {
     setNote(null)
-    const result = await switchProfile(id)
+    const request: ScopeIdentityRequest = {}
+    if (identityEnabled) {
+      request.account = account.trim()
+      request.user = user.trim()
+    }
+    if (allowed.peer) request.peer = peer.trim()
+    if (Object.keys(request).length === 0) {
+      setNote(t('scope.identity.menuDisabled'))
+      return
+    }
+    setBusy(true)
+    const result = await switchIdentity(request)
+    setBusy(false)
     if (!result.ok) setNote(result.error)
-  }, [])
+    else onClose()
+  }, [account, user, peer, identityEnabled, allowed.peer, onClose])
+  const clear = useCallback(async () => {
+    setNote(null)
+    setBusy(true)
+    const result = await switchIdentity({ clear: ['account', 'user', 'peer'] })
+    setBusy(false)
+    if (!result.ok) setNote(result.error)
+    else onClose()
+  }, [onClose])
+  const disabledReason = allowed.reason === null ? null : t(`scope.identity.reason.${allowed.reason}`)
+  return (
+    <div className="ove-scope-identity" role="group" aria-label={t('scope.identity.title')}>
+      <span className="ove-scope-section-title">{t('scope.identity.title')}</span>
+      <label className={`ove-scope-field${identityEnabled ? '' : ' ove-scope-field-disabled'}`}>
+        <span>{t('scope.account')}</span>
+        <input
+          value={account}
+          disabled={!identityEnabled || busy}
+          onChange={(event) => setAccount(event.target.value)}
+          aria-label={t('scope.account')}
+        />
+      </label>
+      <label className={`ove-scope-field${identityEnabled ? '' : ' ove-scope-field-disabled'}`}>
+        <span>{t('scope.user')}</span>
+        <input
+          value={user}
+          disabled={!identityEnabled || busy}
+          onChange={(event) => setUser(event.target.value)}
+          aria-label={t('scope.user')}
+        />
+      </label>
+      <label className={`ove-scope-field${allowed.peer ? '' : ' ove-scope-field-disabled'}`}>
+        <span>{t('scope.peer')}</span>
+        <input
+          value={peer}
+          disabled={!allowed.peer || busy}
+          onChange={(event) => setPeer(event.target.value)}
+          placeholder={t('scope.peerReadOnly')}
+          aria-label={t('scope.peer')}
+        />
+      </label>
+      {disabledReason !== null && <p className="ove-scope-hint">{disabledReason}</p>}
+      <p className="ove-scope-hint">{t('scope.identity.peerHint')}</p>
+      <div className="ove-scope-actions">
+        <button type="button" className="ove-preview-button ove-scope-primary" disabled={busy} onClick={() => void apply()}>
+          {busy ? t('scope.identity.applying') : t('scope.identity.apply')}
+        </button>
+        <button type="button" className="ove-preview-button" disabled={busy} onClick={() => void clear()}>
+          {t('scope.identity.clear')}
+        </button>
+      </div>
+      {note !== null && <p className="ove-scope-warn">{note}</p>}
+      {scope.switchError !== null && <p className="ove-scope-warn">{scope.switchError}</p>}
+    </div>
+  )
+}
 
+function ScopeRow({ row, onSwitch, busy }: { row: ScopeListEntry; onSwitch: (row: ScopeListEntry) => void; busy: boolean }) {
+  const glyph = warningGlyph(row.warnings)
+  const health = row.health
+  // v0.9: per-scope capability matrix summary ("snapshot ✓ · compile —").
+  // Only the active scope is probed live; an inactive row that has never been
+  // activated shows "?" (= probe on switch) instead of a guessed answer.
+  const capabilitySummary = ['snapshot', 'compile', 'rules']
+    .map((name) => {
+      const capability = row.capabilities[name]
+      if (capability === undefined) return `${name} ?`
+      return `${name} ${capability.available ? '✓' : '—'}`
+    })
+    .join(' · ')
+  return (
+    <button
+      type="button"
+      className={`ove-scope-profile${row.isActive ? ' ove-scope-profile-active' : ''}`}
+      disabled={row.isActive || busy}
+      title={row.isActive ? t('scope.currentProfile') : t('scope.switchHint', { label: row.label })}
+      onClick={() => onSwitch(row)}
+    >
+      <span className={`ove-scope-dot ${health.ok ? 'ove-scope-dot-ok' : 'ove-scope-dot-bad'}`} aria-hidden="true" />
+      <span className="ove-scope-row-main">
+        <span className="ove-scope-row-label">
+          {row.label}
+          {row.isActive && <span className="ove-scope-active-pill">{t('scope.active')}</span>}
+          {row.overrides && <span className="ove-scope-override-pill">{t('scope.overridePill')}</span>}
+        </span>
+        <span className="ove-scope-row-meta">
+          {row.account}/{row.user}
+          {row.peer === null ? '' : ` · ${row.peer}`}
+          {` · ${row.authMode ?? t('scope.unknown')}`}
+          {health.version === null ? '' : ` · v${health.version}`}
+          {health.latencyMs === null ? '' : ` · ${health.latencyMs}ms`}
+        </span>
+        <span className="ove-scope-row-caps">{capabilitySummary}</span>
+      </span>
+      <span className="ove-scope-row-side">
+        {row.hasApiKey && <span className="ove-scope-key-pill">{t('scope.keyBoundPill')}</span>}
+        {glyph !== null && (
+          <span
+            className="ove-scope-warn-glyph"
+            title={row.warnings.map((code) => warningText(code)).join(' · ')}
+            aria-label={row.warnings.map((code) => warningText(code)).join(' · ')}
+          >
+            {glyph}
+          </span>
+        )}
+      </span>
+    </button>
+  )
+}
+
+export interface ScopeMenuProps {
+  onClose: () => void
+}
+
+/**
+ * v0.9: the scope menu — servers grouped by endpoint, identity section, actions.
+ *
+ * It is the one switcher surface; the cockpit toolbar chip and the Overview
+ * header both open it, and the `showScopeSwitcher` switch hides it without hiding
+ * the scope banner.
+ */
+export function ScopeMenu({ onClose }: ScopeMenuProps) {
+  const state = useScope()
+  const [busy, setBusy] = useState(false)
+  const [testNote, setTestNote] = useState<string | null>(null)
+  const scopes = state.scopes
+  const blocked = scopeSwitchBlockedReason()
+  useEffect(() => {
+    void ensureScopes()
+  }, [])
+  const activeScope = state.scope
+  const profileAllowsSwitch = !isScopeSwitcherEnabled() ? false : true
+  const switchRow = useCallback(
+    async (row: ScopeListEntry) => {
+      if (row.isActive || busy) return
+      setBusy(true)
+      const result = await switchProfile(row.id)
+      setBusy(false)
+      if (result.ok) onClose()
+    },
+    [busy, onClose],
+  )
+  const refreshHealth = useCallback(() => {
+    void refreshScopes()
+  }, [])
+  const testConnection = useCallback(async () => {
+    const endpoint = activeScope?.identity.endpoint ?? ''
+    if (endpoint.length === 0) return
+    setTestNote(t('scope.test.running'))
+    const answer = await testProfileEndpoint(endpoint)
+    if (!answer.ok) {
+      setTestNote(answer.error.message)
+      return
+    }
+    setTestNote(
+      answer.reachable
+        ? t('scope.test.reachable', { version: answer.version ?? t('scope.unknown') })
+        : t('scope.test.unreachable', { error: answer.error ?? t('scope.unknown') }),
+    )
+  }, [activeScope])
+
+  // Group rows by endpoint (one server group per distinct endpoint).
+  const groups: Array<{ endpoint: string; rows: ScopeListEntry[] }> = []
+  for (const row of scopes?.scopes ?? []) {
+    const group = groups.find((candidate) => candidate.endpoint === row.endpoint)
+    if (group === undefined) groups.push({ endpoint: row.endpoint, rows: [row] })
+    else group.rows.push(row)
+  }
+  const official = scopes?.officialPlugin ?? null
+  const notices = scopes?.warnings ?? []
+  return (
+    <div className="ove-scope-menu" role="dialog" aria-label={t('scope.menuTitle')}>
+      <div className="ove-scope-detail-head">
+        <span className="ove-scope-detail-title">{t('scope.menuTitle')}</span>
+        <span className="ove-spacer" />
+        <button type="button" className="ove-preview-button" onClick={refreshHealth} title={t('scope.menu.refreshHealth')}>
+          {t('scope.menu.refreshHealth')}
+        </button>
+        <button type="button" className="ove-scope-close" onClick={onClose} aria-label={t('scope.close')}>
+          ×
+        </button>
+      </div>
+      {activeScope !== null && (
+        <div className="ove-scope-active-block">
+          <span className="ove-scope-label">{activeScope.identity.profileLabel ?? t('scope.legacyMode')}</span>
+          <span className="ove-scope-identity">
+            {activeScope.identity.account}/{activeScope.identity.user}
+            {activeScope.identity.peer === null ? '' : ` · ${activeScope.identity.peer}`}
+          </span>
+          <span className="ove-empty">{activeScope.identity.endpoint}</span>
+          <span className="ove-empty">{activeScope.identity.authMode ?? t('scope.unknown')}</span>
+          <span className="ove-empty">{fingerprintPrefix(activeScope.identity.fingerprint)}</span>
+        </div>
+      )}
+      {notices.length > 0 && (
+        <div className="ove-scope-notices" role="status">
+          {notices.map((notice) => (
+            <p key={notice.code} className="ove-scope-warn">{noticeKeyText(notice.code, notice.params)}</p>
+          ))}
+        </div>
+      )}
+      {official !== null && official.known && official.matches === false && (
+        <p className="ove-scope-warn">
+          {t('scope.officialMismatch', { host: official.endpointHost ?? t('scope.unknown') })}
+        </p>
+      )}
+      {official !== null && !official.known && (
+        <p className="ove-scope-hint">{t('scope.officialUnknown')}</p>
+      )}
+      {blocked !== null && <p className="ove-scope-warn">{t('scope.switchBlockedOps')}</p>}
+      {scopes === null ? (
+        <p className="ove-scope-hint">{state.scopesError ?? t('scope.menu.loading')}</p>
+      ) : (
+        <>
+          <div className="ove-scope-groups">
+            {groups.map((group) => (
+              <div className="ove-scope-group" key={group.endpoint}>
+                <div className="ove-scope-group-title" title={group.endpoint}>
+                  {endpointHost(group.endpoint)}
+                  {isRemoteEndpoint(group.endpoint) && (
+                    <span className="ove-scope-warn-glyph" title={t('scope.warnRemote')}>
+                      ⚠
+                    </span>
+                  )}
+                </div>
+                {group.rows.map((row) => (
+                  <ScopeRow key={row.id} row={row} busy={busy || !profileAllowsSwitch} onSwitch={(target) => void switchRow(target)} />
+                ))}
+              </div>
+            ))}
+          </div>
+          <IdentityEditor scopes={scopes} onClose={onClose} />
+        </>
+      )}
+      <div className="ove-scope-actions">
+        <button type="button" className="ove-preview-button" onClick={() => void testConnection()}>
+          {t('scope.menu.testConnection')}
+        </button>
+        <span className="ove-scope-hint">{t('scope.menu.manageHint')}</span>
+      </div>
+      {testNote !== null && <p className="ove-scope-hint">{testNote}</p>}
+      {hasPendingWrite() && <p className="ove-scope-warn">{t('scope.switchBlocked')}</p>}
+    </div>
+  )
+}
+
+/** Render one host warning code (stable code → localized copy). */
+function noticeKeyText(code: string, params: Record<string, string | number> | undefined): string {
+  const key = `scope.notice.${code}`
+  const text = t(key, params)
+  return text === key ? code : text
+}
+
+/** The compact scope banner: one line, every surface, always the active scope. */
+export function ScopeBanner(props: { className?: string; showMenu?: boolean }) {
+  const state = useScope()
+  const [open, setOpen] = useState(false)
+  useEffect(() => {
+    void ensureScope()
+    void ensureScopes()
+  }, [])
+  if (!isScopeBannerEnabled()) return null
+  if (state.scope === null) {
+    return (
+      <span className={`ove-scope ove-scope-banner ove-scope-loading${props.className === undefined ? '' : ` ${props.className}`}`}>
+        {t('scope.loading')}
+      </span>
+    )
+  }
+  const scope = state.scope
+  const label = scope.identity.profileLabel ?? t('scope.legacyMode')
+  const warning = scopeWarning(scope)
+  return (
+    <span className={`ove-scope ove-scope-banner${props.className === undefined ? '' : ` ${props.className}`}`}>
+      <span className="ove-scope-dot" aria-hidden="true" />
+      <span className="ove-scope-label">{label}</span>
+      <span className="ove-empty">{endpointHost(scope.identity.endpoint)}</span>
+      <span className="ove-scope-identity">
+        {scope.identity.account}/{scope.identity.user}
+        {scope.identity.peer === null ? '' : ` · ${scope.identity.peer}`}
+      </span>
+      {warning !== null && (
+        <span className="ove-scope-warn-glyph" title={warning} aria-label={warning}>
+          ⚠
+        </span>
+      )}
+      {props.showMenu !== false && isScopeSwitcherEnabled() && (
+        <button type="button" className="ove-scope-menu-button" onClick={() => setOpen((current) => !current)}>
+          {t('scope.menu.open')}
+        </button>
+      )}
+      {open && <ScopeMenu onClose={() => setOpen(false)} />}
+    </span>
+  )
+}
+
+/** The transient "switched from X to Y" notice the cockpit shows. */
+export function ScopeSwitchNoticeLine() {
+  const state = useScope()
+  if (state.switchNotice === null) return null
+  return (
+    <div className="ove-scope-switch-notice" role="status">
+      <span>
+        {t('scope.switchedFromTo', {
+          from: state.switchNotice.fromLabel,
+          to: state.switchNotice.toLabel,
+        })}
+      </span>
+      <button type="button" className="ove-scope-menu-button" onClick={() => dismissSwitchNotice()}>
+        {t('scope.dismiss')}
+      </button>
+    </div>
+  )
+}
+
+/** The warning a scope needs, or null (v0.5 chip behaviour, v0.9 vocabulary). */
+export function scopeWarning(scope: {
+  identity: { endpoint: string; authMode: string | null }
+  writes: { reason: string | null }
+}): string | null {
+  if (isRemoteEndpoint(scope.identity.endpoint)) return t('scope.warnRemote')
+  if (scope.identity.authMode === 'api_key') return t('scope.warnKeyBound')
+  if (scope.writes.reason === 'profile-unhealthy') return t('scope.warnUnhealthy')
+  return null
+}
+
+function LegacyScopeDetail({
+  onClose,
+}: {
+  onClose: () => void
+}) {
+  const state = useScope()
+  const scope = state.scope
+  if (scope === null) return null
   const rows: Array<[string, string]> = [
     [t('scope.endpoint'), scope.identity.endpoint],
     [t('scope.authMode'), scope.identity.authMode ?? t('scope.unknown')],
@@ -85,9 +467,13 @@ function ScopeDetail({ scope, onClose }: { scope: ScopePayload; onClose: () => v
     [t('scope.peer'), scope.identity.peer ?? t('scope.none')],
     [t('scope.version'), scope.version ?? t('scope.unknown')],
     [t('scope.fingerprint'), fingerprintPrefix(scope.identity.fingerprint)],
-    [t('scope.writes'), scope.writes.enabled ? t('scope.writesOn') : t('scope.writesOff', { reason: scope.writes.reason ?? 'writes-disabled' })],
+    [
+      t('scope.writes'),
+      scope.writes.enabled
+        ? t('scope.writesOn')
+        : t('scope.writesOff', { reason: scope.writes.reason ?? 'writes-disabled' }),
+    ],
   ]
-
   return (
     <div className="ove-scope-detail" role="dialog" aria-label={t('scope.detailTitle')}>
       <div className="ove-scope-detail-head">
@@ -104,33 +490,6 @@ function ScopeDetail({ scope, onClose }: { scope: ScopePayload; onClose: () => v
           </div>
         ))}
       </dl>
-      <div className="ove-scope-profiles">
-        <span className="ove-scope-profiles-title">{t('scope.switchTitle')}</span>
-        {profiles === null ? (
-          <span className="ove-scope-hint">{t('scope.switching')}</span>
-        ) : profiles.length === 0 ? (
-          <span className="ove-scope-hint">{t('scope.noProfiles')}</span>
-        ) : (
-          profiles.map((profile) => {
-            const active = profile.id === scope.identity.profileId
-            return (
-              <button
-                key={profile.id}
-                type="button"
-                className={`ove-scope-profile${active ? ' ove-scope-profile-active' : ''}`}
-                disabled={active || pending}
-                title={active ? t('scope.currentProfile') : t('scope.switchHint', { label: profile.label })}
-                onClick={() => void choose(profile.id)}
-              >
-                <span>{profile.label}</span>
-                <span className="ove-scope-profile-meta">{profile.endpoint}</span>
-              </button>
-            )
-          })
-        )}
-        {pending && <span className="ove-scope-warn">{t('scope.switchBlocked')}</span>}
-        {note !== null && <span className="ove-scope-warn">{note}</span>}
-      </div>
       <p className="ove-scope-hint">{t('scope.managerHint')}</p>
     </div>
   )
@@ -146,15 +505,13 @@ export interface ScopeChipProps {
 export function ScopeChip({ compact = false }: ScopeChipProps) {
   const state = useScope()
   const [open, setOpen] = useState(false)
+  useEffect(() => {
+    void ensureScope()
+  }, [])
   // The banner switch hides the chip on every surface; write confirmations
   // repeat the scope themselves, so the switch can never hide the identity a
   // destructive action runs under.
   if (!isScopeBannerEnabled()) return null
-
-  useEffect(() => {
-    void ensureScope()
-  }, [])
-
   if (state.status === 'idle' || state.status === 'loading') {
     return compact ? null : <span className="ove-scope ove-scope-loading">{t('scope.loading')}</span>
   }
@@ -169,7 +526,6 @@ export function ScopeChip({ compact = false }: ScopeChipProps) {
   const warning = scopeWarning(scope)
   const label = scope.identity.profileLabel ?? t('scope.legacyMode')
   const peer = scope.identity.peer === null ? '' : ` · ${scope.identity.peer}`
-
   return (
     <span className={`ove-scope${compact ? ' ove-scope-compact' : ''}`}>
       <button
@@ -191,7 +547,12 @@ export function ScopeChip({ compact = false }: ScopeChipProps) {
           </span>
         )}
       </button>
-      {open && <ScopeDetail scope={scope} onClose={() => setOpen(false)} />}
+      {open &&
+        (isScopeSwitcherEnabled() ? (
+          <ScopeMenu onClose={() => setOpen(false)} />
+        ) : (
+          <LegacyScopeDetail onClose={() => setOpen(false)} />
+        ))}
     </span>
   )
 }

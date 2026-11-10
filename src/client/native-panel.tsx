@@ -19,7 +19,7 @@ import type { EnhanceConfig, StudioStatus } from '../shared/protocol.ts'
 import { fetchConfig, fetchStudioStatus } from './host-api.ts'
 import { noticeText, t, writeErrorText } from './locale.ts'
 import { back, canSelectPanel, forward, navigate, useNative } from './native-store.ts'
-import { ScopeChip } from './scope-chip.tsx'
+import { ScopeChip, ScopeSwitchNoticeLine } from './scope-chip.tsx'
 import { StudioPanel } from './studio-panel.tsx'
 import { NativeOverview } from './native-overview.tsx'
 import { NativeBrowse } from './native-browse.tsx'
@@ -163,6 +163,7 @@ export function NativeCockpit() {
         </button>
       </div>
 
+      <ScopeSwitchNoticeLine />
       <nav className="ove-native-tabs" role="tablist" aria-label={t('native.nav.views')}>
         {VIEW_ORDER.map((view) => (
           <button

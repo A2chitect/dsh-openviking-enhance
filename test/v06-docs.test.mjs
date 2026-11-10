@@ -146,6 +146,16 @@ const DOCUMENTED_LIMITS = [
   'SNAPSHOT_MESSAGE_MAX_CHARS',
   'PACK_BODY_INACTIVITY_TIMEOUT_MS',
   'EVIDENCE_LOOKUP_DEADLINE_MS',
+  // v0.9 multi-scope budgets and caps.
+  'SCOPE_STATE_VERSION',
+  'SCOPE_MAX_RETAINED_CACHES',
+  'SCOPE_PROBE_TTL_MS',
+  'SCOPE_SWITCH_COOLDOWN_MS',
+  'SESSION_SCOPE_MAP_MAX',
+  'SCOPE_KEY_MAX_CHARS',
+  'ACL_URI_MAX_CHARS',
+  'ACL_ENTRIES_MAX',
+  'SCOPE_HEALTH_TIMEOUT_MS',
 ]
 
 test('both READMEs document every user-visible limit with the code value', () => {

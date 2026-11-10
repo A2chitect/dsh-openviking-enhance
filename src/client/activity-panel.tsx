@@ -47,6 +47,7 @@ import { MetricCard, MetricsCards } from './metrics-view.tsx'
 import { nextPollDelay } from './poll-policy.ts'
 import { ScopeChip } from './scope-chip.tsx'
 import { useScope } from './scope-store.ts'
+import { SessionScopeBanner } from './session-scope.tsx'
 import { openWriteConfirm } from './write-store.ts'
 
 export interface ActivityPanelProps {
@@ -553,6 +554,7 @@ export function ActivityPanel({ sessionId }: ActivityPanelProps) {
 
   return (
     <div className="ove-act">
+      <SessionScopeBanner sessionId={sessionId} />
       <div className="ove-act-head">
         <div className="ove-act-tabs" role="tablist" aria-label={t('activity.tabTitle')}>
           <button

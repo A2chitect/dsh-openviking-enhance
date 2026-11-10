@@ -38,6 +38,8 @@ import {
   type RecallPayload,
 } from '../shared/protocol.ts'
 import { fetchRecall, fetchRecallContent } from './host-api.ts'
+import { SessionScopeBanner, ensureSessionScope, useSessionScope } from './session-scope.tsx'
+import { ScopeChip } from './scope-chip.tsx'
 import { noticeText, t } from './locale.ts'
 import { VikingUriLink } from './viking-uri-link.tsx'
 
@@ -111,6 +113,13 @@ function RefreshGlyph() {
 }
 
 export function RecallPanel({ sessionId }: RecallPanelProps) {
+  // v0.9: a session last seen under another scope disables recall actions until
+  // the user switches back (no cross-scope reads/writes; sign-off 4).
+  const sessionScope = useSessionScope(sessionId)
+  const scopeMismatch = sessionScope.payload?.mismatch === true
+  useEffect(() => {
+    void ensureSessionScope(sessionId)
+  }, [sessionId])
   const [payload, setPayload] = useState<RecallPayload | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -198,7 +207,9 @@ export function RecallPanel({ sessionId }: RecallPanelProps) {
 
   return (
     <div className="ove-recall">
+      <SessionScopeBanner sessionId={sessionId} />
       <div className="ove-recall-bar">
+        <ScopeChip compact />
         <label className="ove-recall-field">
           <span className="ove-recall-field-icon">
             <SearchGlyph />
@@ -214,7 +225,13 @@ export function RecallPanel({ sessionId }: RecallPanelProps) {
             }}
           />
         </label>
-        <button type="button" className="ove-recall-button" onClick={search} disabled={loading}>
+        <button
+          type="button"
+          className="ove-recall-button"
+          onClick={search}
+          disabled={loading || scopeMismatch}
+          title={scopeMismatch ? t('scope.session.actionsDisabled') : undefined}
+        >
           {t('recall.search')}
         </button>
         <button

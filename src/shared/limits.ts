@@ -194,3 +194,34 @@ export const SNAPSHOT_MESSAGE_MAX_CHARS = 200
 export const PACK_BODY_INACTIVITY_TIMEOUT_MS = 30_000
 /** Overall deadline for one task-evidence server-request-log fan-out. */
 export const EVIDENCE_LOOKUP_DEADLINE_MS = 15_000
+ * v0.9 "Native II — multi-scope" — scope persistence, probes and read-only
+ * ACL budgets
+ *
+ * A scope is the active profile + optional identity override; the riskiest
+ * code is the state file, the probe cache and the request routing. The values
+ * below are the documented contract for the scope menu/Doctor and
+ * `test/v06-docs.test.mjs` asserts each one appears in both README tables.
+ * ===================================================================== */
+
+/** The `scope-state.json` schema version (the header `version` field). */
+export const SCOPE_STATE_VERSION = 1
+/**
+ * Per-scope cache sets retained in memory. v0.9 ships the approved fallback
+ * (clear all caches on a switch); this constant bounds the design and is what
+ * the Doctor reports, so a future per-scope LRU cannot grow unbounded.
+ */
+export const SCOPE_MAX_RETAINED_CACHES = 2
+/** How long one scope health/capability summary is trusted in the menu. */
+export const SCOPE_PROBE_TTL_MS = 10_000
+/** A second switch in this window is refused as a double-click. */
+export const SCOPE_SWITCH_COOLDOWN_MS = 1_000
+/** Bounded local DSH-session → scope map entries (LRU). */
+export const SESSION_SCOPE_MAP_MAX = 64
+/** Longest accepted scope key in a request header (the fingerprint is 71 chars). */
+export const SCOPE_KEY_MAX_CHARS = 200
+/** Longest accepted `viking://` URI on the ACL route. */
+export const ACL_URI_MAX_CHARS = 4096
+/** Bounded ACL rows per table (direct/inherited/effective) in one answer. */
+export const ACL_ENTRIES_MAX = 200
+/** The cheap `GET /health` timeout used for per-scope menu health. */
+export const SCOPE_HEALTH_TIMEOUT_MS = 4_000

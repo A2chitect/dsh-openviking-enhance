@@ -31,6 +31,7 @@ link **before tagging**.
 | 0.5.0 (PR #3) | 2026-11 | 0.2.2-rc.1 (web, scratch profile) | 22 | macOS 15 | 0.5.3 contract via stand-in fixture (no real writes) | tarball into a scratch DSH home + stateful mock-fixture browser capture | **pending release** — browser render evidence only; 0.5.0 is not tagged/published yet | PR #3 BEFORE/AFTER capture set; write paths covered by fake-transport unit tests |
 | 0.6.0 (PR #4) | 2026-11-10 | 0.2.1-rc.3 local + 0.2.2-rc.1 pinned in CI | 22.22.3 | macOS (Darwin 24); Linux CI | 0.5.3 reachable, read-only; mock fixture for the UI deltas | `pnpm pack` tarball → scratch `DSH_HOME` web profile | pass | `node scripts/verify-install.mjs …` → 27/27 steps, `tarballVersion === installedVersion` (0.3.0); CI `install-verify` job on the PR; browser BEFORE/AFTER set in the PR |
 | 0.8.0 (PR #6) | 2026-11 | 0.2.2-rc.1 (web, scratch profile) | 22 | macOS 15 | 0.5.3 read-only + deterministic fake fixture for the action layer | tarball into a scratch DSH home; browser capture of the v0.7 cockpit + v0.8 fixture-labelled dialogs/plans/downloads | pending release — no live-store write: every action is exercised against the fake server/fake transport; live reads only) | `pnpm test` (v08 route/unit/component suites + smoke); fixture-labelled action screenshots; live read-only Snapshots/Compile/Tasks/Observability rows |
+| 0.9.0 (PR #7) | 2026-11 | 0.2.2-rc.1 (web, scratch profile) | 22.22.3 | macOS 15 | 0.5.3 read-only (single live scope) + three invented fake servers (dev A, dev B, api_key C) for the multi-scope evidence | `pnpm test`; no live-store write anywhere — every scope/identity switch in tests is exercised against the fake servers and the fake `ctx.connection.fetch` transport; live server is read-only `/health`/reads | **pending release** — browser/evidence set: fixture-labelled two-scope capture (scope menu, banners, switch notice, ACL states) + live single-scope read-only screenshots; `pnpm test` includes the v0.9 host route/unit + component render suites |
 
 These not-yet-released versions are rows in an append-only table, not release
 evidence: the stack merges in order `#2 → release 0.4.0 → #3 → release 0.5.0 →
@@ -180,6 +181,27 @@ them before merge (the README/CHANGELOG describe both changes):
   Experiences": `fs/ls` of the experiences root answered the server's
   `NOT_FOUND`, and the server's own source writes experiences under
   `memories/experiences/`).
+
+### What the v0.9 local run proved (scope layer)
+
+1. `pnpm run typecheck` / `pnpm run build` stay green with the new host modules
+   (`scope-state`, `scope-service`, `session-scope-map`, `acl-service`,
+   `plugin-connection-facts`) and the new client stores/components.
+2. The v0.9 host route suite boots the built host against **three invented fake
+   OpenViking servers** (dev A, dev B, api_key C): boot precedence (Config →
+   scope state → profile header → legacy), response scope labels, request-side
+   `scope-changed`, host-side stale-read refusal, guarded switching, identity
+   overrides per auth mode, `identity-changed` undo refusal, the session-scope
+   mismatch, the four ACL states, and **zero `/admin` requests** in every flow.
+3. The v0.9 component suite renders the real client bundle and checks the scope
+   menu's grouping/health/warnings, the disabled identity fields with the
+   auth-mode reason, the persistent banner and switch notice, the two scope
+   switches, the session mismatch banner and the Access tab's first paint.
+4. `pnpm run smoke` adds the offline scoped routes, the wrong-scope `409`
+   refusal, the ACL state answer, and the "no key in any scope payload" check;
+   the live read path stays redacted and read-only.
+5. No test wrote a real OpenViking store: the fake servers are the only mutation
+   targets and the live server is only read.
 
 ## Not covered here
 

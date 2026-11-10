@@ -110,6 +110,19 @@ export function setNativeSwitches(switches: Partial<NativeSwitches>): void {
 }
 
 /**
+ * v0.9: reset the cockpit to Overview after a scope switch.
+ *
+ * URI/session identifiers are scope-specific, so the cockpit deliberately does
+ * not try to keep the same tab/selection: Overview is the view that always makes
+ * the new active scope obvious (design §4.2). The bounded history restarts.
+ */
+export function resetToOverview(): void {
+  if (state.view === 'overview' && state.history.length === 1 && state.index === 0) return
+  state = { ...state, view: 'overview', target: OVERVIEW_TARGET, history: [OVERVIEW_TARGET], index: 0 }
+  emit()
+}
+
+/**
  * Navigate the cockpit to a target.
  *
  * Pushes onto the history (truncating any forward entries), dedupes the exact

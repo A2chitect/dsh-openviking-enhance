@@ -14,6 +14,7 @@ import { noticeText, t, writeErrorText } from './locale.ts'
 import { navigate, useNative } from './native-store.ts'
 import { OnboardingCard } from './onboarding-card.tsx'
 import { openRightTab } from './tab-store.ts'
+import { ScopeChip } from './scope-chip.tsx'
 
 /** How many characters of a fingerprint the Overview shows. */
 const FINGERPRINT_PREFIX = 19
@@ -122,6 +123,7 @@ export function NativeOverview(props: NativeOverviewProps) {
   return (
     <div className="ove-nat-view ove-nat-overview">
       <header className="ove-nat-headline">
+        <ScopeChip compact />
         <span className={`ove-dot ${config?.healthy === true ? 'ove-dot-ok' : 'ove-dot-bad'}`} />
         <span className="ove-nat-headline-title">{t('native.overview.title')}</span>
         {config?.version != null && <span className="ove-nat-muted">{`OpenViking v${config.version}`}</span>}

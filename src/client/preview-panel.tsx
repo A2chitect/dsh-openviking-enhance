@@ -17,6 +17,7 @@ import { prepareWrite } from './host-api.ts'
 import { t, writeErrorText } from './locale.ts'
 import { PreviewBody } from './preview-body.tsx'
 import { openPreview, usePreviewTarget } from './preview-store.ts'
+import { SessionScopeBanner } from './session-scope.tsx'
 import { ScopeChip } from './scope-chip.tsx'
 import { ensureScope, useScope } from './scope-store.ts'
 import { canSelectPanel, openNative } from './native-store.ts'
@@ -225,6 +226,7 @@ export function PreviewPanel(props: PreviewPanelProps) {
         <ScopeChip compact />
       </div>
 
+      <SessionScopeBanner sessionId={props.sessionId} />
       {targetUri === null ? (
         <div className="ove-preview-body">
           <p className="ove-preview-status">{t('preview.empty')}</p>
