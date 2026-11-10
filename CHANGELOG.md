@@ -10,7 +10,7 @@ promotes to a dated section — see [RELEASING.md](RELEASING.md).
 
 ## Unreleased
 
-### v0.7 — Native I: no iframe for reading
+### v0.7 — Native I: no iframe for reading (PR #5)
 
 The first native read cockpit. The OpenViking sidebar row now opens an internal
 multi-view page — **Overview / Browse / Sessions / Commits / Stats** — with the
@@ -91,7 +91,6 @@ read-only, still one sidebar row, no new dependencies.
   onboarding file and the older-DSH/Studio fallbacks; the limits contract table
   gains the v0.7 constants.
 
-### v0.6 — Trust and verify (this PR)
 ### v0.6 — Trust and verify (PR #4)
 
 Trust and verify. v0.6 is a trust/verification release: it removes the last

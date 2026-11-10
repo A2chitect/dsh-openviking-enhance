@@ -4,8 +4,8 @@
 
 **v0.3.0** · [更新记录](CHANGELOG.md) · [路线图](ROADMAP.md)
 
-> 下面的 v0.4 Act、v0.5 Collaborate 与 v0.6 Trust and verify 变更位于
-> `Unreleased`；版本行与包版本保持 0.3.0，直到发布脚本将它们提升并打标签。
+> 下面的 v0.4 Act、v0.5 Collaborate、v0.6 Trust and verify 与 v0.7 Native 变更
+> 位于 `Unreleased`；版本行与包版本保持 0.3.0，直到发布脚本按版本逐个提升并打标签。
 
 把本地 [OpenViking](https://docs.openviking.ai) 记忆服务接进 DeepSeek Harness
 （DSH）的 Web 界面：左侧边栏的 OpenViking Studio 面板、输入框下方的 commit 状态
@@ -66,7 +66,7 @@ OpenViking 服务自带的 Studio 界面，浏览记忆、会话、检索都不�
 - **抽取失败**的时间、服务端错误和 task id（task 记录尚未被清理时），并可复制错误。
   比最新提交更早的失败仍会列在这里，但不会改变胶囊状态。
 
-面板和胶囊都只读——本插件不会向 OpenViking 提交、写入或删除任何东西。
+胶囊与面板只读。打开 `enableWrites`（v0.5+）后，只有上文描述的策展弹窗与写入命令路径会改动数据；这里不做任何写入。
 
 **这个会话检索到了什么。** 右侧边栏多一个「记忆召回」tab：显示当前会话会被
 OpenViking 拉进上下文的记忆——检索用的那句话（默认是本会话最近一次提问，也可以自己输入）、

@@ -92,8 +92,7 @@ Click the pill for details:
   while the task record is still retained, plus a copy-error control. Failures
   older than the newest commit stay listed there without changing the pill.
 
-The panel and the pill read only. This plugin never commits, writes or deletes
-anything in OpenViking.
+The pill and the panel read only. With `enableWrites` on (v0.5+), changes happen only through the curation dialog and write-command paths described above; nothing here writes.
 
 **What this session retrieves.** The right sidebar gains a *Memory recall* tab: it shows what OpenViking pulls in for the session you are looking at
 — the query it searched with (that session's most recent message, or one you type
