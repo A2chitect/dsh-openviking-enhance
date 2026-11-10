@@ -280,3 +280,17 @@ test('ops prepare/execute audits the action and refuses unsafe scopes', async ()
   assert.equal(noTyped.ok, false)
   assert.equal(noTyped.error.code, 'typed-confirmation-required')
 })
+
+test('every scope capability id has an EN and ZH label', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const capability = await readFile(new URL('../src/host/capability.ts', import.meta.url), 'utf8')
+  const block = capability.slice(capability.indexOf('export function scopeCapabilities'))
+  const ids = [...block.matchAll(/^    '?([a-z][a-z-]+)'?:/gm)].map((m) => m[1])
+  assert.ok(ids.length >= 12, `expected the full capability id set, got ${ids.length}`)
+  const locale = await readFile(new URL('../src/client/locale.ts', import.meta.url), 'utf8')
+  const count = (key) => locale.split(key).length - 1
+  for (const id of ids) {
+    const key = `'native.overview.capability.${id}'`
+    assert.equal(count(key), 2, `${id} must have an EN and a ZH label (${key})`)
+  }
+})
