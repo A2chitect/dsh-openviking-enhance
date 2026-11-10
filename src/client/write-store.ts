@@ -16,6 +16,7 @@
  */
 import { useSyncExternalStore } from 'react'
 import type { WritePreparePayload, WriteUndoPlan } from '../shared/protocol.ts'
+import { cancelWrite } from './host-api.ts'
 
 /** The outcome notice the toast renders (success with Undo, or a failure). */
 export interface WriteNotice {
@@ -77,19 +78,37 @@ export function subscribeWrite(listener: () => void): () => void {
   }
 }
 
-/** Raise the confirmation dialog for one prepared action. */
+/**
+ * Raise the confirmation dialog for one prepared action.
+ *
+ * Replacing a pending confirmation (the edit dialog reloads itself after a
+ * conflict) releases the old token instead of leaving it to expire.
+ */
 export function openWriteConfirm(prepare: WritePreparePayload): void {
+  const previous = state.confirm
+  if (previous !== null && previous.token !== prepare.token) void cancelWrite(previous.token)
   emit({ confirm: prepare, plan: null })
 }
 
-/** Settle the pending confirmation (cancel, Escape, backdrop, or after execute). */
-export function closeWriteConfirm(): void {
+/**
+ * Settle the pending confirmation.
+ *
+ * `executed` is true when the token was just consumed by a successful write:
+ * then there is nothing to cancel. Every other close (Cancel button, Escape,
+ * backdrop) tells the host to release the pending token and its slot (review
+ * S2); the call is fire-and-forget and idempotent host-side.
+ */
+export function closeWriteConfirm(executed = false): void {
+  const pending = state.confirm
   emit({ confirm: null })
+  if (!executed && pending !== null) void cancelWrite(pending.token)
 }
 
-/** Raise the extra-changes undo plan dialog. */
+/** Raise the extra-changes undo plan dialog, releasing any pending confirmation. */
 export function openUndoPlan(plan: WriteUndoPlan): void {
+  const pending = state.confirm
   emit({ plan, confirm: null })
+  if (pending !== null) void cancelWrite(pending.token)
 }
 
 export function closeUndoPlan(): void {

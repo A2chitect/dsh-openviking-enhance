@@ -365,6 +365,7 @@ test('the mutation routes are registered only through ctx.connection.fetch', asy
       '/api/openviking-enhance/profiles/save',
       '/api/openviking-enhance/profiles/test',
       '/api/openviking-enhance/task/cancel',
+      '/api/openviking-enhance/write/cancel',
       '/api/openviking-enhance/write/execute',
       '/api/openviking-enhance/write/plan',
       '/api/openviking-enhance/write/prepare',
@@ -374,9 +375,6 @@ test('the mutation routes are registered only through ctx.connection.fetch', asy
       assert.deepEqual(route.methods, ['POST'], `${route.path} accepts POST only`)
       assert.equal(route.requestBody, 'buffered')
     }
-    // A GET on a mutation route is a 405 envelope, not a read.
-    const wrongMethod = await app.mutate('/write/prepare', {}, true).catch((error) => error)
-    void wrongMethod
     const scope = await app.get('/api/openviking-enhance/scope')
     assert.equal(scope.ok, true)
     assert.equal(scope.scope.writes.enabled, true)
@@ -589,9 +587,63 @@ test('force commit, task cancel and the profile store work end to end', async ()
     assert.equal(test.body.reachable, true)
     assert.equal(test.body.authMode, 'dev')
 
+    // Review S9: the test button is not a general URL prober.
+    const metadata = await app.mutate('/profiles/test', { endpoint: 'http://169.254.169.254/latest/meta-data' })
+    assert.equal(metadata.body.ok, false)
+    assert.equal(metadata.body.error.code, 'invalid-request')
+
     const removed = await app.mutate('/profiles/delete', { id: 'local-default' })
     assert.equal(removed.body.ok, true)
     assert.deepEqual(removed.body.profiles, [])
+  } finally {
+    await app.shutdown()
+  }
+})
+
+test('write/cancel releases a pending token and a cancelled token cannot execute', async () => {
+  const app = await boot()
+  try {
+    const prepared = await app.mutate('/write/prepare', { action: 'delete-memory', target: MEMORY })
+    assert.equal(prepared.body.ok, true)
+    const cancelled = await app.mutate('/write/cancel', { token: prepared.body.token })
+    assert.equal(cancelled.body.ok, true)
+    assert.equal(cancelled.body.status, 'cancelled')
+    assert.equal(cancelled.body.action, 'delete-memory')
+
+    const executed = await app.mutate('/write/execute', { token: prepared.body.token, typed: 'tools.md' })
+    assert.equal(executed.body.ok, false)
+    assert.equal(executed.body.error.code, 'token-used')
+    assert.equal(app.fake.files.has(MEMORY), true, 'a cancelled token writes nothing')
+
+    // Cancelling again (or after a settle) is an idempotent no-op.
+    const again = await app.mutate('/write/cancel', { token: prepared.body.token })
+    assert.equal(again.body.ok, true)
+    assert.equal(again.body.status, 'settled')
+    const unknown = await app.mutate('/write/cancel', { token: 'f'.repeat(64) })
+    assert.equal(unknown.body.ok, true)
+    assert.equal(unknown.body.status, 'expired')
+    const audit = await app.get('/api/openviking-enhance/audit?limit=5')
+    assert.equal(audit.entries.some((entry) => entry.kind === 'cancel'), true, 'the cancellation is audited')
+  } finally {
+    await app.shutdown()
+  }
+})
+
+test('the flow origin is decided host-side: a fetch-route delete still needs the typed name', async () => {
+  const app = await boot()
+  try {
+    // A caller cannot opt out of the dialog's typed confirmation by claiming a
+    // command origin in the body (review S3): the Fetch routes are overlay.
+    const prepared = await app.mutate('/write/prepare', {
+      action: 'delete-memory',
+      target: MEMORY,
+      origin: 'command',
+    })
+    assert.equal(prepared.body.ok, true)
+    const noTyped = await app.mutate('/write/execute', { token: prepared.body.token })
+    assert.equal(noTyped.body.ok, false)
+    assert.equal(noTyped.body.error.code, 'typed-confirmation-required')
+    assert.equal(app.fake.files.has(MEMORY), true)
   } finally {
     await app.shutdown()
   }

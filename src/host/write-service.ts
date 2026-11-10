@@ -44,6 +44,7 @@ import {
   type OveResult,
   type UndoPlanPath,
   type WriteAction,
+  type WriteCancelPayload,
   type WriteExecutePayload,
   type WritePreparePayload,
   type WriteRevision,
@@ -52,6 +53,7 @@ import {
 } from '../shared/protocol.ts'
 import {
   classifyCuratableUri,
+  peerOfMemoryUri,
   restoreScopeFor,
   snapshotPathsFor,
   validateTagInput,
@@ -90,6 +92,14 @@ export interface ExecuteRequest {
   tagMode?: 'replace' | 'append' | 'clear'
   /** Delete: the file name typed by the user (overlay confirmations only). */
   typed?: string
+  /**
+   * The action this caller believes the token was prepared for.
+   *
+   * `execute` refuses a mismatch *before* touching the server, which is what the
+   * plain `--confirm` command fallback needs: `/viking forget --confirm <tags
+   * token>` must not perform the tag write and only then report a mismatch.
+   */
+  expectAction?: WriteAction
 }
 
 export interface PlanRequest {
@@ -123,7 +133,7 @@ interface PendingWrite {
   facts: ForceCommitFacts | null
   createdAt: number
   expiresAt: number
-  status: 'pending' | 'executing' | 'done' | 'undone' | 'failed'
+  status: 'pending' | 'executing' | 'done' | 'undone' | 'failed' | 'cancelled'
   settledAt: number | null
 }
 
@@ -137,6 +147,13 @@ interface UndoRecord {
   sourceCommit: string
   identityFingerprint: string
   tagsBefore: string[] | null
+  /**
+   * The state this action left behind, used to notice a same-named file that was
+   * rewritten before undo (review S1). Edit: hash of the written body. Delete:
+   * null (the file must still be absent). Tags: the tag list the action set.
+   */
+  writtenSha256: string | null
+  tagsAfter: string[] | null
   sessionId: string | null
   createdAt: number
   undone: boolean
@@ -165,21 +182,22 @@ export interface WriteServiceOptions {
   randomToken?: () => string
 }
 
-/** The guard state the client polls before switching profiles. */
-export interface WriteGuardState {
-  pending: number
-  executing: boolean
-  writesEnabled: boolean
-  transport: boolean
-  /** A stable refusal code for a profile switch, or null when a switch is safe. */
-  switchBlockedReason: string | null
-}
-
 export class WriteService {
   private readonly options: WriteServiceOptions
   private readonly tokens = new Map<string, PendingWrite>()
   private readonly undos = new Map<string, UndoRecord>()
-  private readonly preparesAt: number[] = []
+  /**
+   * One write path at a time (review S5): set synchronously before an execute or
+   * undo starts mutating and cleared when it settles, so two undos — or an undo
+   * racing a write — cannot run concurrently.
+   */
+  private settling = false
+  /**
+   * Successful executions in the current rate window. Prepares are cheap reads
+   * (and are cancelled often); only writes that actually happened spend the
+   * per-minute budget (review S2).
+   */
+  private readonly executionsAt: number[] = []
   private readonly now: () => number
   private readonly randomToken: () => string
   private readonly tokenTtlMs: number
@@ -197,18 +215,51 @@ export class WriteService {
     this.rateWindowMs = options.rateWindowMs ?? WRITE_RATE_WINDOW_MS
   }
 
-  /** Pending/executing state for the client's switch guard and the Activity tab. */
-  guardState(): WriteGuardState {
+  /**
+   * The action a still-usable token was prepared for, or null.
+   *
+   * Read-only and side-effect free apart from purging expired entries. Command
+   * callers compare it with the verb they were asked to confirm *before*
+   * executing, so a crossed token cannot perform its own action first.
+   */
+  pendingAction(tokenValue: string): WriteAction | null {
     this.purge()
-    const executing = [...this.tokens.values()].some((token) => token.status === 'executing')
-    const pending = [...this.tokens.values()].filter((token) => token.status === 'pending').length
-    return {
-      pending,
-      executing,
-      writesEnabled: this.options.writesEnabled(),
-      transport: this.options.transport(),
-      switchBlockedReason: executing ? 'write-in-flight' : pending > 0 ? 'confirmation-pending' : null,
-    }
+    const token = this.tokens.get(tokenValue)
+    if (token === undefined || token.status !== 'pending') return null
+    if (this.now() > token.expiresAt) return null
+    return token.action
+  }
+
+  /**
+   * Release a confirmation the user dismissed (review S2).
+   *
+   * Only a still-pending token is cancelled; a settled/executing one is a no-op
+   * so the dialog can call this unconditionally when it closes. A cancelled token
+   * frees its pending slot and can never execute.
+   */
+  cancel(tokenValue: string): OveResult<WriteCancelPayload> {
+    this.purge()
+    const token = this.tokens.get(tokenValue)
+    if (token === undefined) return { ok: true, status: 'expired', action: null }
+    if (token.status !== 'pending') return { ok: true, status: 'settled', action: null }
+    token.status = 'cancelled'
+    token.settledAt = this.now()
+    this.options.audit.append({
+      kind: 'cancel',
+      action: token.action,
+      target: token.target,
+      identity: this.identityFor(this.options.identity(), token.sessionId),
+      fingerprint: token.identityFingerprint,
+      confirmation: token.origin,
+      preCommit: token.preCommit,
+      postCommit: null,
+      requestId: null,
+      result: 'ok',
+      error: null,
+      undo: null,
+    })
+    this.notify()
+    return { ok: true, status: 'cancelled', action: token.action }
   }
 
   /**
@@ -216,6 +267,11 @@ export class WriteService {
    * snapshot and mint one single-use confirmation token.
    */
   async prepare(request: PrepareRequest): Promise<OveResult<WritePreparePayload>> {
+    // A write path that is already mutating rejects new preparations rather than
+    // taking a snapshot against a state that is about to change (review S5).
+    if (this.settling) {
+      return { ok: false, error: err('write-in-flight', 'A write or undo is already executing; wait for it to settle.') }
+    }
     // Every snapshot-backed action needs the capability before the token exists;
     // a force commit does not touch file content and is gated only by health.
     const gate = await this.gate(
@@ -282,7 +338,6 @@ export class WriteService {
         confirmWord: null,
         facts,
       })
-      this.bumpRate()
       return {
         ok: true,
         ...this.preparePayload({
@@ -321,6 +376,23 @@ export class WriteService {
     }
     const target = classified.target
 
+    // Actor-peer/target cross-check (optional review item): a session-scoped
+    // write carries the session's peer, and a target URI naming another peer's
+    // tree would silently curate that other scope.
+    const targetPeer = peerOfMemoryUri(target.uri)
+    if (targetPeer !== null && request.sessionId !== undefined && request.sessionId.length > 0) {
+      const actorPeer = this.options.actorPeer?.(request.sessionId)
+      if (actorPeer !== undefined && actorPeer !== targetPeer) {
+        const error = err(
+          'invalid-request',
+          `The target belongs to peer "${targetPeer}", but this session writes as "${actorPeer}".`,
+          { reason: 'peer-mismatch', targetPeer, actorPeer },
+        )
+        this.auditDenied(request.action, target.uri, request.sessionId, error)
+        return { ok: false, error }
+      }
+    }
+
     if (request.action === 'edit-memory') {
       const current = await this.readRevision(target.uri, actorPeerId)
       if ('error' in current) {
@@ -349,7 +421,6 @@ export class WriteService {
         confirmWord: null,
         facts: null,
       })
-      this.bumpRate()
       return {
         ok: true,
         ...this.preparePayload({
@@ -401,7 +472,6 @@ export class WriteService {
         confirmWord: target.fileName,
         facts: null,
       })
-      this.bumpRate()
       return {
         ok: true,
         ...this.preparePayload({
@@ -463,7 +533,6 @@ export class WriteService {
       confirmWord: null,
       facts: null,
     })
-    this.bumpRate()
     return {
       ok: true,
       ...this.preparePayload({
@@ -494,8 +563,12 @@ export class WriteService {
 
   /** Step 2: consume the token, perform the write, verify, post-commit, audit. */
   async execute(request: ExecuteRequest): Promise<OveResult<WriteExecutePayload>> {
-    const gate = await this.gateFromToken(request.token)
-    if (gate !== null) return { ok: false, error: gate }
+    if (this.settling) {
+      return { ok: false, error: err('write-in-flight', 'Another write or undo is already executing.') }
+    }
+    // Cheap token checks first: a rejected/cancelled/expired token — and above all
+    // a token prepared for a *different action* — must write nothing, so they run
+    // before any capability probe or server read (review B1 ordering).
     this.purge()
     const token = this.tokens.get(request.token)
     if (token === undefined) {
@@ -503,12 +576,31 @@ export class WriteService {
       // is the honest "it was never valid (or it expired long ago)" answer.
       return { ok: false, error: err('token-expired', 'This confirmation token is unknown or expired.') }
     }
+    if (token.status === 'cancelled') {
+      return { ok: false, error: err('token-used', 'This confirmation was cancelled.') }
+    }
     if (token.status === 'done' || token.status === 'undone' || token.status === 'failed') {
       return { ok: false, error: err('token-used', 'This confirmation was already used.') }
     }
     if (token.status === 'executing') {
       return { ok: false, error: err('write-in-flight', 'This confirmation is already executing.') }
     }
+    if (this.now() > token.expiresAt) {
+      this.tokens.delete(token.token)
+      return { ok: false, error: err('token-expired', 'This confirmation expired; prepare the action again.') }
+    }
+    if (request.expectAction !== undefined && token.action !== request.expectAction) {
+      const error = err(
+        'invalid-request',
+        `That token was prepared for ${token.action}, not ${request.expectAction}; nothing was written.`,
+        { expected: request.expectAction, actual: token.action },
+      )
+      this.auditDenied(token.action, token.target, token.sessionId, error)
+      return { ok: false, error }
+    }
+
+    const gate = await this.gateFromToken(request.token)
+    if (gate !== null) return { ok: false, error: gate }
     if (this.now() > token.expiresAt) {
       this.tokens.delete(token.token)
       return { ok: false, error: err('token-expired', 'This confirmation expired; prepare the action again.') }
@@ -521,13 +613,27 @@ export class WriteService {
       this.auditDenied(token.action, token.target, token.sessionId, error)
       return { ok: false, error }
     }
+    // Re-check after the awaits above: a concurrent execute/undo may have claimed
+    // the write path while this one was probing.
+    if (this.settling) {
+      return { ok: false, error: err('write-in-flight', 'Another write or undo started while preparing this one.') }
+    }
+    this.settling = true
     token.status = 'executing'
     this.notify()
     try {
-      if (token.action === 'force-commit') return await this.executeCommit(token)
-      if (token.action === 'edit-memory') return await this.executeEdit(token, request)
-      if (token.action === 'delete-memory') return await this.executeDelete(token, request)
-      return await this.executeTags(token, request)
+      const result =
+        token.action === 'force-commit'
+          ? await this.executeCommit(token)
+          : token.action === 'edit-memory'
+            ? await this.executeEdit(token, request)
+            : token.action === 'delete-memory'
+              ? await this.executeDelete(token, request)
+              : await this.executeTags(token, request)
+      // Only an execution that reached the server spends the rate budget
+      // (review S2); a prepare, a cancel or a validation refusal does not.
+      if (result.ok) this.executionsAt.push(this.now())
+      return result
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       token.status = 'failed'
@@ -535,6 +641,7 @@ export class WriteService {
       this.auditFailed(token, 'rejected-by-server', message)
       return { ok: false, error: err('rejected-by-server', message) }
     } finally {
+      this.settling = false
       this.notify()
     }
   }
@@ -554,6 +661,8 @@ export class WriteService {
       }
     }
     if (record.action === 'set-tags') {
+      const actorPeerId = this.options.actorPeer?.(record.sessionId ?? undefined)
+      const stale = await this.isUndoStale(record, actorPeerId)
       return {
         ok: true,
         plan: {
@@ -565,7 +674,9 @@ export class WriteService {
           toWrite: [],
           toDelete: [],
           unchanged: 0,
-          extraChanges: false,
+          // Tags are re-applied, not restored: a same-named tag list changed after
+          // the action would be overwritten, so it takes the extra confirmation too.
+          extraChanges: stale,
           tagsOnly: true,
         },
       }
@@ -579,16 +690,22 @@ export class WriteService {
    * Step 3b: apply the undo.
    *
    * A plan with extra changes needs `confirmExtra`; the refusal carries the plan
-   * so the dialog can list exactly what else would be reverted.
+   * so the dialog can list exactly what else would be reverted. "Extra" includes
+   * a same-named file rewritten after the action (review S1) — the revision this
+   * action left behind is compared with the current one before applying.
+   *
+   * The `settling` flag makes undo exclusive with execute and with another undo
+   * (review S5): it is set synchronously before the first mutation and cleared in
+   * `finally`, so a failure never strands the write path.
    */
   async undo(request: UndoRequest): Promise<OveResult<WriteUndoPayload>> {
+    if (this.settling) {
+      return { ok: false, error: err('write-in-flight', 'A write or undo is already executing; wait for it to settle.') }
+    }
     const record = this.undos.get(request.undoId)
     if (record === undefined) return { ok: false, error: err('undo-unavailable', 'No undo handle with that id (it may have expired).') }
     const guard = await this.gate(record.action, record.target, record.sessionId, record.action !== 'set-tags')
     if (guard !== null) return { ok: false, error: guard }
-    if ([...this.tokens.values()].some((entry) => entry.status === 'executing')) {
-      return { ok: false, error: err('write-in-flight', 'Another write is executing; undo when it settles.') }
-    }
     if (record.undone) return { ok: false, error: err('token-used', 'This action was already undone.') }
     const scope = this.options.identity()
     if (scope.fingerprint !== record.identityFingerprint) {
@@ -596,17 +713,83 @@ export class WriteService {
       this.auditDenied('undo', record.target, record.sessionId, error)
       return { ok: false, error }
     }
+    if (this.settling) {
+      return { ok: false, error: err('write-in-flight', 'Another write or undo started while this undo was prepared.') }
+    }
+    this.settling = true
     const actorPeerId = this.options.actorPeer?.(record.sessionId ?? undefined)
+    try {
+      if (record.action === 'set-tags') {
+        if (await this.isUndoStale(record, actorPeerId) && request.confirmExtra !== true) {
+          return {
+            ok: false,
+            error: err(
+              'extra-changes',
+              'The tags changed after this action; undoing would overwrite them. Confirm explicitly to continue.',
+              { tagsOnly: true },
+            ),
+          }
+        }
+        const tags = record.tagsBefore ?? []
+        const mode: 'clear' | 'replace' = tags.length === 0 ? 'clear' : 'replace'
+        const applied = await this.options.api.setTags(record.target, tags, mode, actorPeerId === undefined ? {} : { actorPeerId })
+        if (!applied.ok) {
+          this.auditUndoFailed(record, applied.error ?? 'could not restore tags')
+          return { ok: false, error: err('rejected-by-server', applied.error ?? 'Could not restore the previous tags.') }
+        }
+        record.undone = true
+        const audit = this.options.audit.append({
+          kind: 'undo',
+          action: record.action,
+          target: record.target,
+          identity: this.identityFor(scope, record.sessionId),
+          fingerprint: record.identityFingerprint,
+          confirmation: 'overlay',
+          preCommit: record.sourceCommit,
+          postCommit: null,
+          requestId: applied.requestId ?? null,
+          result: 'undone',
+          error: null,
+          undo: null,
+        })
+        return {
+          ok: true,
+          undoId: record.undoId,
+          action: record.action,
+          target: record.target,
+          outcome: 'tags-restored',
+          newCommit: null,
+          taskId: null,
+          auditId: audit.id ?? '',
+          warnings: [],
+        }
+      }
 
-    if (record.action === 'set-tags') {
-      const tags = record.tagsBefore ?? []
-      const mode: 'clear' | 'replace' = tags.length === 0 ? 'clear' : 'replace'
-      const applied = await this.options.api.setTags(record.target, tags, mode, actorPeerId === undefined ? {} : { actorPeerId })
+      const planned = await this.dryRunPlan(record)
+      if ('error' in planned) return { ok: false, error: planned.error }
+      if (planned.plan.extraChanges && request.confirmExtra !== true) {
+        return {
+          ok: false,
+          error: err('extra-changes', 'The restore plan touches files this action did not change, or the file changed after it.', planned.plan),
+        }
+      }
+      const applied = await this.options.api.snapshotRestore(record.projectDir, record.sourceCommit, {
+        dryRun: false,
+        message: `undo ${record.action} ${record.target}`,
+        ...(actorPeerId === undefined ? {} : { actorPeerId }),
+      })
       if (!applied.ok) {
-        this.auditUndoFailed(record, applied.error ?? 'could not restore tags')
-        return { ok: false, error: err('rejected-by-server', applied.error ?? 'Could not restore the previous tags.') }
+        this.auditUndoFailed(record, applied.error ?? 'restore failed')
+        return {
+          ok: false,
+          error: err(
+            applied.status === 409 ? 'rejected-by-server' : 'not-supported',
+            applied.error ?? 'The server refused the restore.',
+          ),
+        }
       }
       record.undone = true
+      const newCommit = applied.result?.new_commit_oid ?? null
       const audit = this.options.audit.append({
         kind: 'undo',
         action: record.action,
@@ -615,74 +798,26 @@ export class WriteService {
         fingerprint: record.identityFingerprint,
         confirmation: 'overlay',
         preCommit: record.sourceCommit,
-        postCommit: null,
+        postCommit: newCommit,
         requestId: applied.requestId ?? null,
         result: 'undone',
         error: null,
-        undo: null,
+        undo: { kind: 'snapshot-restore', projectDir: record.projectDir, sourceCommit: record.sourceCommit },
       })
       return {
         ok: true,
         undoId: record.undoId,
         action: record.action,
         target: record.target,
-        outcome: 'tags-restored',
-        newCommit: null,
-        taskId: null,
+        outcome: 'restored',
+        newCommit,
+        taskId: typeof applied.result?.task_id === 'string' ? applied.result.task_id : null,
         auditId: audit.id ?? '',
         warnings: [],
       }
-    }
-
-    const planned = await this.dryRunPlan(record)
-    if ('error' in planned) return { ok: false, error: planned.error }
-    if (planned.plan.extraChanges && request.confirmExtra !== true) {
-      return {
-        ok: false,
-        error: err('extra-changes', 'The restore plan touches files this action did not change.', planned.plan),
-      }
-    }
-    const applied = await this.options.api.snapshotRestore(record.projectDir, record.sourceCommit, {
-      dryRun: false,
-      message: `undo ${record.action} ${record.target}`,
-      ...(actorPeerId === undefined ? {} : { actorPeerId }),
-    })
-    if (!applied.ok) {
-      this.auditUndoFailed(record, applied.error ?? 'restore failed')
-      return {
-        ok: false,
-        error: err(
-          applied.status === 409 ? 'rejected-by-server' : 'not-supported',
-          applied.error ?? 'The server refused the restore.',
-        ),
-      }
-    }
-    record.undone = true
-    const newCommit = applied.result?.new_commit_oid ?? null
-    const audit = this.options.audit.append({
-      kind: 'undo',
-      action: record.action,
-      target: record.target,
-      identity: this.identityFor(scope, record.sessionId),
-      fingerprint: record.identityFingerprint,
-      confirmation: 'overlay',
-      preCommit: record.sourceCommit,
-      postCommit: newCommit,
-      requestId: applied.requestId ?? null,
-      result: 'undone',
-      error: null,
-      undo: { kind: 'snapshot-restore', projectDir: record.projectDir, sourceCommit: record.sourceCommit },
-    })
-    return {
-      ok: true,
-      undoId: record.undoId,
-      action: record.action,
-      target: record.target,
-      outcome: 'restored',
-      newCommit,
-      taskId: typeof applied.result?.task_id === 'string' ? applied.result.task_id : null,
-      auditId: audit.id ?? '',
-      warnings: [],
+    } finally {
+      this.settling = false
+      this.notify()
     }
   }
 
@@ -720,7 +855,8 @@ export class WriteService {
     const verified = await this.verifyContent(target.uri, request.content, actorPeerId)
     const postCommit = await this.postCommit('edit-memory', target, actorPeerId)
     const revision = verified.revision ?? current.revision
-    const undo = await this.recordUndo('edit-memory', target, token, actorPeerId)
+    const writtenSha256 = `sha256:${createHash('sha256').update(request.content, 'utf8').digest('hex')}`
+    const undo = this.recordUndo('edit-memory', target, token, writtenSha256, null)
     const audit = this.options.audit.append({
       kind: 'write',
       action: 'edit-memory',
@@ -789,15 +925,17 @@ export class WriteService {
       )
     }
     // Verify the file is gone: an idempotent delete answers 200 even for a
-    // missing path, so the confirmation must come from the read.
+    // missing path, so the confirmation must come from the read. Only a 404
+    // *proves* absence (review S6); a 403/500/timeout leaves verification
+    // pending rather than reporting a success the plugin cannot see.
     let verified = false
     for (let attempt = 0; attempt < 3 && !verified; attempt += 1) {
       if (attempt > 0) await sleep(250)
       const stat = await this.options.api.fsStat(target.uri, actorPeerId === undefined ? {} : { actorPeerId })
-      if (!stat.ok) verified = true
+      if (!stat.ok && stat.status === 404) verified = true
     }
     const postCommit = await this.postCommit('delete-memory', target, actorPeerId)
-    const undo = await this.recordUndo('delete-memory', target, token, actorPeerId)
+    const undo = this.recordUndo('delete-memory', target, token, null, null)
     const audit = this.options.audit.append({
       kind: 'write',
       action: 'delete-memory',
@@ -860,8 +998,9 @@ export class WriteService {
           : tags
     const readBack = await this.verifyTags(target.uri, expected, actorPeerId)
     const postCommit = await this.postCommit('set-tags', target, actorPeerId)
-    // Tags are not file content: undo re-applies the captured list.
-    const undo = this.recordTagsUndo(target, token)
+    // Tags are not file content: undo re-applies the captured list. The list the
+    // action set is recorded so a later tag edit can be noticed at undo time.
+    const undo = this.recordTagsUndo(target, token, readBack ?? expected)
     const audit = this.options.audit.append({
       kind: 'write',
       action: 'set-tags',
@@ -1110,7 +1249,8 @@ export class WriteService {
     action: 'edit-memory' | 'delete-memory',
     target: CuratableTarget,
     token: PendingWrite,
-    actorPeerId: string | undefined,
+    writtenSha256: string | null,
+    tagsAfter: string[] | null,
   ): { undoId: string; projectDir: string; sourceCommit: string } | null {
     if (token.preCommit === null) return null
     const undo: UndoRecord = {
@@ -1122,16 +1262,17 @@ export class WriteService {
       sourceCommit: token.preCommit,
       identityFingerprint: token.identityFingerprint,
       tagsBefore: null,
+      writtenSha256,
+      tagsAfter,
       sessionId: token.sessionId,
       createdAt: this.now(),
       undone: false,
     }
     this.rememberUndo(undo)
-    void actorPeerId
     return { undoId: undo.undoId, projectDir: undo.projectDir, sourceCommit: undo.sourceCommit }
   }
 
-  private recordTagsUndo(target: CuratableTarget, token: PendingWrite): { undoId: string } {
+  private recordTagsUndo(target: CuratableTarget, token: PendingWrite, tagsAfter: string[]): { undoId: string } {
     const undo: UndoRecord = {
       undoId: randomBytes(16).toString('hex'),
       action: 'set-tags',
@@ -1143,6 +1284,8 @@ export class WriteService {
       sourceCommit: token.preCommit ?? '',
       identityFingerprint: token.identityFingerprint,
       tagsBefore: token.tagsBefore,
+      writtenSha256: null,
+      tagsAfter,
       sessionId: token.sessionId,
       createdAt: this.now(),
       undone: false,
@@ -1154,12 +1297,53 @@ export class WriteService {
   private rememberUndo(undo: UndoRecord): void {
     this.undos.set(undo.undoId, undo)
     // Bound the in-memory undo window: it is deliberately not persisted, so a
-    // reload loses it and a long session cannot grow it without limit.
+    // reload loses it and a long session cannot grow it without limit. Map
+    // iteration order is insertion order, so the first key is the oldest handle.
     while (this.undos.size > 24) {
-      const oldest = this.undos.keys().next()
-      if (oldest.done === true) break
-      this.undos.delete(oldest.value)
+      const { value } = this.undos.keys().next()
+      if (value === undefined) break
+      this.undos.delete(value)
     }
+  }
+
+  /** The current tag list of a target, or null when it cannot be read. */
+  private async currentTags(uri: string, actorPeerId: string | undefined): Promise<string[] | null> {
+    const attrs = await this.options.api.fsAttrs(uri, actorPeerId === undefined ? {} : { actorPeerId })
+    if (!attrs.ok) return null
+    return Array.isArray(attrs.result?.attrs?.tags)
+      ? attrs.result.attrs.tags.filter((tag): tag is string => typeof tag === 'string')
+      : []
+  }
+
+  /**
+   * Whether the target changed after this action wrote it (review S1).
+   *
+   * Undo is a directory-scoped snapshot restore, so without this check a
+   * same-named file rewritten after the action would be rolled back silently.
+   * A changed/unreadable target marks the plan `extraChanges`, which requires the
+   * user's second explicit confirmation before the restore is applied.
+   *
+   *  - edit: the file must still hold the body this action wrote;
+   *  - delete: the file must still be absent (a recreated file would be
+   *    overwritten by the restore);
+   *  - tags: the list must still be the one this action set.
+   */
+  private async isUndoStale(record: UndoRecord, actorPeerId: string | undefined): Promise<boolean> {
+    if (record.action === 'set-tags') {
+      const current = await this.currentTags(record.target, actorPeerId)
+      if (current === null) return true
+      return !sameTags(current, record.tagsAfter ?? [])
+    }
+    if (record.action === 'delete-memory') {
+      const stat = await this.options.api.fsStat(record.target, actorPeerId === undefined ? {} : { actorPeerId })
+      // 404 is the expected state after a successful delete; anything else means
+      // the path is back (or cannot be read, which is not provably the same).
+      return !(!stat.ok && stat.status === 404)
+    }
+    if (record.writtenSha256 === null) return true
+    const current = await this.readRevision(record.target, actorPeerId)
+    if ('error' in current) return true
+    return current.revision.sha256 !== record.writtenSha256
   }
 
   private async dryRunPlan(record: UndoRecord): Promise<{ plan: WriteUndoPlan } | { error: OveError }> {
@@ -1179,6 +1363,9 @@ export class WriteService {
     const diff = response.result?.diff
     const toWrite = (diff?.to_write ?? []).map((entry) => this.planPath(entry.path, record.target))
     const toDelete = (diff?.to_delete ?? []).map((entry) => this.planPath(entry.path, record.target))
+    // A path outside the action's own inverse set *or* a target rewritten after
+    // the action both mean the second confirmation is required (review S1).
+    const stale = await this.isUndoStale(record, actorPeerId)
     return {
       plan: {
         undoId: record.undoId,
@@ -1189,7 +1376,7 @@ export class WriteService {
         toWrite,
         toDelete,
         unchanged: Array.isArray(diff?.unchanged) ? diff.unchanged.length : 0,
-        extraChanges: [...toWrite, ...toDelete].some((entry) => !entry.expected),
+        extraChanges: stale || [...toWrite, ...toDelete].some((entry) => !entry.expected),
         tagsOnly: false,
       },
     }
@@ -1210,15 +1397,11 @@ export class WriteService {
     return { path, expected: planName === expectedName }
   }
 
-  private bumpRate(): void {
-    this.preparesAt.push(this.now())
-  }
-
   private checkRateLimit(): OveError | null {
     const cutoff = this.now() - this.rateWindowMs
-    while (this.preparesAt.length > 0 && (this.preparesAt[0] as number) < cutoff) this.preparesAt.shift()
-    if (this.preparesAt.length < this.rateLimit) return null
-    const oldest = this.preparesAt[0] as number
+    while (this.executionsAt.length > 0 && (this.executionsAt[0] as number) < cutoff) this.executionsAt.shift()
+    if (this.executionsAt.length < this.rateLimit) return null
+    const oldest = this.executionsAt[0] as number
     return err('rate-limited', `At most ${this.rateLimit} write actions per minute; try again in ${Math.ceil((oldest + this.rateWindowMs - this.now()) / 1000)}s.`, {
       retryAfterMs: Math.max(0, oldest + this.rateWindowMs - this.now()),
       limit: this.rateLimit,
@@ -1232,7 +1415,11 @@ export class WriteService {
         this.tokens.delete(key)
         continue
       }
-      if ((token.status === 'done' || token.status === 'undone' || token.status === 'failed') && token.settledAt !== null && now - token.settledAt > 10 * 60_000) {
+      if (
+        (token.status === 'done' || token.status === 'undone' || token.status === 'failed' || token.status === 'cancelled') &&
+        token.settledAt !== null &&
+        now - token.settledAt > 10 * 60_000
+      ) {
         this.tokens.delete(key)
       }
     }

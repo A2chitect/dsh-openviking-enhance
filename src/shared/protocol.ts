@@ -1046,6 +1046,14 @@ export interface WriteUndoPlan {
   tagsOnly: boolean
 }
 
+/** The outcome of `write/cancel`: only a still-pending token can be cancelled. */
+export interface WriteCancelPayload {
+  /** `cancelled` = this call freed the pending slot; `settled`/`expired` = no-op. */
+  status: 'cancelled' | 'settled' | 'expired'
+  /** The action the cancelled token had prepared, when it was still pending. */
+  action: WriteAction | null
+}
+
 /** Result of applying an undo. */
 export interface WriteUndoPayload {
   undoId: string
@@ -1219,7 +1227,7 @@ export interface MetricsPayload {
 
 /* ---- local audit trail (the plugin's JSONL file) ------------------------- */
 
-export type AuditKind = 'write' | 'commit' | 'undo' | 'switch' | 'denied' | 'profile'
+export type AuditKind = 'write' | 'commit' | 'undo' | 'switch' | 'denied' | 'profile' | 'cancel'
 
 export interface AuditIdentity {
   profileId: string | null

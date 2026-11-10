@@ -10,7 +10,7 @@ promotes to a dated section — see [RELEASING.md](RELEASING.md).
 
 ## Unreleased
 
-### v0.5 — Collaborate (this PR)
+### v0.5 — Collaborate (PR #3)
 
 Collaborate. v0.5 adds the first write-capable layer on top of the read-only
 cockpit: opt-in curation with typed confirmations and snapshot undo, forced
@@ -31,9 +31,12 @@ it, and audited locally.
   snapshot, write, verify the read-back and take a post-write snapshot — the
   conflict detection OpenViking 0.5.3 needs because content writes have no
   compare-and-swap. Deletes require typing the file name. Tags replace, append
-  or clear. Undo runs a snapshot restore dry run filtered to the action's paths,
-  asking for a second confirmation when unrelated changes are in the plan; it
-  fails closed without the pre-write snapshot and after an identity switch.
+  or clear. Every snapshot-backed action snapshots and restores the containing
+  directory (one scope; file-level restore is unverified on the tested builds).
+  Undo runs a snapshot restore dry run filtered to the action's paths and asks
+  for a second confirmation when unrelated changes are in the plan **or when the
+  target was rewritten after the action**; it fails closed without the pre-write
+  snapshot and after an identity switch.
 - **Forced commit and honest capture/failure diagnosis (F10).** *Commit now*
   (composer pill, Activity tab, `/viking commit`) reads the session first, is
   single-flight, always confirmed, runs asynchronously and is followable in
@@ -60,12 +63,19 @@ it, and audited locally.
   `api_key` mode the key determines the identity). Writes are refused when the
   identity is ambiguous, undo is bound to the writing identity, and switching is
   guarded while a confirmation is pending.
-- **`/viking` write commands.** `edit`, `forget`, `tag`, `commit`, `undo` and
-  `audit` prepare an action and return either a rich `conversation.chat.commandview`
-  card with Confirm/Cancel (typed delete, tag chips, commit warning) or, on
-  clients without it, a two-line plain fallback naming `--confirm <token>`.
-  Tokens are single-use, 120 s, bound to identity/action/target, with 8 pending
-  and 3 prepares/minute, one write in flight, and denied attempts audited.
+- **`/viking` write commands.** `forget`, `tag` and `commit` prepare an action
+  and return either a rich `conversation.chat.commandview` card with
+  Confirm/Cancel (typed delete, tag chips, commit warning) or, on clients without
+  it, a two-line plain fallback naming `--confirm <token>`; the token's action is
+  checked host-side **before** any write. `edit` only opens the preview editor
+  (its dialog prepares and confirms), `undo <handle>` runs the dry-run plan and
+  then applies it immediately (an extra-changes plan still needs the dialog),
+  and `audit` is a pure read. Dialog deletions require typing the file name; the
+  command path uses the single-use token as its confirmation. Tokens are
+  single-use, 120 s, bound to identity/action/target, with 8 pending and 3
+  **writes**/minute (only successful executions count), one write in flight; a
+  dialog that is dismissed releases its pending token, and denied attempts are
+  audited.
 - **Four new settings**: `enableWrites` (`false`), `enableActivity` (`true`),
   `showScopeBanner` (`true`), `activeProfile` (`''`), wired end-to-end with
   English and Chinese copy.
@@ -74,11 +84,12 @@ it, and audited locally.
   rotating `audit.jsonl` (1 MiB, two old files) carrying time, action, URIs,
   identity fingerprint, request id, result and undo handle — never memory
   bodies, tokens or secrets.
-- **Tests**: 49 new host unit tests and 5 end-to-end route tests (fake
+- **Tests**: host unit tests and end-to-end route tests (fake
   `connection.fetch` + fake OpenViking server: edit→verify→post-commit→audit→
   undo, typed delete, tags undo, force commit, task cancel, profile
-  save/delete/test, 0600 audit, no body leakage, fail-closed paths), plus client
-  render/smoke coverage for the new surfaces; 226 unit tests in total.
+  save/delete/test, write cancel, 0600 audit, no body leakage, fail-closed
+  paths, crossed-token refusal, undo staleness and concurrency), plus client
+  render/smoke coverage for the new surfaces; 254 unit tests in total.
 
 ### Changed
 
@@ -94,7 +105,7 @@ it, and audited locally.
 
 ### Verified
 
-- `pnpm test`: typecheck, build, packaging contract, **226** unit tests, client
+- `pnpm test`: typecheck, build, packaging contract, **254** unit tests, client
   smoke and host smoke all green; the host smoke exercises the read-only live
   server paths plus every fail-closed write path.
 - Unit and end-to-end tests never touch a real memory store: the write paths run
@@ -103,7 +114,7 @@ it, and audited locally.
   capture time) vs this branch, same scratch DSH 0.2.2-rc.1 web profile, light
   theme 1440×900 @2x, against the stateful stand-in server; invented data only.
 
-### v0.4 — Act I (this PR)
+### v0.4 — Act I (PR #2)
 
 Act I. v0.4 makes the read-only cockpit *operable*: a URI preview with deep
 links, a read-only `/viking` command, and one Explore page for unified search,

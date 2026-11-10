@@ -38,6 +38,7 @@ import {
   type ProfilesPayload,
   type ScopePayload,
   type WriteAction,
+  type WriteCancelPayload,
   type WriteExecutePayload,
   type WritePreparePayload,
   type WriteUndoPayload,
@@ -489,7 +490,6 @@ export interface PrepareWriteRequest {
   action: WriteAction
   target: string
   sessionId?: string
-  origin?: 'overlay' | 'command'
   tags?: string[]
   tagMode?: 'replace' | 'append' | 'clear'
 }
@@ -510,6 +510,16 @@ export interface ExecuteWriteRequest {
 /** Step 2: perform the confirmed write, verify, post-commit and audit. */
 export function executeWrite(request: ExecuteWriteRequest): Promise<OveResult<WriteExecutePayload>> {
   return postOve<WriteExecutePayload>(`${BASE}/write/execute`, request)
+}
+
+/**
+ * Release a confirmation the user dismissed (dialog closed/Escape/Cancel).
+ *
+ * The host only frees a still-pending token; a settled one is an idempotent
+ * no-op, so callers can send this without checking the outcome.
+ */
+export function cancelWrite(token: string): Promise<OveResult<WriteCancelPayload>> {
+  return postOve<WriteCancelPayload>(`${BASE}/write/cancel`, { token })
 }
 
 /** The undo dry-run plan (no mutation). */

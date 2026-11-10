@@ -646,7 +646,7 @@ check(
 check(code.includes('/recall'), 'the panel requests the host recall route')
 check(code.includes('/preview'), 'the preview panel requests the host preview route')
 // v0.5 read + write routes: the client only ever calls document-relative paths.
-for (const route of ['/scope', '/profiles', '/tasks', '/metrics', '/audit', '/session-control', '/write/prepare', '/write/execute', '/write/undo', '/task/cancel', '/profiles/save']) {
+for (const route of ['/scope', '/profiles', '/tasks', '/metrics', '/audit', '/session-control', '/write/prepare', '/write/execute', '/write/undo', '/write/cancel', '/task/cancel', '/profiles/save']) {
   check(code.includes(route), `the browser half knows ${route}`)
 }
 // The additive frame-wide seats and the keyed command renderer.

@@ -32,7 +32,7 @@
  * envelopes carry no bodies (the edit verb only opens the editor, which loads the
  * body through its own request).
  */
-import { RECALL_DEFAULT_LIMIT, type IdentityScope, type WritePreparePayload } from '../shared/protocol.ts'
+import { RECALL_DEFAULT_LIMIT, type IdentityScope, type WriteAction, type WritePreparePayload } from '../shared/protocol.ts'
 import { classifyCuratableUri } from '../shared/curation.ts'
 import type { CommitService } from './commit-service.ts'
 import type { DoctorService } from './doctor-service.ts'
@@ -598,13 +598,24 @@ export class VikingCommand {
     }
   }
 
-  /** Execute a prepared token from a plain `--confirm` command. */
+  /**
+   * Execute a prepared token from a plain `--confirm` command.
+   *
+   * The token's action is checked host-side **before** execution: a crossed token
+   * (`/viking forget --confirm <tags token>`) must not perform its own action and
+   * only then report a mismatch. `execute({expectAction})` enforces the same rule
+   * inside the write service, so the ordering cannot regress here alone.
+   */
   private async executeToken(token: string, action: string): Promise<VikingCommandResult> {
-    const executed = await this.options.writes.execute({ token })
-    if (!executed.ok) return { kind: 'error', text: `${executed.error.code}: ${executed.error.message}` }
-    if (executed.action !== action) {
-      return { kind: 'error', text: `That token was prepared for ${executed.action}, not ${action}.` }
+    const pending = this.options.writes.pendingAction(token)
+    if (pending === null) {
+      return { kind: 'error', text: 'token-expired: that confirmation is unknown, expired or already settled; prepare the action again.' }
     }
+    if (pending !== action) {
+      return { kind: 'error', text: `invalid-request: that token was prepared for ${pending}, not ${action}; nothing was written.` }
+    }
+    const executed = await this.options.writes.execute({ token, expectAction: action as WriteAction })
+    if (!executed.ok) return { kind: 'error', text: `${executed.error.code}: ${executed.error.message}` }
     if (executed.undoId !== null) {
       return {
         kind: 'success',

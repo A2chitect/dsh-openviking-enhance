@@ -171,12 +171,16 @@ and the commit pill and Activity tab gain **Commit now**.
   change is caught by that verification and reported as a conflict to reload.
 - **Delete** asks you to type the file name and says plainly that the server has
   no recycle bin. **Tags** replaces, appends to or clears the tag list
-  (`key=value` grammar), and takes the same snapshot/undo path.
+  (`key=value` grammar), and takes the same snapshot/undo path. Every
+  snapshot-backed action snapshots and restores the containing directory — one
+  scope for both halves, because file-level restore is unverified on the tested
+  server builds.
 - **Undo** is a toast action after the write: it builds a snapshot-restore dry
-  run filtered to the paths the action touched, and only if the plan would also
-  revert unrelated changes does it ask for a second confirmation. It fails
-  closed when the pre-write snapshot is missing and is refused after an identity
-  switch. There is no second copy of a memory body on disk.
+  run filtered to the paths the action touched, and asks for a second
+  confirmation when the plan would also revert unrelated changes **or when a
+  same-named file was rewritten after the action**. It fails closed when the
+  pre-write snapshot is missing and is refused after an identity switch. There
+  is no second copy of a memory body on disk.
 - **Every attempt is audited**, including refused ones, in
   `${DSH_HOME:-~/.dsh}/state/dsh-openviking-enhance/audit.jsonl` (mode 0600,
   rotated at 1 MiB, two old files): time, action, URIs, identity fingerprint,
@@ -226,13 +230,21 @@ admin enumeration.
 
 ![The rich confirmation card for a write command](assets/v05-after-command-confirm.png)
 
-**Write commands from the composer.** `/viking edit <uri>`, `forget <uri>`,
-`tag <uri> …`, `commit`, `undo` and `audit` prepare an action and return a card
-in the transcript with Confirm/Cancel (typed file name for delete, tag chips,
-commit warning). Clients without the card get a two-line plain fallback naming
-`--confirm <token>`. Confirm tokens are single-use, valid for 120 seconds, bound
-to the identity/action/target, capped at 8 pending and 3 prepares per minute,
-with one write in flight; denied attempts are audited.
+**Write commands from the composer.** `/viking forget <uri>`, `tag <uri> …` and
+`commit` prepare an action and return a card in the transcript with
+Confirm/Cancel (typed file name for delete, tag chips, commit warning). Clients
+without the card get a two-line plain fallback naming `--confirm <token>`; the
+token's prepared action is checked host-side **before** anything is written, so
+confirming a delete with a tags token is refused instead of performing the tags
+write. `edit` only opens the preview editor (its dialog prepares and confirms),
+`undo <handle>` runs the dry-run plan and applies it immediately (an
+extra-changes plan still needs the confirmation dialog), and `audit` is a pure
+read. Dialog deletions require typing the file name; the command path uses the
+single-use token as its confirmation. Confirm tokens are single-use, valid for
+120 seconds, bound to the identity/action/target, capped at 8 pending and 3
+**writes** per minute (only successful executions count), with one write in
+flight; dismissing a dialog releases its pending token, and denied attempts are
+audited.
 
 ## Requirements
 
@@ -241,7 +253,7 @@ with one write in flight; denied attempts are audited.
 | DSH | 0.2.0-rc.2 or newer (desktop or web profile; verified on 0.2.0-rc.2, 0.2.1-rc.5 and 0.2.2-rc.1) |
 | OpenViking | A local server; 0.5.1.1–0.5.3 tested (0.5.3 with the context face). Preview, search and skills work on 0.5.1.1+; the Experience routes are present in the same releases and verified on 0.5.3; **Rules need 0.5.3+**. Studio is served at `/studio/` on the same port |
 | Memory plugin | `@openviking/dsh-memory-plugin` recommended — it is what commits sessions. Without it the panel still works, but pending-token thresholds are unknown |
-| Writes | Opt-in (`enableWrites`, default off) and need **DSH 0.2.2-rc.1+** for the authenticated `ctx.connection.fetch` transport. Older generations keep every read surface and disable writes with a stated reason |
+| Writes | Opt-in (`enableWrites`, default off) and need **DSH 0.2.2-rc.1+** for the authenticated `ctx.connection.fetch` transport. Session authentication is enforced by that DSH transport, not by this plugin; the plugin's own HTTP server exposes **no write route** (the smoke harness asserts 404). Older generations keep every read surface and disable writes with a stated reason |
 
 ## Install
 
@@ -355,7 +367,8 @@ Reads keep working in all of those cases.
 Undo only exists for the write window of the current plugin session and the
 identity that performed the write. Snapshot restore is directory-scoped, so the
 dry-run plan can include sibling paths; the dialog then asks for a second
-confirmation before applying.
+confirmation before applying. It also asks when the file was rewritten after the
+action (a same-named file is not silently rolled back).
 
 **Commit now did nothing / a forced commit failed.**
 One commit is allowed in flight per profile and the plugin does not retry. A
@@ -430,12 +443,22 @@ half only after an app restart.
   change OpenViking data. With `enableWrites` on, the only writes are the
   curation, force-commit and write-command paths described above; each one is
   confirmed, verified after the write, snapshot-undoable (except extraction and
-  force commit, which the server cannot roll back) and audited locally. No write
-  leaves the machine except the OpenViking request itself.
+  force commit, which the server cannot roll back) and audited locally. The only
+  data that leaves the machine is the OpenViking request itself — including to a
+  remote endpoint when an active profile points elsewhere.
 - **Writes need DSH 0.2.2-rc.1+.** They ride the framework-authenticated
   `ctx.connection.fetch` service; the plugin never exposes a loopback POST write
-  route. Older DSH generations keep every read surface and show a reason why
-  writes are unavailable.
+  route (the smoke harness asserts every mutation path answers 404 there). Who
+  may call those routes is decided by the DSH connection transport's own session
+  authentication — the plugin enforces confirmation tokens, identity binding and
+  audit, but not the network-level authentication.
+- **The profile "test connection" control is not a general URL prober.** It
+  sends no credentials and only reads `/health`; it refuses non-`http(s)`,
+  link-local/metadata (`169.254.0.0/16`, cloud metadata names,
+  `fd00:ec2::254`), unspecified, broadcast and multicast targets. Loopback and
+  LAN addresses stay allowed on purpose (a private OpenViking server is a
+  supported deployment); if a remote profile's test is refused, save it and read
+  the scope/health instead.
 - **Capture pause/resume and archive retry are not shipped.** The official
   memory plugin exposes no runtime pause API, and the tested OpenViking builds
   expose no archive-retry endpoint; the plugin says so instead of faking them.

@@ -98,7 +98,7 @@ export function mapTask(raw: OvTask | null | undefined): ActivityTask {
     taskType: typeof raw?.task_type === 'string' ? raw.task_type : 'unknown',
     status: typeof raw?.status === 'string' ? raw.status : 'unknown',
     stage: typeof raw?.stage === 'string' ? raw.stage : null,
-    error: typeof raw?.error === 'string' ? raw.error : null,
+    error: truncateError(typeof raw?.error === 'string' ? raw.error : null),
     createdAt: numberOrNull(raw?.created_at),
     updatedAt: numberOrNull(raw?.updated_at),
     processingSeconds: numberOrNull(raw?.processing_seconds),
@@ -146,7 +146,7 @@ export function mapTaskEvents(raw: OvTask | null | undefined): { events: TaskEve
       status: typeof event.status === 'string' ? event.status : null,
       stage: typeof event.stage === 'string' ? event.stage : null,
       operation: typeof event.operation === 'string' ? event.operation : null,
-      error: typeof event.error === 'string' ? event.error : null,
+      error: truncateError(typeof event.error === 'string' ? event.error : null),
     })
   }
   return { events, dropped: numberOrNull(record.dropped_count) }
@@ -175,6 +175,16 @@ export function safeTaskExport(raw: OvTask): Record<string, unknown> {
 
 export function isCancellableTask(task: ActivityTask): boolean {
   return (CANCELLABLE_TASK_TYPES as readonly string[]).includes(task.taskType) && isCancellableStatus(task.status)
+}
+
+/**
+ * Server error text can echo a body; keep only a bounded first line, the same
+ * discipline the audit file uses (review: Activity errors were unbounded).
+ */
+function truncateError(error: string | null | undefined): string | null {
+  if (typeof error !== 'string') return null
+  const firstLine = error.split(/\r?\n/).find((line) => line.trim().length > 0)?.trim() ?? ''
+  return firstLine.length > 300 ? `${firstLine.slice(0, 299)}…` : firstLine
 }
 
 export class ActivityService {

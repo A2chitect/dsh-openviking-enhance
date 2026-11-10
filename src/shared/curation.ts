@@ -151,16 +151,39 @@ export function isCuratableUri(raw: string): boolean {
   return classifyCuratableUri(raw).ok
 }
 
-/** The snapshot commit scope for one action: the file for a delete, else its directory. */
-export function snapshotPathsFor(action: 'edit-memory' | 'delete-memory' | 'set-tags', target: CuratableTarget): string[] {
-  // Deletions are recorded by naming the file itself; an existing directory
-  // expands recursively and would snapshot unrelated siblings for a single file.
-  return action === 'delete-memory' ? [target.uri] : [target.parentUri]
+/**
+ * The snapshot commit scope for one action: always the file's **parent directory**.
+ *
+ * One scope is used for both the snapshot and the restore (review S4): a delete
+ * snapshotted by file name then restored by directory is two scopes for one
+ * action, and the pre-write commit cannot record a deletion that has not
+ * happened yet anyway. Directory scope is also the only restore mode the tested
+ * server builds support (file-level restore is unverified), so the same path is
+ * the honest one for both halves.
+ */
+export function snapshotPathsFor(_action: 'edit-memory' | 'delete-memory' | 'set-tags', target: CuratableTarget): string[] {
+  return [target.parentUri]
 }
 
-/** The restore scope for an undo: always the containing directory (file restore is unverified). */
+/** The restore scope for an undo: the same directory the snapshot covered. */
 export function restoreScopeFor(target: CuratableTarget): string {
   return target.parentUri
+}
+
+/**
+ * The peer id encoded in a peer-scoped memory URI
+ * (`viking://user/<u>/peers/<peer>/memories/…`), or null for a user-scope path.
+ *
+ * Used for the actor-peer/target cross-check: a write performed on behalf of a
+ * session carries that session's actor peer, and writing the same action into a
+ * different peer's tree would silently target another scope.
+ */
+export function peerOfMemoryUri(uri: string): string | null {
+  const normalized = normalizeVikingUri(uri)
+  if (normalized === null) return null
+  const segments = normalized.slice('viking://'.length).split('/')
+  if (segments[2] !== 'peers') return null
+  return typeof segments[3] === 'string' && segments[3].length > 0 ? segments[3] : null
 }
 
 /* ---- the tag grammar the host and the tags editor share ------------------ */

@@ -65,6 +65,46 @@ export function isHttpEndpoint(value: string): boolean {
   }
 }
 
+/**
+ * Whether an endpoint may be probed by the "test connection" control.
+ *
+ * The test button sends **no credentials** and only reads `/health`, but an
+ * unconstrained endpoint would still turn the plugin into a general URL prober
+ * (cloud metadata services, link-local devices, multicast). Review S9: reject
+ * the dangerous ranges explicitly.
+ *
+ * Loopback and RFC1918 targets stay allowed on purpose: a private/LAN OpenViking
+ * server is a supported deployment, and the plugin's normal API calls reach the
+ * same addresses anyway. The metadata/link-local/multicast rejections are the
+ * boundary that matters (see README Requirements for the documented trade-off).
+ */
+export function isProbeableEndpoint(endpoint: string): boolean {
+  if (!isHttpEndpoint(endpoint)) return false
+  let hostname: string
+  try {
+    hostname = new URL(endpoint.trim()).hostname.toLowerCase()
+  } catch {
+    return false
+  }
+  // URL keeps IPv6 literals bracketed; comparisons below use the bare form.
+  const bare = hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname
+  // DNS names that are metadata services on common clouds.
+  if (['metadata.google.internal', 'metadata.goog', 'instance-data', 'metadata'].includes(hostname)) return false
+  const mapped = bare.startsWith('::ffff:') ? bare.slice('::ffff:'.length) : bare
+  if (mapped === '169.254.169.254' || mapped.startsWith('169.254.')) return false
+  if (mapped === 'fd00:ec2::254') return false
+  // Unspecified / broadcast / multicast IPv4.
+  if (mapped === '0.0.0.0' || mapped === '255.255.255.255') return false
+  const octets = mapped.split('.')
+  if (octets.length === 4 && octets.every((part) => /^\d{1,3}$/.test(part))) {
+    const first = Number(octets[0])
+    if (first === 0 || first >= 224) return false
+  }
+  // IPv6 unspecified.
+  if (bare === '::') return false
+  return true
+}
+
 /** Normalize an endpoint: trailing slashes removed, no normalization of the host. */
 export function normalizeProfileEndpoint(value: string): string {
   return value.trim().replace(/\/+$/, '')

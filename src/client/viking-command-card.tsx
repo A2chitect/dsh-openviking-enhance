@@ -19,7 +19,7 @@
  */
 import { useCallback, useState } from 'react'
 import type { OveError, WritePreparePayload } from '../shared/protocol.ts'
-import { applyUndo, executeWrite, planUndo, prepareWrite } from './host-api.ts'
+import { applyUndo, cancelWrite, executeWrite, planUndo, prepareWrite } from './host-api.ts'
 import { t, writeErrorText } from './locale.ts'
 import { openPreview } from './preview-store.ts'
 import { openUndoPlan, openWriteConfirm, showNotice } from './write-store.ts'
@@ -259,7 +259,17 @@ function ConfirmCard({ prepare, hint, sessionId }: { prepare: WritePreparePayloa
       {error !== null && <p className="ove-cmd-error">{writeErrorText(error)}</p>}
       {phase === 'pending' || phase === 'executing' ? (
         <div className="ove-cmd-actions">
-          <button type="button" className="ove-write-button" disabled={phase === 'executing'} onClick={() => setPhase('cancelled')}>
+          <button
+            type="button"
+            className="ove-write-button"
+            disabled={phase === 'executing'}
+            onClick={() => {
+              setPhase('cancelled')
+              // The token came from a command prepare; dismissing the card
+              // releases its pending slot instead of leaving it to expire.
+              void cancelWrite(prepare.token)
+            }}
+          >
             {t('write.cancel')}
           </button>
           <button

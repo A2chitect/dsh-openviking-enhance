@@ -51,7 +51,7 @@ import {
 import { ActivityService, isCancellableTask } from './activity-service.ts'
 import { AuditLog } from './audit.ts'
 import { CapabilityService, scopeCapabilities } from './capability.ts'
-import { ProfileStore, isHttpEndpoint } from './profiles.ts'
+import { ProfileStore, isHttpEndpoint, isProbeableEndpoint } from './profiles.ts'
 import { SessionControlService } from './session-control.ts'
 import { WriteService } from './write-service.ts'
 import {
@@ -1270,14 +1270,16 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
         return { ok: false, error: { code: 'invalid-request', message: 'target is required.' } }
       }
       const sessionId = stringField(body, 'sessionId')
-      const origin = body.origin === 'command' ? 'command' : 'overlay'
       const tags = stringArrayField(body, 'tags')
       const tagMode = stringField(body, 'tagMode')
       return writeService.prepare({
         action: action as WriteAction,
         target,
         ...(sessionId === undefined ? {} : { sessionId }),
-        origin,
+        // Origin is decided host-side per entry point, never trusted from the
+        // body (review S3): these Fetch routes are the dialog/panel surface. The
+        // command path calls the service directly with `origin:'command'`.
+        origin: 'overlay',
         ...(tags === undefined || action !== 'set-tags' ? {} : { tags }),
         ...(tagMode === 'append' || tagMode === 'replace' || tagMode === 'clear' ? { tagMode } : {}),
       })
@@ -1298,6 +1300,15 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
         ...(tagMode === 'append' || tagMode === 'replace' || tagMode === 'clear' ? { tagMode } : {}),
         ...(typed === undefined ? {} : { typed }),
       })
+    })
+    add(`${API_PREFIX}/write/cancel`, async (body) => {
+      const token = stringField(body, 'token')
+      if (token === undefined || token.length === 0) {
+        return { ok: false, error: { code: 'invalid-request', message: 'token is required.' } }
+      }
+      // Dismissing a dialog releases its pending slot. A token that already
+      // settled is an idempotent no-op, so the client can call this blindly.
+      return writeService.cancel(token)
     })
     add(`${API_PREFIX}/write/plan`, async (body) => {
       const undoId = stringField(body, 'undoId')
@@ -1383,8 +1394,18 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
     })
     add(`${API_PREFIX}/profiles/test`, async (body) => {
       const endpoint = (stringField(body, 'endpoint') ?? '').trim().replace(/\/+$/, '')
-      if (!isHttpEndpoint(endpoint)) {
-        return { ok: false, error: { code: 'invalid-request', message: 'An http(s) endpoint is required.' } }
+      if (!isProbeableEndpoint(endpoint)) {
+        // Review S9: never become a general URL prober. Link-local/metadata,
+        // unspecified, broadcast and multicast targets are refused; loopback and
+        // LAN addresses stay allowed because a private server is a supported
+        // deployment (see README Requirements for the trade-off).
+        return {
+          ok: false,
+          error: {
+            code: 'invalid-request',
+            message: 'That endpoint cannot be probed (http(s), non-metadata, non-link-local addresses only).',
+          },
+        }
       }
       // Reachability only: no stored key is sent, so a test never authenticates
       // a candidate endpoint with the active profile's credentials.

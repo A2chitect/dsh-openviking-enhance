@@ -15,6 +15,7 @@ import {
   classifyCuratableUri,
   isCuratableUri,
   normalizeVikingUri,
+  peerOfMemoryUri,
   restoreScopeFor,
   snapshotPathsFor,
   validateTagInput,
@@ -22,6 +23,7 @@ import {
 import {
   ProfileStore,
   describeProfile,
+  isProbeableEndpoint,
   parseProfileFile,
   sanitizeProfile,
 } from '../src/host/profiles.ts'
@@ -111,12 +113,20 @@ test('the allowlist refuses every excluded tree, sidecar and unsafe path', () =>
   assert.equal(normalizeVikingUri('viking://user/default/'), null)
 })
 
-test('the snapshot scope is the file for a delete and the directory otherwise', () => {
+test('one snapshot/restore scope: the parent directory for every snapshot-backed action', () => {
   const target = classifyCuratableUri(MEMORY).target
-  assert.deepEqual(snapshotPathsFor('delete-memory', target), [MEMORY])
+  // Review S4: the delete used to snapshot by file but restore by directory.
+  // One scope for both halves, and it is the only restore mode the tested builds
+  // support (file-level restore is unverified).
+  assert.deepEqual(snapshotPathsFor('delete-memory', target), ['viking://user/default/memories/preferences'])
   assert.deepEqual(snapshotPathsFor('edit-memory', target), ['viking://user/default/memories/preferences'])
   assert.deepEqual(snapshotPathsFor('set-tags', target), ['viking://user/default/memories/preferences'])
   assert.equal(restoreScopeFor(target), 'viking://user/default/memories/preferences')
+  assert.equal(peerOfMemoryUri(MEMORY), null)
+  assert.equal(
+    peerOfMemoryUri('viking://user/default/peers/repo-x/memories/entities/a.b/skill.md'),
+    'repo-x',
+  )
 })
 
 /* ========================================================================
@@ -411,6 +421,8 @@ class FakeOpenViking {
     this.healthAuthMode = 'dev'
     this.snapshotStatus = 200
     this.tasksStatus = 200
+    /** When set, fsStat answers this instead of the in-memory tree (S6 tests). */
+    this.statFailure = null
     this.files.set(MEMORY, { content: 'Original body', modTime: '2026-11-09T00:00:00Z' })
     this.files.set('viking://user/default/memories/entities/project/sidebar.md', {
       content: 'Rows sort by order.',
@@ -456,6 +468,7 @@ class FakeOpenViking {
 
   async fsStat(uri) {
     this.calls.push(['fsStat', uri])
+    if (this.statFailure !== null) return this.statFailure
     const file = this.files.get(uri)
     if (file === undefined) return { ok: false, status: 404, result: null, error: 'not found', errorCode: 'NOT_FOUND' }
     return { ok: true, status: 200, result: { uri, size: Buffer.byteLength(file.content, 'utf8'), modTime: file.modTime } }
@@ -689,7 +702,7 @@ test('prepare takes the pre-write snapshot and returns a typed confirmation', as
   assert.equal(prepared.content, null, 'a delete never carries the body')
   assert.equal(prepared.summary.length >= 2, true)
   const snapshotCall = fake.calls.find((call) => call[0] === 'snapshotCommit')
-  assert.deepEqual(snapshotCall[2], [MEMORY], 'the delete snapshot names the file itself')
+  assert.deepEqual(snapshotCall[2], ['viking://user/default/memories/preferences'], 'the delete snapshots the same directory it will restore')
   assert.equal(snapshotCall[1].includes('pre-write'), true)
   assert.equal(fake.calls.some((call) => call[0] === 'deletePath'), false, 'prepare does not delete')
 })
@@ -848,19 +861,38 @@ test('the server refusing the write is surfaced, audited and leaves the undo han
   assert.match(audit.error, /rejected-by-server/)
 })
 
-test('rate limits and the pending cap fail closed, and denials are audited', async () => {
-  const rig = writeRig({ rateLimit: 3, maxPending: 8 })
-  for (let index = 0; index < 3; index += 1) {
-    const prepared = await rig.service.prepare({ action: 'delete-memory', target: MEMORY })
-    assert.equal(prepared.ok, true, `prepare ${index + 1}`)
-  }
-  const limited = await rig.service.prepare({ action: 'delete-memory', target: MEMORY })
+test('the rate limit counts successful executions, and a failed write does not spend it', async () => {
+  const rig = writeRig({ rateLimit: 1 })
+  // A conflict must not consume the budget (review S2: only executed writes count).
+  const conflictPrep = await rig.service.prepare({ action: 'edit-memory', target: MEMORY })
+  assert.equal(conflictPrep.ok, true)
+  rig.fake.files.set(MEMORY, { content: 'concurrently changed', modTime: null })
+  const conflict = await rig.service.execute({ token: conflictPrep.token, content: 'attempt' })
+  assert.equal(conflict.ok, false)
+  assert.equal(conflict.error.code, 'revision-mismatch')
+
+  const second = await rig.service.prepare({ action: 'edit-memory', target: MEMORY })
+  assert.equal(second.ok, true, 'the failed execution did not spend the rate budget')
+  const executed = await rig.service.execute({ token: second.token, content: 'written once' })
+  assert.equal(executed.ok, true)
+
+  const limited = await rig.service.prepare({ action: 'edit-memory', target: MEMORY })
   assert.equal(limited.ok, false)
   assert.equal(limited.error.code, 'rate-limited')
   assert.equal(typeof limited.error.details.retryAfterMs, 'number')
   assert.equal(rig.audit.recent(5).entries[0].kind, 'denied')
-  assert.equal(rig.audit.recent(5).entries[0].result, 'denied')
 
+  // Preparations and cancellations are not executions: they never spend the budget.
+  const quiet = writeRig({ rateLimit: 1 })
+  for (let index = 0; index < 3; index += 1) {
+    const prepared = await quiet.service.prepare({ action: 'delete-memory', target: MEMORY })
+    assert.equal(prepared.ok, true, `prepare ${index + 1} is allowed`)
+    assert.equal(quiet.service.cancel(prepared.token).status, 'cancelled')
+  }
+  assert.equal(quiet.service.guardState === undefined, true, 'the unused guard-state probe was removed')
+})
+
+test('the pending cap and the single-write guard fail closed', async () => {
   const capped = writeRig({ rateLimit: 10, maxPending: 1 })
   const first = await capped.service.prepare({ action: 'delete-memory', target: MEMORY })
   assert.equal(first.ok, true)
@@ -872,9 +904,229 @@ test('rate limits and the pending cap fail closed, and denials are audited', asy
   const pending = await inFlight.service.prepare({ action: 'delete-memory', target: MEMORY, origin: 'command' })
   const executing = inFlight.service.execute({ token: pending.token })
   const concurrent = await inFlight.service.prepare({ action: 'delete-memory', target: MEMORY })
-  await executing
+  // With the settling flag set synchronously, the concurrent prepare is refused
+  // with the write-in-flight reason rather than a neighbouring code (review S5).
   assert.equal(concurrent.ok, false)
-  assert.ok(['write-in-flight', 'too-many-pending', 'rate-limited'].includes(concurrent.error.code))
+  assert.equal(concurrent.error.code, 'write-in-flight')
+  await executing
+})
+
+test('cancel frees a pending slot and an executed token cannot be cancelled', async () => {
+  const rig = writeRig({ rateLimit: 10, maxPending: 1 })
+  const prepared = await rig.service.prepare({ action: 'delete-memory', target: MEMORY })
+  assert.equal(prepared.ok, true)
+  assert.equal(await rig.service.prepare({ action: 'delete-memory', target: MEMORY }).then((answer) => answer.ok), false)
+  const cancelled = rig.service.cancel(prepared.token)
+  assert.equal(cancelled.ok, true)
+  assert.equal(cancelled.status, 'cancelled')
+  assert.equal(cancelled.action, 'delete-memory')
+  assert.equal(rig.audit.recent(5).entries[0].kind, 'cancel')
+  assert.equal(rig.audit.recent(5).entries[0].result, 'ok')
+  // The slot is free again, and the cancelled token is dead.
+  const replacement = await rig.service.prepare({ action: 'delete-memory', target: MEMORY })
+  assert.equal(replacement.ok, true)
+  const refused = await rig.service.execute({ token: prepared.token, typed: 'tools.md' })
+  assert.equal(refused.ok, false)
+  assert.equal(refused.error.code, 'token-used')
+  assert.equal(rig.fake.files.has(MEMORY), true, 'a cancelled token never writes')
+
+  // After a successful execution, cancel is an idempotent no-op (no second row).
+  const cancelRowsBefore = rig.audit.recent(20).entries.filter((entry) => entry.kind === 'cancel').length
+  const done = await rig.service.execute({ token: replacement.token, typed: 'tools.md' })
+  assert.equal(done.ok, true)
+  const after = rig.service.cancel(replacement.token)
+  assert.equal(after.ok, true)
+  assert.equal(after.status, 'settled')
+  assert.equal(rig.audit.recent(20).entries.filter((entry) => entry.kind === 'cancel').length, cancelRowsBefore)
+  assert.equal(rig.service.cancel('f'.repeat(64)).status, 'expired')
+})
+
+test('a token crossed with the wrong verb aborts before executing (review B1)', async () => {
+  const rig = writeRig()
+  rig.fake.tags.set(MEMORY, ['env=prod'])
+  const tagsPrep = await rig.service.prepare({ action: 'set-tags', target: MEMORY, tags: ['env=staging'] })
+  assert.equal(tagsPrep.ok, true)
+
+  const actions = ['edit-memory', 'delete-memory', 'force-commit']
+  for (const expectAction of actions) {
+    const crossed = await rig.service.execute({
+      token: tagsPrep.token,
+      expectAction,
+      ...(expectAction === 'edit-memory' ? { content: 'crossed' } : {}),
+      ...(expectAction === 'delete-memory' ? { typed: 'tools.md' } : {}),
+    })
+    assert.equal(crossed.ok, false, `${expectAction} must be refused`)
+    assert.equal(crossed.error.code, 'invalid-request')
+    assert.equal(crossed.error.details.actual, 'set-tags')
+  }
+  // Nothing happened: no tag write, no file write, no delete, no commit.
+  assert.deepEqual(rig.fake.tags.get(MEMORY), ['env=prod'])
+  assert.equal(rig.fake.files.has(MEMORY), true)
+  assert.equal(rig.fake.calls.some((call) => call[0] === 'setTags' || call[0] === 'writeContent' || call[0] === 'deletePath' || call[0] === 'commitSession'), false)
+  assert.equal(rig.service.pendingAction(tagsPrep.token), 'set-tags', 'the token is still usable for its own action')
+
+  // The correct action still executes afterwards.
+  const done = await rig.service.execute({ token: tagsPrep.token, expectAction: 'set-tags' })
+  assert.equal(done.ok, true)
+  assert.deepEqual(rig.fake.tags.get(MEMORY), ['env=staging'])
+  assert.equal(rig.service.pendingAction(tagsPrep.token), null, 'a settled token has no pending action')
+})
+
+test('a delete only counts as verified when the read says 404', async () => {
+  for (const status of [500, 403, 0]) {
+    const rig = writeRig()
+    const prepared = await rig.service.prepare({ action: 'delete-memory', target: MEMORY })
+    assert.equal(prepared.ok, true)
+    // The delete succeeds, but the verification read fails for a non-404 reason.
+    rig.fake.statFailure = { ok: false, status, result: null, error: status === 0 ? 'timeout' : `HTTP ${status}` }
+    const done = await rig.service.execute({ token: prepared.token, typed: 'tools.md' })
+    assert.equal(done.ok, true, `delete still succeeds (${status})`)
+    assert.equal(done.verified, false, `a ${status} stat is not proof of absence`)
+    assert.deepEqual(done.warnings, [{ code: 'verificationPending' }])
+  }
+  const cleanRig = writeRig()
+  const clean = await cleanRig.service.prepare({ action: 'delete-memory', target: MEMORY })
+  const cleanDone = await cleanRig.service.execute({ token: clean.token, typed: 'tools.md' })
+  assert.equal(cleanDone.verified, true, 'a 404 stat verifies the delete')
+})
+
+test('undo requires the second confirmation when a same-named file was rewritten (review S1)', async () => {
+  // Edit rewritten after the action.
+  const edited = writeRig()
+  const editPrep = await edited.service.prepare({ action: 'edit-memory', target: MEMORY })
+  const written = await edited.service.execute({ token: editPrep.token, content: 'curated body' })
+  assert.equal(written.ok, true)
+  edited.fake.files.set(MEMORY, { content: 'someone else rewrote this', modTime: null })
+  const editPlan = await edited.service.plan({ undoId: written.undoId })
+  assert.equal(editPlan.ok, true)
+  assert.equal(editPlan.plan.extraChanges, true, 'a rewritten target is not a clean undo')
+  const refused = await edited.service.undo({ undoId: written.undoId })
+  assert.equal(refused.ok, false)
+  assert.equal(refused.error.code, 'extra-changes')
+  assert.equal(edited.fake.appliedRestores.length, 0, 'no silent rollback')
+  const confirmed = await edited.service.undo({ undoId: written.undoId, confirmExtra: true })
+  assert.equal(confirmed.ok, true)
+  assert.equal(edited.fake.appliedRestores.length, 1)
+
+  // Deleted path recreated after the action.
+  const deleted = writeRig()
+  const deletePrep = await deleted.service.prepare({ action: 'delete-memory', target: MEMORY })
+  const removed = await deleted.service.execute({ token: deletePrep.token, typed: 'tools.md' })
+  deleted.fake.files.set(MEMORY, { content: 'recreated by another writer', modTime: null })
+  const deletePlan = await deleted.service.plan({ undoId: removed.undoId })
+  assert.equal(deletePlan.ok, true)
+  assert.equal(deletePlan.plan.extraChanges, true)
+  assert.equal((await deleted.service.undo({ undoId: removed.undoId })).error.code, 'extra-changes')
+
+  // Tags retagged after the action.
+  const tagged = writeRig()
+  tagged.fake.tags.set(MEMORY, ['env=prod'])
+  const tagPrep = await tagged.service.prepare({ action: 'set-tags', target: MEMORY, tags: ['env=staging'] })
+  const tagDone = await tagged.service.execute({ token: tagPrep.token })
+  tagged.fake.tags.set(MEMORY, ['env=other'])
+  const tagPlan = await tagged.service.plan({ undoId: tagDone.undoId })
+  assert.equal(tagPlan.ok, true)
+  assert.equal(tagPlan.plan.tagsOnly, true)
+  assert.equal(tagPlan.plan.extraChanges, true)
+  const tagRefused = await tagged.service.undo({ undoId: tagDone.undoId })
+  assert.equal(tagRefused.ok, false)
+  assert.equal(tagRefused.error.code, 'extra-changes')
+  assert.deepEqual(tagged.fake.tags.get(MEMORY), ['env=other'], 'no silent overwrite')
+  const tagConfirmed = await tagged.service.undo({ undoId: tagDone.undoId, confirmExtra: true })
+  assert.equal(tagConfirmed.ok, true)
+  assert.deepEqual(tagged.fake.tags.get(MEMORY), ['env=prod'])
+})
+
+test('two undo paths (or undo vs execute) cannot run concurrently (review S5)', async () => {
+  const rig = writeRig()
+  const prepared = await rig.service.prepare({ action: 'delete-memory', target: MEMORY })
+  const done = await rig.service.execute({ token: prepared.token, typed: 'tools.md' })
+  assert.equal(done.ok, true)
+
+  // Slow the forward restore so the second call definitely overlaps.
+  const originalRestore = rig.fake.snapshotRestore.bind(rig.fake)
+  rig.fake.snapshotRestore = async (...args) => {
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    return originalRestore(...args)
+  }
+  const [first, second] = await Promise.all([
+    rig.service.undo({ undoId: done.undoId }),
+    rig.service.undo({ undoId: done.undoId }),
+  ])
+  assert.equal(first.ok, true, 'the first undo runs')
+  assert.equal(second.ok, false, 'the overlapping undo is refused')
+  assert.ok(['write-in-flight', 'token-used'].includes(second.error.code), second.error.code)
+  assert.equal(rig.fake.appliedRestores.length, 1, 'the restore is applied exactly once')
+})
+
+test('undo and execute are mutually exclusive', async () => {
+  const rig = writeRig()
+  const first = await rig.service.prepare({ action: 'delete-memory', target: MEMORY })
+  const done = await rig.service.execute({ token: first.token, typed: 'tools.md' })
+  assert.equal(done.ok, true)
+  const second = await rig.service.prepare({ action: 'edit-memory', target: 'viking://user/default/memories/entities/project/sidebar.md' })
+  assert.equal(second.ok, true)
+
+  const originalRestore = rig.fake.snapshotRestore.bind(rig.fake)
+  rig.fake.snapshotRestore = async (...args) => {
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    return originalRestore(...args)
+  }
+  const undoPromise = rig.service.undo({ undoId: done.undoId })
+  await new Promise((resolve) => setTimeout(resolve, 5))
+  const during = await rig.service.execute({ token: second.token, expectAction: 'edit-memory', content: 'overlap' })
+  const undone = await undoPromise
+  assert.equal(undone.ok, true)
+  assert.equal(during.ok, false)
+  assert.equal(during.error.code, 'write-in-flight')
+  assert.equal(rig.fake.appliedRestores.length, 1)
+})
+
+test('a peer-scoped target must match the session actor peer', async () => {
+  const rig = writeRig() // fakeCommit.actorPeer() === 'peer-repo'
+  const mismatch = await rig.service.prepare({
+    action: 'edit-memory',
+    target: 'viking://user/default/peers/repo-x/memories/entities/a.b/skill.md',
+    sessionId: 's1',
+  })
+  assert.equal(mismatch.ok, false)
+  assert.equal(mismatch.error.code, 'invalid-request')
+  assert.equal(mismatch.error.details.reason, 'peer-mismatch')
+  assert.equal(rig.fake.calls.some((call) => call[0] === 'snapshotCommit'), false)
+
+  rig.fake.files.set('viking://user/default/peers/peer-repo/memories/entities/a.b/skill.md', {
+    content: 'peer memory',
+    modTime: null,
+  })
+  const match = await rig.service.prepare({
+    action: 'edit-memory',
+    target: 'viking://user/default/peers/peer-repo/memories/entities/a.b/skill.md',
+    sessionId: 's1',
+  })
+  assert.equal(match.ok, true)
+})
+
+test('the test-connection endpoint is not a general URL prober (review S9)', () => {
+  for (const allowed of [
+    'http://127.0.0.1:1933',
+    'http://localhost:1933',
+    'https://memory.example.com',
+    'http://192.168.1.5:1933',
+  ]) {
+    assert.equal(isProbeableEndpoint(allowed), true, `${allowed} may be probed`)
+  }
+  for (const refused of [
+    'ftp://127.0.0.1:1933',
+    'http://169.254.169.254/latest/meta-data',
+    'http://metadata.google.internal',
+    'http://0.0.0.0:1933',
+    'http://255.255.255.255',
+    'http://224.0.0.1:1933',
+    'http://[::]',
+    'http://[fd00:ec2::254]',
+  ]) {
+    assert.equal(isProbeableEndpoint(refused), false, `${refused} must be refused`)
+  }
 })
 
 test('too-large edits are refused at prepare', async () => {
@@ -1066,6 +1318,16 @@ test('activity maps task rows and refuses to export private fields', async () =>
   assert.equal(mapped.resultSummary.memoriesExtracted.total, 3)
   assert.equal(mapped.resultSummary.totalTokens, 55)
 
+  const truncated = mapTask({
+    task_id: 't',
+    task_type: 'session_commit',
+    status: 'failed',
+    error: 'first line of the error\nsecond line must not survive with the rest of a very long body ' + 'x'.repeat(500),
+  })
+  assert.equal(truncated.error.startsWith('first line of the error'), true)
+  assert.equal(truncated.error.includes('\n'), false, 'Activity errors are single-line like the audit file')
+  assert.ok(truncated.error.length <= 300)
+
   const safe = safeTaskExport({
     task_id: 't',
     task_type: 'session_commit',
@@ -1149,24 +1411,69 @@ test('the capability probe distinguishes snapshot history, no history and an abs
   assert.equal(missing.snapshot.detail, 'snapshot-unavailable')
 })
 
-test('the write guard state explains why a profile switch must wait', async () => {
+test('/viking tag --append prepares an append update', async () => {
   const rig = writeRig()
-  assert.deepEqual(rig.service.guardState(), {
-    pending: 0,
-    executing: false,
-    writesEnabled: true,
-    transport: true,
-    switchBlockedReason: null,
-  })
-  const prepared = await rig.service.prepare({ action: 'delete-memory', target: MEMORY })
-  assert.equal(prepared.ok, true)
-  const pending = rig.service.guardState()
-  assert.equal(pending.pending, 1)
-  assert.equal(pending.switchBlockedReason, 'confirmation-pending')
+  rig.fake.tags.set(MEMORY, ['env=prod'])
+  const command = commandFor(rig)
+  const prepared = await command.run('tag viking://user/default/memories/preferences/tools.md --append team=memory', 's1')
+  assert.equal(prepared.kind, 'success')
+  const envelope = envelopeOf(prepared)
+  assert.equal(envelope.prepare.tagMode, 'append')
+  assert.deepEqual(envelope.prepare.tagsAfter, ['env=prod', 'team=memory'])
 })
 
 /* ========================================================================
- * F6: the /viking write verbs over the same protocol
+ * Auth-mode header policy (docs/api-v05.md §5.1)
+ * ===================================================================== */
+
+import http from 'node:http'
+import { OpenVikingApi } from '../src/host/openviking-api.ts'
+
+test('identity headers are sent in dev mode and omitted for api_key credentials', async () => {
+  const seen = []
+  const server = http.createServer((request, response) => {
+    seen.push({ account: request.headers['x-openviking-account'], user: request.headers['x-openviking-user'], auth: request.headers.authorization })
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.end(JSON.stringify({ status: 'ok', healthy: true, version: '0.5.3', auth_mode: 'dev' }))
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const endpoint = `http://127.0.0.1:${server.address().port}`
+  try {
+    await new OpenVikingApi({ endpoint, apiKey: 'k', account: 'acct', user: 'alice', authMode: 'dev' }).health()
+    assert.deepEqual(seen.at(-1), { account: 'acct', user: 'alice', auth: 'Bearer k' })
+
+    await new OpenVikingApi({ endpoint, apiKey: 'k', account: 'acct', user: 'alice', authMode: 'api_key' }).health()
+    assert.deepEqual(seen.at(-1), { account: undefined, user: undefined, auth: 'Bearer k' }, 'key-bound identity ignores the headers')
+
+    await new OpenVikingApi({ endpoint, apiKey: 'k', account: 'acct', user: 'alice', authMode: null }).health()
+    assert.deepEqual(seen.at(-1), { account: 'acct', user: 'alice', auth: 'Bearer k' }, 'an unprobed mode keeps the v0.4 behaviour')
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+  }
+})
+
+test('a profile carries its auth-mode hint into the resolved connection', () => {
+  const dir = tempDir('profiles-authmode')
+  const store = new ProfileStore({ dir })
+  store.save({
+    id: 'cloud',
+    label: 'Cloud',
+    endpoint: 'https://memory.example.com',
+    authMode: 'api_key',
+    apiKey: 'k',
+    account: 'acct',
+    user: 'alice',
+    peerId: '',
+  })
+  const resolved = resolveConnectionForProfile(store.read().file.profiles, 'cloud')
+  assert.equal(resolved.connection.authMode, 'api_key')
+  assert.equal(resolved.authModeHint, 'api_key')
+  const unknown = resolveConnectionForProfile([], '')
+  assert.equal(unknown.connection.authMode, undefined)
+})
+
+/* ========================================================================
+ * F6: the /viking write verbs over the same protocol (review B1 ordering)
  * ===================================================================== */
 
 import { VikingCommand } from '../src/host/viking-command.ts'
@@ -1206,9 +1513,9 @@ test('/viking forget prepares, then --confirm executes; neither needs the card',
   assert.equal(envelope.prepare.content, null, 'no body travels in a command envelope')
   assert.match(prepared.text, /--confirm/)
   assert.equal(rig.fake.files.has(MEMORY), true, 'preparing the command writes nothing')
+  assert.equal(rig.service.pendingAction(envelope.prepare.token), 'delete-memory')
 
-  const token = envelope.prepare.token
-  const confirmed = await command.run(`forget --confirm ${token}`, 's1')
+  const confirmed = await command.run(`forget --confirm ${envelope.prepare.token}`, 's1')
   assert.equal(confirmed.kind, 'success')
   assert.match(confirmed.text, /Undo handle:/)
   assert.equal(rig.fake.files.has(MEMORY), false)
@@ -1279,6 +1586,53 @@ test('/viking undo applies a handle from a previous result, and /viking audit li
   assert.equal(audit.text.includes('Original body'), false)
 })
 
+test('a crossed token cannot execute its prepared action from a different verb (review B1)', async () => {
+  // A tag token confirmed as `forget`: the bug performed the tag write first.
+  const tagsRig = writeRig()
+  tagsRig.fake.tags.set(MEMORY, ['env=prod'])
+  const tagsCommand = commandFor(tagsRig)
+  const tagPrep = await tagsCommand.run('tag viking://user/default/memories/preferences/tools.md env=staging', 's1')
+  const tagToken = envelopeOf(tagPrep).prepare.token
+  const crossedForget = await tagsCommand.run(`forget --confirm ${tagToken}`, 's1')
+  assert.equal(crossedForget.kind, 'error')
+  assert.match(crossedForget.text, /invalid-request/)
+  assert.match(crossedForget.text, /set-tags/)
+  assert.deepEqual(tagsRig.fake.tags.get(MEMORY), ['env=prod'], 'nothing was written')
+  assert.equal(tagsRig.fake.files.has(MEMORY), true)
+  assert.equal(tagsRig.fake.calls.some((call) => call[0] === 'setTags' || call[0] === 'deletePath'), false)
+  assert.equal(tagsRig.service.pendingAction(tagToken), 'set-tags', 'the token is still usable for its own verb')
+  const correct = await tagsCommand.run(`tag --confirm ${tagToken}`, 's1')
+  assert.equal(correct.kind, 'success')
+  assert.deepEqual(tagsRig.fake.tags.get(MEMORY), ['env=staging'])
+
+  // A delete token confirmed as `tag`: no tags write, no delete.
+  const deleteRig = writeRig()
+  const deleteCommand = commandFor(deleteRig)
+  const deletePrep = await deleteCommand.run('forget viking://user/default/memories/preferences/tools.md', 's1')
+  const deleteToken = envelopeOf(deletePrep).prepare.token
+  const crossedTag = await deleteCommand.run(`tag --confirm ${deleteToken}`, 's1')
+  assert.equal(crossedTag.kind, 'error')
+  assert.match(crossedTag.text, /invalid-request/)
+  assert.equal(deleteRig.fake.calls.some((call) => call[0] === 'setTags' || call[0] === 'deletePath'), false)
+  assert.equal(deleteRig.fake.files.has(MEMORY), true)
+
+  // A commit token confirmed as `forget`: no commit, no delete.
+  const commitRig = writeRig()
+  const commitCommand = commandFor(commitRig)
+  const commitPrep = await commitCommand.run('commit', 's1')
+  const commitToken = envelopeOf(commitPrep).prepare.token
+  const crossedCommit = await commitCommand.run(`forget --confirm ${commitToken}`, 's1')
+  assert.equal(crossedCommit.kind, 'error')
+  assert.match(crossedCommit.text, /invalid-request/)
+  assert.equal(commitRig.fake.calls.some((call) => call[0] === 'commitSession' || call[0] === 'deletePath'), false)
+
+  // A settled/unknown token is reported as expired rather than executed.
+  const unknown = await commitCommand.run(`commit --confirm ${'f'.repeat(64)}`, 's1')
+  assert.equal(unknown.kind, 'error')
+  assert.match(unknown.text, /token-expired/)
+  assert.equal(commitRig.fake.calls.some((call) => call[0] === 'commitSession'), false)
+})
+
 test('with writes off the write verbs refuse and the help omits them', async () => {
   const rig = writeRig({ writesEnabled: false })
   const command = commandFor(rig)
@@ -1293,7 +1647,7 @@ test('with writes off the write verbs refuse and the help omits them', async () 
 })
 
 /* ========================================================================
- * Tag modes and the identity gate
+ * Tag modes and the identity gate (restored after review edits)
  * ===================================================================== */
 
 test('append tags add to the existing list and undo restores it; a clear empties it', async () => {
@@ -1330,63 +1684,47 @@ test('a server that reports no auth mode makes the identity ambiguous and refuse
   assert.equal(rig.fake.calls.some((call) => call[0] === 'snapshotCommit'), false)
 })
 
-test('/viking tag --append prepares an append update', async () => {
-  const rig = writeRig()
-  rig.fake.tags.set(MEMORY, ['env=prod'])
-  const command = commandFor(rig)
-  const prepared = await command.run('tag viking://user/default/memories/preferences/tools.md --append team=memory', 's1')
-  assert.equal(prepared.kind, 'success')
-  const envelope = envelopeOf(prepared)
-  assert.equal(envelope.prepare.tagMode, 'append')
-  assert.deepEqual(envelope.prepare.tagsAfter, ['env=prod', 'team=memory'])
-})
-
-/* ========================================================================
- * Auth-mode header policy (docs/api-v05.md §5.1)
- * ===================================================================== */
-
-import http from 'node:http'
-import { OpenVikingApi } from '../src/host/openviking-api.ts'
-
-test('identity headers are sent in dev mode and omitted for api_key credentials', async () => {
-  const seen = []
-  const server = http.createServer((request, response) => {
-    seen.push({ account: request.headers['x-openviking-account'], user: request.headers['x-openviking-user'], auth: request.headers.authorization })
-    response.writeHead(200, { 'content-type': 'application/json' })
-    response.end(JSON.stringify({ status: 'ok', healthy: true, version: '0.5.3', auth_mode: 'dev' }))
-  })
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
-  const endpoint = `http://127.0.0.1:${server.address().port}`
-  try {
-    await new OpenVikingApi({ endpoint, apiKey: 'k', account: 'acct', user: 'alice', authMode: 'dev' }).health()
-    assert.deepEqual(seen.at(-1), { account: 'acct', user: 'alice', auth: 'Bearer k' })
-
-    await new OpenVikingApi({ endpoint, apiKey: 'k', account: 'acct', user: 'alice', authMode: 'api_key' }).health()
-    assert.deepEqual(seen.at(-1), { account: undefined, user: undefined, auth: 'Bearer k' }, 'key-bound identity ignores the headers')
-
-    await new OpenVikingApi({ endpoint, apiKey: 'k', account: 'acct', user: 'alice', authMode: null }).health()
-    assert.deepEqual(seen.at(-1), { account: 'acct', user: 'alice', auth: 'Bearer k' }, 'an unprobed mode keeps the v0.4 behaviour')
-  } finally {
-    await new Promise((resolve) => server.close(resolve))
+test('every crossed token/verb pairing is refused before any write (review B1 matrix)', async () => {
+  const WRITE_ACTIONS = ['edit-memory', 'delete-memory', 'set-tags', 'force-commit']
+  const MUTATING_CALLS = new Set(['writeContent', 'deletePath', 'setTags', 'commitSession', 'snapshotRestore'])
+  const setup = async (action) => {
+    const rig = writeRig()
+    rig.fake.tags.set(MEMORY, ['env=prod'])
+    const request = {
+      action,
+      target: action === 'force-commit' ? 's1' : MEMORY,
+      ...(action === 'force-commit' ? { sessionId: 's1' } : {}),
+      ...(action === 'set-tags' ? { tags: ['env=staging'] } : {}),
+    }
+    const prepared = await rig.service.prepare(request)
+    assert.equal(prepared.ok, true, `prepare ${action}`)
+    return { rig, token: prepared.token }
   }
-})
-
-test('a profile carries its auth-mode hint into the resolved connection', () => {
-  const dir = tempDir('profiles-authmode')
-  const store = new ProfileStore({ dir })
-  store.save({
-    id: 'cloud',
-    label: 'Cloud',
-    endpoint: 'https://memory.example.com',
-    authMode: 'api_key',
-    apiKey: 'k',
-    account: 'acct',
-    user: 'alice',
-    peerId: '',
-  })
-  const resolved = resolveConnectionForProfile(store.read().file.profiles, 'cloud')
-  assert.equal(resolved.connection.authMode, 'api_key')
-  assert.equal(resolved.authModeHint, 'api_key')
-  const unknown = resolveConnectionForProfile([], '')
-  assert.equal(unknown.connection.authMode, undefined)
+  for (const action of WRITE_ACTIONS) {
+    for (const expectAction of WRITE_ACTIONS) {
+      if (expectAction === action) continue
+      const { rig, token } = await setup(action)
+      const before = rig.fake.calls.length
+      const crossed = await rig.service.execute({
+        token,
+        expectAction,
+        ...(expectAction === 'edit-memory' ? { content: 'crossed' } : {}),
+        ...(expectAction === 'delete-memory' ? { typed: 'tools.md' } : {}),
+      })
+      assert.equal(crossed.ok, false, `${action} token as ${expectAction}`)
+      assert.equal(crossed.error.code, 'invalid-request', `${action} token as ${expectAction}`)
+      const newCalls = rig.fake.calls.slice(before).filter((call) => MUTATING_CALLS.has(call[0]))
+      assert.deepEqual(newCalls, [], `${action} token as ${expectAction} makes no mutation call`)
+      assert.equal(rig.service.pendingAction(token), action, 'the token survives the mismatch')
+      // ...and the right verb still works.
+      const correct = await rig.service.execute({
+        token,
+        expectAction: action,
+        ...(action === 'edit-memory' ? { content: 'correct' } : {}),
+        ...(action === 'delete-memory' ? { typed: 'tools.md' } : {}),
+      })
+      assert.equal(correct.ok, true, `${action} token still executes correctly`)
+      assert.equal(correct.action, action)
+    }
+  }
 })

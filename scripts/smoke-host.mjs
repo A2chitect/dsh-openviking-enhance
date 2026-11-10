@@ -286,6 +286,7 @@ async function checkV05(base, sessionId) {
     '/write/execute',
     '/write/undo',
     '/write/plan',
+    '/write/cancel',
     '/task/cancel',
     '/profiles/save',
     '/profiles/delete',

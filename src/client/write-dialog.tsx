@@ -173,7 +173,7 @@ function ConfirmDialog({ prepare, className }: { prepare: WritePreparePayload; c
 
   const succeed = useCallback(
     (result: { undoId: string | null; auditId: string; taskId?: string | null; warnings?: Array<{ code: string }> }) => {
-      closeWriteConfirm()
+      closeWriteConfirm(true)
       notifyWriteSettled(prepare.action, prepare.target)
       const skipped = (result.warnings ?? []).some((warning) => warning.code === 'commitSkipped')
       showNotice({
