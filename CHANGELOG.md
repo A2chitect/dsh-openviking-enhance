@@ -103,6 +103,17 @@ read-only, still one sidebar row, no new dependencies.
   corrected the README trust-invariant wording for the local-state POST.
 - In-flight browse/session requests are now actually aborted on
   refresh/unmount/view change (the claim now matches the code).
+- Browse directory counts render `N+ entries (more available)` when the loaded
+  page reports `hasMore`, so the number is not mistaken for a total.
+- The sessions list cache TTL now has the documented
+  `SESSION_LIST_CACHE_TTL_MS` constant (15 s) in `limits.ts` and both README
+  limit tables, and the route clamps reuse the exported budget constants instead
+  of duplicating their values.
+- An unresolved identity now emits only the account-level browse roots instead
+  of malformed `viking://user//…` roots that the identity allow-list would then
+  refuse, and `subtree()` applies the same identity filter to returned entries
+  as the directory listing (the "listing, subtree and returned-entry filtering"
+  claim now holds for both).
 
 #### Changed
 

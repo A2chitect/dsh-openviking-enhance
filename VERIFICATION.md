@@ -111,6 +111,16 @@ capture (redacted; `SMOKE_VERBOSE=1` never on for published evidence):
    Browse/Sessions shows the same server data, and the OpenViking request log
    contains only GETs (plus the validation-only rule probe).
 
+**Stills to re-shoot after PR #5 review round 1.** Two scenes captured earlier
+predate the review-round-1 UI text and are stale by design; the Lead re-shoots
+them before merge (the README/CHANGELOG describe both changes):
+
+- `assets/v07-after-plugins-setup.png` — the Plugins-page Setup card now also
+  offers "Forget local setup state" (and its hint).
+- `assets/v07-after-native-browse.png` — a directory whose loaded page reports
+  `hasMore` now renders its count as `N+ entries (more available)` instead of a
+  plain total.
+
 ## Live evidence
 
 - v0.4/v0.5 browser evidence: mock-fixture captures from the verification

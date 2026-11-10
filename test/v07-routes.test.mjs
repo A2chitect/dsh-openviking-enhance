@@ -24,6 +24,9 @@ import { join } from 'node:path'
 
 const tempDir = (label) => mkdtempSync(join(tmpdir(), `ove-v07-${label}-`))
 
+// The route clamps must be the documented budget constants, not copies.
+import * as limits from '../src/shared/limits.ts'
+
 /* ========================================================================
  * The fake OpenViking server
  * ===================================================================== */
@@ -306,7 +309,13 @@ async function boot(options = {}) {
     },
     logger: { info: () => {}, warn: () => {} },
   }
-  module.apply(context, module.Config({ endpoint: fake.base }))
+  module.apply(
+    context,
+    module.Config({
+      endpoint: fake.base,
+      ...(options.showOnboarding === false ? { showOnboarding: false } : {}),
+    }),
+  )
 
   const server = http.createServer((request, response) => {
     const { pathname } = new URL(request.url ?? '/', 'http://127.0.0.1')
@@ -420,6 +429,23 @@ test('the composed overview carries every part, the checks and no secrets', asyn
   }
 })
 
+test('the overview read does not write onboarding state while the switch is off (S5/N4)', async () => {
+  const app = await boot({ showOnboarding: false })
+  try {
+    assert.equal(existsSync(app.onboardingPath), false, 'a fresh home has no onboarding file')
+    const { body } = await app.get('/api/openviking-enhance/overview?fresh=1')
+    assert.equal(body.ok, true)
+    assert.equal(existsSync(app.onboardingPath), false, 'showOnboarding=false means the overview read writes no lastOpenedAt')
+    // The state route itself still works when the switch is off (the route is
+    // independent; only the card/read-time write is gated).
+    const reset = await app.post('/api/openviking-enhance/onboarding/state', { action: 'reset' })
+    assert.equal(reset.body.ok, true)
+    assert.equal(existsSync(app.onboardingPath), true, 'an explicit local-state action still writes its own file')
+  } finally {
+    await app.shutdown()
+  }
+})
+
 test('one failing overview part degrades alone', async () => {
   const app = await boot({ failMetrics: true })
   try {
@@ -492,6 +518,28 @@ test('browse pages a directory with the documented params, caches and pages with
     assert.equal(second.body.page.entries.length, 1)
     assert.equal(second.body.page.hasMore, false)
     assert.equal(second.body.page.nextOffset, null)
+  } finally {
+    await app.shutdown()
+  }
+})
+
+test('the native route clamps reuse the documented budget constants (N4)', async () => {
+  const app = await boot()
+  try {
+    const lastDirectoryRequest = (uri) =>
+      app.fake.requests.filter((entry) => entry.path === '/api/v1/fs/ls' && entry.query.get('uri') === uri).at(-1)
+    await app.get(`/api/openviking-enhance/browse?uri=${encodeURIComponent(MEMORIES)}&limit=999&fresh=1`)
+    const browseRequest = lastDirectoryRequest(MEMORIES)
+    assert.equal(browseRequest.query.get('node_limit'), String(limits.BROWSE_PAGE_SIZE), 'a crafted browse limit clamps to the documented page size')
+    await app.get('/api/openviking-enhance/sessions?limit=999&fresh=1')
+    const sessionsRequest = lastDirectoryRequest(SESSION_URI)
+    assert.equal(sessionsRequest.query.get('node_limit'), String(limits.SESSIONS_PAGE_SIZE), 'a crafted sessions limit clamps to the documented page size')
+    await app.get('/api/openviking-enhance/recent-commits?limit=99&fresh=1')
+    const commitsRequest = lastDirectoryRequest(SESSION_URI)
+    assert.equal(commitsRequest.query.get('node_limit'), String(limits.RECENT_COMMITS_SESSION_CAP), 'the commit fan-out clamps to the documented session cap')
+    const subtree = await app.get(`/api/openviking-enhance/browse/subtree?uri=${encodeURIComponent(MEMORIES)}&levels=9&nodes=900`)
+    assert.equal(subtree.body.subtree.levels, limits.BROWSE_SUBTREE_MAX_LEVELS)
+    assert.equal(subtree.body.subtree.nodes, limits.BROWSE_SUBTREE_MAX_NODES)
   } finally {
     await app.shutdown()
   }

@@ -38,7 +38,7 @@ One sidebar row, one main panel, six internal views — no second shell seat:
 | View | What it reads | Notes |
 | --- | --- | --- |
 | **Overview** | one composed host request: config, identity scope, health/version, memory totals, capabilities and the Studio frameability fact | default view; each part degrades independently |
-| **Browse** | lazy `viking://` tree over the identity's roots (memories, peers, shared/personal resources, personal/agent skills, rules/session shortcuts) + a read-only preview pane | one `fs/ls` page (50 rows, 160-char abstracts, tags) per expanded directory, paged with the server cursor; an explicit "Show subtree" action is capped at 2 levels/100 nodes |
+| **Browse** | lazy `viking://` tree over the identity's roots (memories, peers, shared/personal resources, personal/agent skills, rules/session shortcuts) + a read-only preview pane | one `fs/ls` page (50 rows, 160-char abstracts, tags) per expanded directory, paged with the server cursor; directory counts read `N+` when more pages exist; an explicit "Show subtree" action is capped at 2 levels/100 nodes |
 | **Sessions** | the sessions directory, 50/page, newest first | the server's session list has no pagination; detail reuses the bounded session log (state, pending tokens, tasks, archive timeline, per-archive diff) — **no transcript**, message bodies are never read |
 | **Commits** | bounded recent fan-out: newest 8 sessions, pool 4, 10 s deadline, 30 s cache | there is no global commit history API; a partial answer says so ("stopped after N sessions at T ms") and Refresh retries. Never polled |
 | **Stats** | the same REST console/observer/stats sources as the Activity tab, through the shared metric cards | Prometheus `/metrics` is never probed |
@@ -434,6 +434,7 @@ from the code. Times are milliseconds; sizes are bytes unless marked.
 | BROWSE_CACHE_TTL_MS | 15000 |
 | BROWSE_CACHE_MAX_DIRECTORIES | 100 |
 | SESSIONS_PAGE_SIZE | 50 |
+| SESSION_LIST_CACHE_TTL_MS | 15000 |
 | RECENT_COMMITS_SESSION_CAP | 8 |
 | RECENT_COMMITS_CONCURRENCY | 4 |
 | RECENT_COMMITS_DEADLINE_MS | 10000 |
@@ -534,7 +535,7 @@ work. The full-window actions and their cost:
 | Native Overview (first paint) | one composed request: config health + capability probe + four metric reads + a cached Studio header probe; cached 5 s |
 | Browse expand | one `fs/ls` page: 50 entries, 160-char abstracts, tags; cached 15 s (LRU 100); in-flight reads are aborted on refresh, view change and unmount |
 | Browse "Show subtree" | one `fs/tree` call capped at 2 levels/100 nodes — explicit button only |
-| Sessions list | one `fs/ls` page of 50 session directories; detail = the existing bounded session log on selection only (no polling) |
+| Sessions list | one `fs/ls` page of 50 session directories, cached 15 s (one page key; `fresh=1` bypasses); detail = the existing bounded session log on selection only (no polling) |
 | Commits view | up to 8 sessions × 3–4 cheap reads, pool 4, 10 s deadline, cached 30 s, never polled |
 | Stats view | the same REST metrics reads as the Activity tab; explicit Refresh |
 | Onboarding "Run full check" | the existing Doctor probe, user-triggered only |

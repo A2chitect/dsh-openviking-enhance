@@ -66,19 +66,42 @@ export interface BrowseServiceOptions {
   now?: () => number
 }
 
-/** The roots the tree offers, resolved from the identity (never hardcoded client-side). */
+/**
+ * The roots the tree offers, resolved from the identity (never hardcoded client-side).
+ *
+ * The personal roots are emitted only when an identity user is resolved. An
+ * empty user (no profile, no configured user, an unresolved legacy connection)
+ * must not produce `viking://user//memories`-style roots: they would normalize
+ * to `viking://user/memories`, be refused by the identity-aware allow-list, and
+ * surface as six "not allowed" errors instead of "no identity resolved". The
+ * account-level roots (`resources`, `agentSkills`) remain visible.
+ */
 export function browseRootsFor(user: string): BrowseRoot[] {
-  const base = `viking://user/${user}`
-  return [
-    { id: 'memories', uri: `${base}/memories`, labelKey: 'browse.root.memories', scope: 'user' },
-    { id: 'peers', uri: `${base}/peers`, labelKey: 'browse.root.peers', scope: 'peer' },
-    { id: 'resources', uri: 'viking://resources', labelKey: 'browse.root.resources', scope: 'account' },
-    { id: 'myResources', uri: `${base}/resources`, labelKey: 'browse.root.myResources', scope: 'user' },
-    { id: 'skills', uri: `${base}/skills`, labelKey: 'browse.root.skills', scope: 'user' },
-    { id: 'agentSkills', uri: 'viking://agent/skills', labelKey: 'browse.root.agentSkills', scope: 'agent' },
-    { id: 'rules', uri: `${base}/memories/rules`, labelKey: 'browse.root.rules', scope: 'user', shortcut: true },
-    { id: 'sessions', uri: `${base}/sessions`, labelKey: 'browse.root.sessions', scope: 'user', shortcut: true },
-  ]
+  const identityUser = (user ?? '').trim()
+  const personal = identityUser.length > 0
+  const base = `viking://user/${identityUser}`
+  const roots: BrowseRoot[] = []
+  if (personal) {
+    roots.push(
+      { id: 'memories', uri: `${base}/memories`, labelKey: 'browse.root.memories', scope: 'user' },
+      { id: 'peers', uri: `${base}/peers`, labelKey: 'browse.root.peers', scope: 'peer' },
+    )
+  }
+  roots.push({ id: 'resources', uri: 'viking://resources', labelKey: 'browse.root.resources', scope: 'account' })
+  if (personal) {
+    roots.push(
+      { id: 'myResources', uri: `${base}/resources`, labelKey: 'browse.root.myResources', scope: 'user' },
+      { id: 'skills', uri: `${base}/skills`, labelKey: 'browse.root.skills', scope: 'user' },
+    )
+  }
+  roots.push({ id: 'agentSkills', uri: 'viking://agent/skills', labelKey: 'browse.root.agentSkills', scope: 'agent' })
+  if (personal) {
+    roots.push(
+      { id: 'rules', uri: `${base}/memories/rules`, labelKey: 'browse.root.rules', scope: 'user', shortcut: true },
+      { id: 'sessions', uri: `${base}/sessions`, labelKey: 'browse.root.sessions', scope: 'user', shortcut: true },
+    )
+  }
+  return roots
 }
 
 interface PageCacheEntry {
@@ -280,10 +303,14 @@ export class BrowseService {
       throw new BrowseFailure('unreadable', answer.error ?? `HTTP ${answer.status}`)
     }
     const page = answer.result
+    const user = this.options.user()
     const entries = (page?.entries ?? [])
       .slice(0, nodes)
       .map((raw) => normalizeSubtreeEntry(uri, raw))
-      .filter((entry): entry is BrowseSubtreeEntry => entry !== null)
+      .filter(
+        (entry): entry is BrowseSubtreeEntry =>
+          entry !== null && isAllowedBrowseUri(entry.uri, { user }),
+      )
     return {
       uri,
       entries,

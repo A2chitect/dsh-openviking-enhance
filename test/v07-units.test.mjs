@@ -20,6 +20,8 @@ import {
   tailOf,
 } from '../src/shared/viking-tree.ts'
 import {
+  BrowseService,
+  browseRootsFor,
   normalizeBrowseEntry,
   normalizeSubtreeEntry,
 } from '../src/host/browse-service.ts'
@@ -131,6 +133,56 @@ test('the browse allowlist pins the personal tree to the active identity (S2)', 
   assert.equal(isAllowedBrowseUri('viking://user', { user: 'default' }), false)
   // The structural form (no identity supplied) keeps the v0.7 allowlist contract.
   assert.equal(isAllowedBrowseUri(personal), true)
+})
+
+test('an unresolved identity emits no personal browse roots (N4)', () => {
+  const personal = browseRootsFor('default').map((root) => root.id)
+  assert.deepEqual(personal, [
+    'memories',
+    'peers',
+    'resources',
+    'myResources',
+    'skills',
+    'agentSkills',
+    'rules',
+    'sessions',
+  ])
+  for (const empty of ['', '   ']) {
+    const roots = browseRootsFor(empty).map((root) => root.id)
+    assert.deepEqual(roots, ['resources', 'agentSkills'], 'only account-level roots remain without a user')
+    assert.ok(
+      browseRootsFor(empty).every((root) => !root.uri.includes('viking://user/')),
+      'no malformed viking://user// root is emitted',
+    )
+  }
+  // The emitted URIs are identity-allowed; an empty user would otherwise 400.
+  const roots = browseRootsFor('')
+  assert.ok(roots.every((root) => isAllowedBrowseUri(root.uri, { user: '' })))
+})
+
+test('subtree filters returned entries by identity like the directory listing (N4)', async () => {
+  const api = {
+    fsTree: async () => ({
+      ok: true,
+      status: 200,
+      error: null,
+      result: {
+        entries: [
+          { uri: 'viking://user/default/memories/preferences/tools.md', isDir: false, rel_path: 'preferences/tools.md', level: 2 },
+          { uri: 'viking://user/mallory/memories/secret.md', isDir: false, rel_path: 'secret.md', level: 2 },
+          { uri: 'viking://resources/shared/x.md', isDir: false, rel_path: 'x.md', level: 1 },
+        ],
+        hasMore: false,
+      },
+    }),
+  }
+  const service = new BrowseService({ api, user: () => 'default', now: () => 0 })
+  const payload = await service.subtree('viking://user/default/memories')
+  assert.deepEqual(
+    payload.entries.map((entry) => entry.uri),
+    ['viking://user/default/memories/preferences/tools.md', 'viking://resources/shared/x.md'],
+    'another user\'s entry is dropped; the active user and account-level entries stay',
+  )
 })
 
 test('directories keep their meaning only where the tree model has one', () => {
@@ -456,6 +508,7 @@ test('the v0.7 budget constants exist with their documented values', () => {
   assert.equal(limits.BROWSE_CACHE_TTL_MS, 15_000)
   assert.equal(limits.BROWSE_CACHE_MAX_DIRECTORIES, 100)
   assert.equal(limits.SESSIONS_PAGE_SIZE, 50)
+  assert.equal(limits.SESSION_LIST_CACHE_TTL_MS, 15_000)
   assert.equal(limits.RECENT_COMMITS_SESSION_CAP, 8)
   assert.equal(limits.RECENT_COMMITS_CONCURRENCY, 4)
   assert.equal(limits.RECENT_COMMITS_DEADLINE_MS, 10_000)
@@ -552,6 +605,46 @@ test('the studio probe classifies a transport failure as probe-failed (S4)', asy
   assert.equal(status.frameable, 'unknown')
   assert.equal(status.reason, 'probe-failed')
   assert.match(status.detail ?? '', /connection refused/)
+})
+
+/* ========================================================================
+ * The sessions-list cache (review N4)
+ * ===================================================================== */
+
+test('the sessions list cache uses the documented SESSION_LIST_CACHE_TTL_MS', async () => {
+  const { SESSION_LIST_CACHE_TTL_MS } = await import('../src/shared/limits.ts')
+  const { SessionsService } = await import('../src/host/sessions-service.ts')
+  assert.equal(SESSION_LIST_CACHE_TTL_MS, 15_000, 'the cache TTL is a documented constant, not a bare literal')
+  let clock = 1_000_000
+  let calls = 0
+  const api = {
+    listDirectoryPage: async () => {
+      calls += 1
+      return {
+        ok: true,
+        status: 200,
+        error: null,
+        result: {
+          entries: [{ uri: 'viking://user/default/sessions/dsh-s1', isDir: true, modTime: '2026-11-10T00:00:00Z' }],
+          hasMore: false,
+          nextOffset: null,
+        },
+      }
+    },
+  }
+  const service = new SessionsService({ api, user: () => 'default', now: () => clock })
+  const first = await service.list({})
+  assert.equal(first.items.length, 1)
+  await service.list({})
+  assert.equal(calls, 1, 'the second page read inside the TTL is served from cache')
+  clock += SESSION_LIST_CACHE_TTL_MS - 1
+  await service.list({})
+  assert.equal(calls, 1, 'still cached just under the TTL')
+  clock += 1
+  await service.list({})
+  assert.equal(calls, 2, 'the cache expires exactly at the documented TTL')
+  await service.list({ fresh: true })
+  assert.equal(calls, 3, 'fresh=1 bypasses the cache')
 })
 
 /* ========================================================================
@@ -678,4 +771,35 @@ test('EN and ZH ship exactly the same v0.7 keys', async () => {
   for (const frameable of ['yes', 'no', 'unknown']) {
     assert.ok(enKeys.includes(`native.studio.frameable.${frameable}`), `EN Studio frameability for ${frameable}`)
   }
+})
+
+
+/* ========================================================================
+ * Browse abort wiring (review N1) — pinned by code shape because this repo has
+ * no DOM runner: each loader must snapshot its request's signal and check THAT
+ * signal after the await; re-reading the shared ref after a Refresh/unmount is
+ * exactly the regression (aborted answers misread as host failures).
+ * ===================================================================== */
+
+test('every browse loader checks the signal it sent, not the current ref (N1)', async () => {
+  const { readFileSync } = await import('node:fs')
+  const source = readFileSync(new URL('../src/client/native-browse.tsx', import.meta.url), 'utf8')
+  assert.ok(!source.includes('isAborted'), 'the shared-ref abort helper is deleted')
+  assert.equal(
+    (source.match(/const signal = requestSignal\(\)/g) ?? []).length,
+    3,
+    'loadRoots, loadNode and loadSubtree each snapshot their request signal',
+  )
+  assert.equal(
+    (source.match(/if \(signal\?\.aborted === true\) return/g) ?? []).length,
+    3,
+    'each loader checks its own captured signal after the await',
+  )
+  assert.ok(
+    !/if \(requestSignal\(\)\?\.signal\.aborted/.test(source),
+    'no loader re-reads the ref to decide whether its answer is stale',
+  )
+  const sessions = readFileSync(new URL('../src/client/native-sessions.tsx', import.meta.url), 'utf8')
+  assert.match(sessions, /const signal = listAbortRef\.current\?\.signal/, 'Sessions keeps the reference pattern N1 mirrors')
+  assert.match(sessions, /if \(signal\?\.aborted === true\) return/, 'and checks the captured signal')
 })

@@ -64,6 +64,13 @@ import {
   isTrustedLocalRequest,
   readReadOnlyJsonBody,
 } from './trust-fence.ts'
+import {
+  BROWSE_PAGE_SIZE,
+  BROWSE_SUBTREE_MAX_LEVELS,
+  BROWSE_SUBTREE_MAX_NODES,
+  RECENT_COMMITS_SESSION_CAP,
+  SESSIONS_PAGE_SIZE,
+} from '../shared/limits.ts'
 import { CommitService, isArchiveUriForSession, type OpenVikingMemoryRuntime } from './commit-service.ts'
 import { OpenVikingApi } from './openviking-api.ts'
 import { RecallService } from './recall-service.ts'
@@ -305,9 +312,11 @@ interface CommandRegistryLike {
  * 0.2.2-rc.1 Fetch routes ("only owner Peers reach an exact route; the shared
  * handler answers 403 for every other principal"), and when the service is
  * absent writes fail closed with `transport-unavailable`. There is deliberately
- * **no** loopback `webServer` POST write path: the v0.4 read fence is weaker
- * than an authenticated transport, so raising write authority over it would be a
- * security regression.
+ * **no** loopback `webServer` POST path that reaches OpenViking: the v0.4 read
+ * fence is weaker than an authenticated transport, so raising write authority
+ * over it would be a security regression. (v0.7's onboarding-state POST is the
+ * one loopback POST; it writes only the plugin's own 0600 state file, is clamped
+ * to the documented action vocabulary, and is audited — never OpenViking.)
  */
 interface HostConnectionFetchRoute {
   /** Absolute path below `/api`. */
@@ -1409,7 +1418,7 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
         try {
           const page = await browse.list(uri, {
             offset: offsetParam(params),
-            limit: limitParam(params, 'limit', 50, 50),
+            limit: limitParam(params, 'limit', BROWSE_PAGE_SIZE, BROWSE_PAGE_SIZE),
             fresh: params.get('fresh') === '1',
             signal: abort.signal,
           })
@@ -1435,8 +1444,8 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
         const abort = abortOnClose(res)
         try {
           const subtree = await browse.subtree(uri, {
-            levels: limitParam(params, 'levels', 2, 2),
-            nodes: limitParam(params, 'nodes', 100, 100),
+            levels: limitParam(params, 'levels', BROWSE_SUBTREE_MAX_LEVELS, BROWSE_SUBTREE_MAX_LEVELS),
+            nodes: limitParam(params, 'nodes', BROWSE_SUBTREE_MAX_NODES, BROWSE_SUBTREE_MAX_NODES),
             signal: abort.signal,
           })
           writeJson(res, 200, { ok: true, subtree })
@@ -1457,7 +1466,7 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
         try {
           const sessionsPage = await sessions.list({
             offset: offsetParam(params),
-            limit: limitParam(params, 'limit', 50, 50),
+            limit: limitParam(params, 'limit', SESSIONS_PAGE_SIZE, SESSIONS_PAGE_SIZE),
             fresh: params.get('fresh') === '1',
             signal: abort.signal,
           })
@@ -1478,7 +1487,7 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
         const abort = abortOnClose(res)
         try {
           const recent = await recentCommits.recent({
-            limit: limitParam(params, 'limit', 8, 8),
+            limit: limitParam(params, 'limit', RECENT_COMMITS_SESSION_CAP, RECENT_COMMITS_SESSION_CAP),
             fresh: params.get('fresh') === '1',
             signal: abort.signal,
           })

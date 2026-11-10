@@ -167,13 +167,16 @@ export function NativeBrowse(props: NativeBrowseProps) {
   }, [props.refreshKey])
 
   const requestSignal = useCallback((): AbortSignal | undefined => abortRef.current?.signal, [])
-  const isAborted = useCallback((): boolean => abortRef.current?.signal.aborted === true, [])
 
   const loadRoots = useCallback(
     async (fresh: boolean): Promise<BrowseRoot[]> => {
+      // Snapshot the signal this request belongs to: a Refresh/unmount aborts it
+      // and swaps the ref, so re-reading the ref afterwards would misread the
+      // aborted answer as a host failure (or set state on a dead component).
+      const signal = requestSignal()
       setRootsLoading(true)
-      const answer = await fetchBrowseRoots(fresh, requestSignal())
-      if (isAborted()) return []
+      const answer = await fetchBrowseRoots(fresh, signal)
+      if (signal?.aborted === true) return []
       if (!answer.ok) {
         setRootsError(writeErrorText(answer.error))
         setRootsLoading(false)
@@ -185,11 +188,12 @@ export function NativeBrowse(props: NativeBrowseProps) {
       setRootsLoading(false)
       return answer.roots
     },
-    [isAborted, requestSignal],
+    [requestSignal],
   )
 
   const loadNode = useCallback(
     async (uri: string, options: { offset?: number; append?: boolean; fresh?: boolean } = {}): Promise<void> => {
+      const signal = requestSignal()
       setNodes((current) => ({
         ...current,
         [uri]: { ...(current[uri] ?? EMPTY_NODE), loading: options.append !== true, loadingMore: options.append === true, error: null },
@@ -197,9 +201,9 @@ export function NativeBrowse(props: NativeBrowseProps) {
       const answer = await fetchBrowsePage(uri, {
         ...(options.offset === undefined ? {} : { offset: options.offset }),
         fresh: options.fresh === true,
-        signal: requestSignal(),
+        signal,
       })
-      if (isAborted()) return
+      if (signal?.aborted === true) return
       if (!answer.ok) {
         setNodes((current) => ({
           ...current,
@@ -225,7 +229,7 @@ export function NativeBrowse(props: NativeBrowseProps) {
         }
       })
     },
-    [isAborted, requestSignal],
+    [requestSignal],
   )
 
   // Roots on first entry and on an explicit Refresh.
@@ -324,8 +328,10 @@ export function NativeBrowse(props: NativeBrowseProps) {
   const loadSubtree = useCallback(
     async (uri: string): Promise<void> => {
       setSubtree({ uri, loading: true, error: null, payload: null })
-      const answer = await fetchBrowseSubtree(uri, { signal: requestSignal() })
-      if (isAborted()) return
+      // Capture THIS request's signal (same reason as loadRoots/loadNode).
+      const signal = requestSignal()
+      const answer = await fetchBrowseSubtree(uri, { signal })
+      if (signal?.aborted === true) return
       if (!answer.ok) {
         setSubtree({ uri, loading: false, error: writeErrorText(answer.error), payload: null })
         return
@@ -333,7 +339,7 @@ export function NativeBrowse(props: NativeBrowseProps) {
       setWarnings((current) => mergeWarnings(current, answer.subtree.warnings))
       setSubtree({ uri, loading: false, error: null, payload: answer.subtree })
     },
-    [isAborted, requestSignal],
+    [requestSignal],
   )
 
   const renderEntry = (entry: BrowseEntry, depth: number) => {

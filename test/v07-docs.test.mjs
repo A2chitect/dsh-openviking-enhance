@@ -106,6 +106,19 @@ test('the CHANGELOG carries the v0.7 section under Unreleased', () => {
   }
 })
 
+test('the two stale v0.7 evidence scenes are named for re-shooting (N3)', () => {
+  assert.match(verification, /Stills to re-shoot after PR #5 review round 1/)
+  for (const scene of ['v07-after-plugins-setup.png', 'v07-after-native-browse.png']) {
+    assert.ok(verification.includes(scene), `VERIFICATION names the stale scene ${scene}`)
+  }
+  assert.match(verification, /Forget local setup state/)
+  assert.match(verification, /N\+ entries \(more available\)/)
+  // Both UI changes are described in the shipped docs too.
+  assert.ok(readmeEn.includes('Forget local setup state'), 'EN README describes the forget action')
+  assert.ok(readmeEn.includes('more available') || readmeEn.includes('`N+`'), 'EN README describes the lower-bound browse count')
+  assert.ok(changelog.includes('SESSION_LIST_CACHE_TTL_MS'), 'CHANGELOG records the documented sessions cache constant')
+})
+
 test('VERIFICATION plans the native-cockpit browser evidence instead of claiming it', () => {
   assert.match(verification, /v0\.7 native-cockpit scenario checklist/)
   assert.match(verification, /clean DSH\s+profile/i)

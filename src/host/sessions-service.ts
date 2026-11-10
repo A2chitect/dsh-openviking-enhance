@@ -12,7 +12,7 @@
  * bounded (latest 3 archive probes, latest 10 tasks, latest 24 events) and
  * cached per session, so this service never reads a session's inside.
  */
-import { SESSIONS_PAGE_SIZE } from '../shared/limits.ts'
+import { SESSION_LIST_CACHE_TTL_MS, SESSIONS_PAGE_SIZE } from '../shared/limits.ts'
 import { FS_TIMEOUT_MS } from '../shared/limits.ts'
 import type { PluginNotice, SessionListPayload, SessionListRow } from '../shared/protocol.ts'
 import { dshSessionIdOf, normalizeVikingUri, sessionKindOf, tailOf } from '../shared/viking-tree.ts'
@@ -76,7 +76,7 @@ export class SessionsService {
     const uri = this.sessionsUri()
     const key = `${uri}\u0000${offset}\u0000${limit}`
     const cached = this.cache.get(key)
-    if (options.fresh !== true && cached !== undefined && this.now() - cached.at < 15_000) return cached.payload
+    if (options.fresh !== true && cached !== undefined && this.now() - cached.at < SESSION_LIST_CACHE_TTL_MS) return cached.payload
     const running = this.inflight.get(key)
     if (options.fresh !== true && running !== undefined) return running
 
