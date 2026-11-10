@@ -15,13 +15,22 @@
  * cached: a doctor page is a deliberate, user-triggered snapshot.
  */
 import type {
+  ConfigSourceHealth,
   ConnectionFieldOrigin,
   DoctorCapability,
   DoctorCheck,
   DoctorReport,
+  PluginBuildInfo,
   PluginNotice,
 } from '../shared/protocol.ts'
 import type { OpenVikingApi, RequestOptions } from './openviking-api.ts'
+import { classifyRuleProbe } from './catalog-service.ts'
+import { buildUserAgent, PLUGIN_VERSION } from '../shared/build-info.ts'
+import {
+  DOCTOR_CONTEXT_PROBE_TIMEOUT_MS,
+  DOCTOR_FS_PROBE_TIMEOUT_MS,
+  DOCTOR_RULES_PROBE_TIMEOUT_MS,
+} from '../shared/limits.ts'
 import type { OvConnection } from './config.ts'
 import type { CommitService } from './commit-service.ts'
 import { resolveSessionUri } from './commit-service.ts'
@@ -35,8 +44,17 @@ import {
   type PeerScopeMemo,
 } from './local-state.ts'
 
-/** The DSH generations this release is built and type-checked against. */
-export const PLUGIN_DSH_RANGE = '>=0.2.0-rc.2 || >=0.2.1-rc.2 || >=0.2.2-rc.1'
+/**
+ * The DSH generations this release is built and type-checked against.
+ *
+ * This is the manifest range verbatim (check-package asserts they agree): a
+ * floor of 0.2.0-rc.2 and an upper bound below the next major, so a future
+ * 1.x generation is not silently accepted. The separate *write* floor
+ * (0.2.2-rc.1, authenticated `connection.fetch`) is documented in the README
+ * contract chapter — it cannot be expressed here without excluding the older
+ * read-only generations that still work.
+ */
+export const PLUGIN_DSH_RANGE = '>=0.2.0-rc.2 <1.0.0-0'
 /** The OpenViking versions this release's contract tests cover. */
 export const TESTED_OV_RANGE = 'OpenViking 0.5.1.1 – 0.5.3'
 
@@ -54,6 +72,8 @@ export interface DoctorOptions {
    * reachable. Used to answer "are the OpenViking MCP tools visible?".
    */
   tools?: () => string[] | null
+  /** Per-file read health for the local config sources (P1-4). */
+  configSources?: () => ConfigSourceHealth[]
   /** Test seams. */
   now?: () => number
   localState?: LocalStateOptions
@@ -112,9 +132,17 @@ export class DoctorService {
     const health = await api.health(options.signal === undefined ? {} : { signal: options.signal })
     const healthLatencyMs = Math.max(0, this.now() - started)
     if (!health.ok) {
+      // The short request id is diagnostics-only evidence: it lets a maintainer
+      // correlate this failure with the server log without putting a full trace
+      // into ordinary copy or command output.
+      const requestId = health.requestId === null ? null : health.requestId.slice(-8)
       warnings.push({
         code: 'unreachable',
-        params: { endpoint: this.options.connection.endpoint, error: health.error ?? 'unknown' },
+        params: {
+          endpoint: this.options.connection.endpoint,
+          error: health.error ?? 'unknown',
+          ...(requestId === null ? {} : { requestId }),
+        },
       })
     }
 
@@ -152,9 +180,21 @@ export class DoctorService {
       warnings.push({ code: 'pendingQueueUnavailable', params: { error: pending.error ?? 'unknown' } })
     }
 
-    const contextFace = await this.contextCapability(probe, request, warnings)
-    const ruleSearch = await this.rulesCapability(probe, request)
-    const fsStat = await this.fsCapability(probe, request)
+    /**
+     * Request ids from each probe, keyed by purpose. Diagnostics only: the
+     * id lets a maintainer correlate a Doctor run with the server's request log
+     * without exposing it in ordinary copy or command output.
+     */
+    const traces: Record<string, string | null> = {
+      health: health.requestId ?? null,
+      system: system.requestId ?? null,
+      skills: skills.requestId ?? null,
+      observer: observer.requestId ?? null,
+      session: sessionMeta?.requestId ?? null,
+    }
+    const contextFace = await this.contextCapability(probe, request, warnings, traces)
+    const ruleSearch = await this.rulesCapability(probe, request, traces)
+    const fsStat = await this.fsCapability(probe, request, traces)
     const toolNames = this.options.tools?.() ?? null
     const mcpTools = toolNames === null ? null : toolNames.filter((name) => name.startsWith('mcp__openviking__'))
 
@@ -164,6 +204,14 @@ export class DoctorService {
         : null
     const compatibility = compatibilityOf(this.options.dshVersion?.() ?? null)
     const dshVersion = compatibility.dshVersion
+    const build: PluginBuildInfo = {
+      pluginVersion: PLUGIN_VERSION,
+      dshVersion,
+      nodeVersion: process.version,
+      platform: process.platform,
+      userAgent: buildUserAgent(dshVersion),
+    }
+    const configSources = this.options.configSources?.() ?? []
 
     const checks: DoctorCheck[] = []
     checks.push(
@@ -242,6 +290,12 @@ export class DoctorService {
           : check('dshVersion', 'unknown', dshVersion, null),
     )
     checks.push(
+      build.pluginVersion === 'unknown'
+        ? check('pluginBuild', 'warn', null, 'doctor.hint.pluginVersionUnknown')
+        : check('pluginBuild', 'ok', `v${build.pluginVersion} · node ${build.nodeVersion} · ${build.platform}`, null),
+    )
+    checks.push(configSourcesCheck(configSources))
+    checks.push(
       pending === null
         ? check('pendingQueue', 'skipped', null, null)
         : !pending.available
@@ -315,6 +369,8 @@ export class DoctorService {
         },
       },
       checks,
+      configSources,
+      build,
       compatibility: {
         dshVersion,
         pluginRange: PLUGIN_DSH_RANGE,
@@ -336,6 +392,10 @@ export class DoctorService {
       session: report.session,
       capabilities: report.capabilities,
       checks: report.checks,
+      configSources: report.configSources,
+      build: report.build,
+      /** Correlate with the server's own request log; never shown as copy. */
+      traces,
       compatibility: report.compatibility,
       warnings,
     }
@@ -346,6 +406,7 @@ export class DoctorService {
     probe: boolean,
     request: RequestOptions,
     warnings: PluginNotice[],
+    traces: Record<string, string | null>,
   ): Promise<DoctorCapability> {
     const memo = await readPluginMemo<ContextFaceMemo>('context-face.json', this.options.localState)
     if (memoActive(memo, this.now())) {
@@ -363,8 +424,9 @@ export class DoctorService {
         // acceptable to a context-face version that predates the field.
 
       },
-      { ...request, timeoutMs: 10000 },
+      { ...request, timeoutMs: DOCTOR_CONTEXT_PROBE_TIMEOUT_MS },
     )
+    traces.contextFace = reply.requestId ?? null
     if (reply.ok) return { state: 'available', detail: null }
     const detail = reply.error ?? `HTTP ${reply.status}`
     // A rejected mode/field is the expected legacy answer; any other failure is
@@ -376,22 +438,38 @@ export class DoctorService {
     return { state: 'unknown', detail }
   }
 
-  private async rulesCapability(probe: boolean, request: RequestOptions): Promise<DoctorCapability> {
+  /**
+   * The rule-route capability check (S2).
+   *
+   * The Doctor used to spend a real rule search here. The validation-only empty
+   * body answers the same question for free: the HTTP layer rejects it before
+   * any scenario recall or judge call runs (see `probeRuleSearchRoute`).
+   */
+  private async rulesCapability(
+    probe: boolean,
+    request: RequestOptions,
+    traces: Record<string, string | null>,
+  ): Promise<DoctorCapability> {
     if (!probe) return { state: 'unknown', detail: null }
-    const reply = await this.options.api.rulesSearch(
-      'OpenViking plugin doctor: check whether the Rule search capability is available.',
-      { ...request, timeoutMs: 8000 },
-    )
-    if (reply.ok) {
-      const count = reply.result?.rules?.length ?? 0
-      return { state: 'available', detail: reply.result?.warning ?? `${count} matching rules` }
-    }
-    return { state: 'unavailable', detail: reply.error ?? `HTTP ${reply.status}` }
+    const reply = await this.options.api.probeRuleSearchRoute({
+      ...request,
+      timeoutMs: DOCTOR_RULES_PROBE_TIMEOUT_MS,
+    })
+    traces.rules = reply.requestId ?? null
+    const capability = classifyRuleProbe(reply)
+    if (!capability.available) return { state: 'unavailable', detail: capability.detail }
+    const detail = capability.kind === 'available' ? 'validation-only probe ok' : capability.detail
+    return { state: 'available', detail }
   }
 
-  private async fsCapability(probe: boolean, request: RequestOptions): Promise<DoctorCapability> {
+  private async fsCapability(
+    probe: boolean,
+    request: RequestOptions,
+    traces: Record<string, string | null>,
+  ): Promise<DoctorCapability> {
     if (!probe) return { state: 'unknown', detail: null }
-    const reply = await this.options.api.fsStat('viking://~', { ...request, timeoutMs: 5000 })
+    const reply = await this.options.api.fsStat('viking://~', { ...request, timeoutMs: DOCTOR_FS_PROBE_TIMEOUT_MS })
+    traces.fsStat = reply.requestId ?? null
     if (reply.ok) {
       return { state: 'available', detail: reply.result?.uri ?? null }
     }
@@ -401,6 +479,26 @@ export class DoctorService {
 
 function check(id: string, status: DoctorCheck['status'], value: string | null, hint: string | null): DoctorCheck {
   return { id, status, value, hint }
+}
+
+/**
+ * One check summarising every local config/metadata source (P1-4).
+ *
+ * Missing files are normal and count as healthy; malformed/unreadable/
+ * wrong-shape files are a warning with the file named and a hint telling the
+ * person their file is broken and the plugin fell back to defaults.
+ */
+function configSourcesCheck(sources: ConfigSourceHealth[]): DoctorCheck {
+  const bad = sources.filter(
+    (source) => source.state === 'malformed' || source.state === 'wrong-shape' || source.state === 'unreadable' || source.state === 'unknown',
+  )
+  if (bad.length === 0) {
+    return check('configSources', 'ok', sources.length === 0 ? null : `${sources.length} local sources readable`, null)
+  }
+  const first = bad[0]
+  if (first === undefined) return check('configSources', 'ok', null, null)
+  const hint = first.state === 'unreadable' ? 'doctor.hint.configUnreadable' : 'doctor.hint.configMalformed'
+  return check('configSources', 'warn', bad.map((source) => `${source.source} ${source.state}`).join(', '), hint)
 }
 
 function capabilityCheck(id: string, capability: DoctorCapability): DoctorCheck {

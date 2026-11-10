@@ -16,11 +16,11 @@
  * the current directory even if another process just drained it.
  */
 import { createRequire } from 'node:module'
-import { readFileSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
 import { readdir, readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import type { PendingQueueItem, PendingQueueSummary } from '../shared/protocol.ts'
+import type { ConfigSourceHealth, ConfigSourceState, PendingQueueItem, PendingQueueSummary } from '../shared/protocol.ts'
 import { openVikingHome } from './config.ts'
 
 /** One parsed `*.json` / `*.processing` file in the pending queue. */
@@ -115,6 +115,43 @@ export async function readPendingQueue(
   }
   items.sort((left, right) => (right.createdAt ?? '').localeCompare(left.createdAt ?? ''))
   return { available: true, directory: explicit, total, items, error: null }
+}
+
+/** One directory's read health, without reading its contents. */
+function directoryHealth(path: string, source: ConfigSourceHealth['source'], label: string): ConfigSourceHealth {
+  const describe = (state: ConfigSourceState, errorCode: string | null): ConfigSourceHealth => ({
+    source,
+    path: label,
+    state,
+    errorCode,
+  })
+  try {
+    return describe(statSync(path).isDirectory() ? 'ok' : 'wrong-shape', null)
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code ?? null
+    return describe(code === 'ENOENT' ? 'missing' : code === null ? 'unknown' : 'unreadable', code)
+  }
+}
+
+/**
+ * Read health of the two directories this plugin reads from the OpenViking home
+ * (P1-4): the official plugin's pending queue and its capability memos.
+ *
+ * A missing directory is normal (nothing captured yet); the Doctor only warns on
+ * unreadable/wrong-shape. Contents are never inspected here.
+ */
+export function localStateHealth(options: LocalStateOptions = {}): ConfigSourceHealth[] {
+  const env = options.env ?? process.env
+  const home = env.OPENVIKING_HOME?.trim() || join(homedir(), '.openviking')
+  const homeLabel = env.OPENVIKING_HOME?.trim() ? '$OPENVIKING_HOME' : '~/.openviking'
+  const pendingPath = options.pendingDir ?? join(options.home?.trim() || home, 'pending')
+  const pendingLabel = options.pendingDir ?? (env.OPENVIKING_PENDING_DIR?.trim() ? '$OPENVIKING_PENDING_DIR' : `${homeLabel}/pending`)
+  const statePath = pluginStateDir(options)
+  const stateLabel = env.OPENVIKING_STATE_DIR?.trim() ? '$OPENVIKING_STATE_DIR' : `${homeLabel}/state`
+  return [
+    directoryHealth(pendingPath, 'pending-queue', pendingLabel),
+    directoryHealth(statePath, 'plugin-state', stateLabel),
+  ]
 }
 
 /** One memo file, or null when it does not exist / cannot be parsed. */

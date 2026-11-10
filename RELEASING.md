@@ -38,11 +38,25 @@ pnpm run release patch     # 或 minor / major，也可以直接写 0.2.0
 2. **检查变更说明**：`## Unreleased` 必须存在且有内容；
 3. **改 changelog**：把 `## Unreleased` 改名成 `## <版本> — <日期>`，并在最上面重新放回一个空的 `## Unreleased`；
 4. **写版本号**：更新 `package.json` 的 `version`，以及两份 README 顶部的 `**v<版本>**` 行——`check:package` 会断言这三处一致，脚本现在一起改；
-5. **跑门禁**：`pnpm test`（类型检查 + 构建 + 单测 + 客户端产物断言 + 两条冒烟），并且**要求真实 OpenViking 在线**（自动带上 `SMOKE_REQUIRE_SERVER=1`）——否则实时冒烟会静默跳过，等于没验；
+5. **跑门禁**：`pnpm test`（类型检查 + 构建 + 单测 + 客户端产物断言 + 独立性门禁 + 两条冒烟），并且**要求真实 OpenViking 在线**（自动带上 `SMOKE_REQUIRE_SERVER=1`；默认输出已脱敏，调试时用 `SMOKE_VERBOSE=1`）——否则实时冒烟会静默跳过，等于没验；
 6. **提交并打标签**：`git commit -m "release <版本>"`，再打注解标签 `v<版本>`，标签正文就是本次 changelog 说明。
 
 上面列表第 3 项做完之后、提交之前的任何失败，都会把 `package.json`、`CHANGELOG.md` 和两份 README 的版本行还原回 HEAD：
 **一次失败的发布不会留下半成品**，工作区还是它原来的样子。
+
+发布前的干净 profile 验证（`install-verify`）是**发版闸门**，不是可选项：
+
+```bash
+pnpm pack --pack-destination /tmp
+node scripts/verify-install.mjs --dsh "$(command -v dsh)" \
+  --tarball /tmp/dsh-openviking-enhance-*.tgz --json-out /tmp/install-verify.json
+```
+
+它会在临时 `DSH_HOME` 里安装 tarball、启动 `web` profile、确认 boot 页面组合了本插件的客户端产物、
+`/api/openviking-enhance/config` 与 `/scope` 有响应，然后重装、卸载并清理。CI 的 `install-verify`
+job 在每个 PR 上跑同一脚本（固定 DSH 0.2.2-rc.1；升级腿仅在 `v*` 标签上跑）。
+把结果（日期、DSH/Node/OS、OpenViking 版本、结果、CI run 链接）追加成 `VERIFICATION.md`
+的一行；**标签 PR 必须带上这行**，没有它不允许打标签。
 
 ### 排练与逃生口
 

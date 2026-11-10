@@ -17,9 +17,10 @@
  * fields are discarded at load, a bad endpoint or id removes only that profile
  * (with an error in `storeError`), and an empty store is legal.
  */
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { ProfileSummary, ProfilesPayload } from '../shared/protocol.ts'
-import { ensureStateDir, parseJson, pluginStateDir, readFileOrNull, writePrivateFile } from './plugin-state.ts'
+import type { ConfigSourceHealth, ProfileSummary, ProfilesPayload } from '../shared/protocol.ts'
+import { dshHome, ensureStateDir, parseJson, pluginStateDir, readFileOrNull, writePrivateFile } from './plugin-state.ts'
 
 /** Auth modes this server family understands; `unknown` means "probe it". */
 export const PROFILE_AUTH_MODES = ['dev', 'trusted', 'api_key', 'unknown'] as const
@@ -247,9 +248,13 @@ export interface ProfileStoreOptions {
  */
 export class ProfileStore {
   private readonly directory: string
+  private readonly env: NodeJS.ProcessEnv
+  private readonly directoryOverride: string | null
 
   constructor(options: ProfileStoreOptions = {}) {
     this.directory = pluginStateDir(options)
+    this.env = options.env ?? process.env
+    this.directoryOverride = options.dir !== undefined && options.dir.trim().length > 0 ? options.dir : null
   }
 
   /** The absolute path of the secret store of record. */
@@ -263,6 +268,41 @@ export class ProfileStore {
     if (raw === null) return { available: false, file: { version: 1, activeProfileId: '', profiles: [] }, error: null }
     const parsed = parseProfileFile(parseJson(raw))
     return { available: parsed.ok, file: parsed.file, error: parsed.error }
+  }
+
+  /**
+   * Whether this store's file is readable, and if not, why (P1-4 / Doctor).
+   *
+   * A corrupt `profiles.json` currently degrades to "no profiles" silently; the
+   * Doctor has to be able to say the file is broken rather than the machine being
+   * fresh. Contents are never returned.
+   */
+  sourceHealth(): ConfigSourceHealth {
+    const label = this.directoryOverride !== null
+      ? join(this.directoryOverride, 'profiles.json')
+      : `${this.env.DSH_HOME?.trim() ? '$DSH_HOME' : '~/.dsh'}/state/dsh-openviking-enhance/profiles.json`
+    let raw: string
+    try {
+      raw = readFileSync(this.path, 'utf8')
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code ?? null
+      return {
+        source: 'profiles.json',
+        path: label,
+        state: code === 'ENOENT' ? 'missing' : code === null ? 'unknown' : 'unreadable',
+        errorCode: code,
+      }
+    }
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(raw)
+    } catch {
+      return { source: 'profiles.json', path: label, state: 'malformed', errorCode: 'InvalidJSON' }
+    }
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { source: 'profiles.json', path: label, state: 'wrong-shape', errorCode: 'not-an-object' }
+    }
+    return { source: 'profiles.json', path: label, state: 'ok', errorCode: null }
   }
 
   /** The redacted list + active id for the profile route. */

@@ -77,12 +77,20 @@ function fakeApi(overrides = {}) {
     readText: async () => ok('full body'),
     listDirectory: async () => ok([]),
     rulesSearch: async () => ok({ rules: [], rendered: '', delivery: { complete: true, rule_count: 0 }, warning: 'rule library is empty' }),
+    probeRuleSearchRoute: async () => ok(null),
     search: async () => ok({ memories: [], resources: [], skills: [], total: 0 }),
     listSkills: async () => ok({ skills: [], root_uris: [], total: 0 }),
     experienceTrajectories: async () => ok({ items: [], total: 0 }),
     experienceOutcomes: async () => ok({ outcome_distribution: [] }),
   }
-  return { ...api, ...overrides }
+  const merged = { ...api, ...overrides }
+  // v0.6 pages L2 through `readTextPage`; a fake that only knows `readText`
+  // keeps working by delegating (the page bounds are exercised over real HTTP in
+  // `test/v06-followups.test.mjs`).
+  if (overrides.readTextPage === undefined) {
+    merged.readTextPage = async (uri, _page, options) => merged.readText(uri, options)
+  }
+  return merged
 }
 
 /** One fake `IncomingMessage` carrying a body, for the POST routes. */
@@ -735,8 +743,10 @@ test('the search request is clamped to the documented window', () => {
 })
 
 test('search buckets and types normalize to the supported set', () => {
-  assert.deepEqual(normalizeSearchBuckets(undefined), ['memories', 'resources', 'skills', 'rules'])
-  assert.deepEqual(normalizeSearchBuckets([]), ['memories', 'resources', 'skills', 'rules'])
+  // S2 default: rules are an explicit opt-in (they can cost a server-side judge call).
+  assert.deepEqual(normalizeSearchBuckets(undefined), ['memories', 'resources', 'skills'])
+  assert.deepEqual(normalizeSearchBuckets([]), ['memories', 'resources', 'skills'])
+  assert.deepEqual(normalizeSearchBuckets(['rules', 'memories', 'skills', 'resources']), ['memories', 'resources', 'skills', 'rules'])
   assert.deepEqual(normalizeSearchBuckets(['rules', 'memories']), ['memories', 'rules'], 'kept in display order')
   assert.deepEqual(normalizeSearchBuckets(['nope']), [], 'unknown buckets are dropped')
   assert.equal(normalizeSearchType('keywords'), 'keywords')
@@ -789,7 +799,7 @@ test('the unified search merges search buckets and rule matches into four groups
     },
   })
   const service = new SearchService({ api, now: () => 1000 })
-  const payload = await service.search({ query: '  license  ' })
+  const payload = await service.search({ query: '  license  ', buckets: ['memories', 'resources', 'skills', 'rules'] })
 
   assert.equal(payload.query, 'license')
   assert.equal(payload.searchType, 'semantic')
@@ -845,7 +855,7 @@ test('a failed rules call is a warning on a usable answer', async () => {
     rulesSearch: async () => fail(404, 'Not Found'),
   })
   const service = new SearchService({ api })
-  const payload = await service.search({ query: 'x' })
+  const payload = await service.search({ query: 'x', buckets: ['memories', 'resources', 'skills', 'rules'] })
   assert.deepEqual(payload.warnings.map((warning) => warning.code), ['rulesUnavailable'])
   assert.deepEqual(payload.buckets.find((bucket) => bucket.bucket === 'rules').items, [])
 })
@@ -913,9 +923,10 @@ test('the rules list is empty when the server says the tree does not exist', asy
 test('the rules capability gate catches an older server before the tree looks merely empty', async () => {
   // On a 0.5.1.1 server there is no rules router AND no rules directory: the
   // filesystem alone would answer 404 NOT_FOUND, which looks exactly like "no
-  // rules compiled yet". The `rules/search` probe is what tells them apart.
+  // rules compiled yet". The empty-body `rules/search` route probe is what tells
+  // them apart, and it costs no embedding/judge work.
   const api = fakeApi({
-    rulesSearch: async () => fail(404, 'Not Found'),
+    probeRuleSearchRoute: async () => fail(404, 'Not Found'),
     listDirectory: async () => fail(404, 'Directory not found', 'NOT_FOUND'),
   })
   const catalog = new CatalogService({ api })

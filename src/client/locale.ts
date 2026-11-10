@@ -203,6 +203,9 @@ const zh: Record<string, string> = {
   'doctor.hint.skillsFailed': '技能目录读取失败；检查服务端 /api/v1/skills。',
   'doctor.hint.dshVersion': '当前 DSH 版本不在本插件声明并验证过的区间内。',
   'doctor.hint.pendingQueue': '本地队列有未发送的写入，或队列目录不可读；检查 OpenViking 连接。',
+  'doctor.hint.configMalformed': '本机配置文件格式错误（可能被写坏了），插件已回退到默认值；修正或删除该文件。',
+  'doctor.hint.configUnreadable': '本机配置文件无法读取（权限或文件系统问题），插件已回退到默认值；检查文件权限。',
+  'doctor.hint.pluginVersionUnknown': '这个构建没有嵌入插件版本号（不是发布流程构建的产物）；重新构建或从 npm/tarball 安装。',
   'doctor.cap.mcpTools': 'MCP 工具',
   'doctor.cap.contextFace': '上下文召回',
   'doctor.cap.ruleSearch': '规则检索',
@@ -313,7 +316,7 @@ const zh: Record<string, string> = {
   'config.endpoint': 'OpenViking 地址',
   'config.endpointHint': '留空则读 ~/.openviking/ovcli.conf，再退回 http://127.0.0.1:1933',
   'config.apiKey': 'API Key',
-  'config.apiKeyHint': '服务端开启鉴权时才需要；建议写在 ovcli.conf 里',
+  'config.apiKeyHint': '仅作兜底：优先用 ~/.openviking/ovcli.conf、OPENVIKING_* 环境变量或命名配置档。填写这里会把明文 key 存进你的 profile 配置补丁。',
   'config.account': 'Account',
   'config.accountHint': '留空 = default',
   'config.user': 'User',
@@ -386,6 +389,7 @@ const zh: Record<string, string> = {
   'preview.loading': '载入中…',
   'preview.refresh': '刷新',
   'preview.truncated': '内容过长，已截断显示。',
+  'preview.showMore': '显示更多',
   'preview.tierUnavailable': '这一层不可用：{error}',
   'preview.emptyText': '（空）',
   'preview.sidecarNote': 'L0/L1 是这个条目所在目录的摘要（OpenViking 的目录级 sidecar）。',
@@ -742,6 +746,14 @@ const zh: Record<string, string> = {
   'pill.captureLine': '捕获：{enabled} · 自动 {auto} · 阈值 {threshold}',
   'pill.captureNoPlugin': '官方记忆插件未挂载',
   'pill.capturePauseUnavailable': '暂停/恢复捕获需要上游运行时 API；本插件只展示状态，不修改其他插件。',
+  // ---- v0.6: 成本/隐私文案（S1/S2） ------------------------------------
+  'explore.includeRules': '包含规则（增加服务端开销）',
+  'explore.includeRulesHint': '默认只搜记忆、资源与技能。勾选后会做服务端规则检索：向量召回，若配置了规则评审模型还会增加模型调用。',
+  'explore.rulesTestCost': '运行一次服务端规则检索（向量召回；配置了评审模型时会增加模型调用）。',
+  'explore.rulesPartial': '显示 {rules} 条（上限 {ruleCap}）；{deadlineMs} ms 内未全部返回，刷新重试。',
+  'notice.ruleListTruncated': '规则列表已按 {deadlineMs} ms 截止截断：显示 {rules} 条、{scenarios} 个场景（用时 {elapsedMs} ms）。刷新重试。',
+  'notice.ruleProbeFailed': '规则能力探测失败：{error}（仍会尝试读取规则目录）。',
+
 }
 
 const en: Record<string, string> = {
@@ -921,6 +933,9 @@ const en: Record<string, string> = {
   'doctor.hint.skillsFailed': 'The skill catalog could not be read; check /api/v1/skills.',
   'doctor.hint.dshVersion': 'This DSH version is outside the range this plugin declares and verifies.',
   'doctor.hint.pendingQueue': 'Writes are waiting in the local queue, or it cannot be read; check the OpenViking connection.',
+  'doctor.hint.configMalformed': 'A local config file is malformed (possibly corrupted); the plugin fell back to defaults. Fix or remove that file.',
+  'doctor.hint.configUnreadable': 'A local config file cannot be read (permissions or filesystem); the plugin fell back to defaults. Check the file permissions.',
+  'doctor.hint.pluginVersionUnknown': 'This bundle did not embed a plugin version (it was not built by the release pipeline); rebuild or install the npm/tarball build.',
   'doctor.cap.mcpTools': 'MCP tools',
   'doctor.cap.contextFace': 'Context recall',
   'doctor.cap.ruleSearch': 'Rule search',
@@ -1030,7 +1045,7 @@ const en: Record<string, string> = {
   'config.endpoint': 'OpenViking address',
   'config.endpointHint': 'Empty reads ~/.openviking/ovcli.conf, then falls back to http://127.0.0.1:1933',
   'config.apiKey': 'API key',
-  'config.apiKeyHint': 'Only needed when the server requires authentication; prefer keeping it in ovcli.conf',
+  'config.apiKeyHint': 'Last resort: prefer ~/.openviking/ovcli.conf, the OPENVIKING_* environment variables or a named profile. Saving this field stores the plaintext key in your profile patch.',
   'config.account': 'Account',
   'config.accountHint': 'Empty = default',
   'config.user': 'User',
@@ -1103,6 +1118,7 @@ const en: Record<string, string> = {
   'preview.loading': 'Loading…',
   'preview.refresh': 'Refresh',
   'preview.truncated': 'Truncated.',
+  'preview.showMore': 'Show more',
   'preview.tierUnavailable': 'This tier is unavailable: {error}',
   'preview.emptyText': '(empty)',
   'preview.sidecarNote': 'L0/L1 are the abstract and overview of the directory this entry lives in.',
@@ -1459,6 +1475,13 @@ const en: Record<string, string> = {
   'pill.captureLine': 'Capture: {enabled} · auto {auto} · threshold {threshold}',
   'pill.captureNoPlugin': 'The official memory plugin is not mounted',
   'pill.capturePauseUnavailable': 'Pause/resume needs an upstream runtime API; this plugin only displays the state and never mutates another plugin.',
+  // ---- v0.6: cost/privacy copy (S1/S2) --------------------------------
+  'explore.includeRules': 'Include rules (server cost)',
+  'explore.includeRulesHint': 'Memories, resources and skills only by default. Including rules runs a server-side rule search: scenario vector recall, plus a model call when a Rule judge model is configured.',
+  'explore.rulesTestCost': 'Runs a server-side rule search (embedding; a configured judge can add a model call).',
+  'explore.rulesPartial': 'Showing {rules} of up to {ruleCap}; the server did not answer within {deadlineMs} ms — refresh to retry.',
+  'notice.ruleListTruncated': 'The rule list was cut at the {deadlineMs} ms deadline: {rules} rules across {scenarios} scenarios (elapsed {elapsedMs} ms). Refresh to retry.',
+  'notice.ruleProbeFailed': 'The rule capability probe failed: {error} (the listing still attempts the rules directory).',
 }
 
 /** Every key the plugin ships, per language. */

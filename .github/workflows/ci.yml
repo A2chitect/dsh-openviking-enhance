@@ -47,7 +47,49 @@ jobs:
         run: |
           pnpm pack --pack-destination /tmp
           tarball=$(ls /tmp/dsh-openviking-enhance-*.tgz)
-          for entry in package/lib/index.js package/lib/client.js package/cordis.patch.yml package/LICENSE package/package.json; do
+          for entry in package/lib/index.js package/lib/client.js package/cordis.patch.yml package/LICENSE package/package.json package/THIRD_PARTY_NOTICES package/PROVENANCE.md; do
             tar tzf "$tarball" | grep -qx "$entry" || { echo "missing from the tarball: $entry"; exit 1; }
           done
           echo "tarball carries the bundle, the patch, the licence and the manifest"
+
+  # Clean-profile install verification (audit P0-2/P0-4, ROADMAP "Every version is
+  # verifiable"): the tarball a user installs is actually installed into a scratch
+  # DSH_HOME, booted, checked for its composed client bundle and its host route,
+  # reinstalled and removed. Pinned to the DSH generation the contract documents;
+  # no secrets, no OpenViking dataset, no browser.
+  install-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
+      - run: pnpm install --frozen-lockfile
+      # The generation with the authenticated `ctx.connection.fetch` transport
+      # (the write floor); `engines.dsh` still admits the older read-only ones.
+      - name: pin the DSH generation the compatibility matrix documents
+        run: npm install --global @deepseek-ai/dsh@0.2.2-rc.1
+      - name: pack the tarball under test
+        run: pnpm pack --pack-destination /tmp
+      - name: install, boot, reinstall, uninstall in a scratch DSH home
+        run: |
+          tarball=$(ls /tmp/dsh-openviking-enhance-*.tgz)
+          node scripts/verify-install.mjs --dsh "$(command -v dsh)" --tarball "$tarball" --json-out /tmp/install-verify.json
+      # The upgrade leg needs the npm registry for the previously published
+      # package; keeping it on tags only means PRs stay hermetic and fast.
+      - name: upgrade from the previous published version (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tarball=$(ls /tmp/dsh-openviking-enhance-*.tgz)
+          node scripts/verify-install.mjs --dsh "$(command -v dsh)" --tarball "$tarball" --upgrade-from dsh-openviking-enhance@0.3.0 --json-out /tmp/install-verify-upgrade.json
+      - name: keep the machine-readable evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: install-verify
+          path: /tmp/install-verify*.json
+          if-no-files-found: warn

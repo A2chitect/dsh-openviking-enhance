@@ -1,0 +1,1090 @@
+{
+  "schema": 1,
+  "contract": "Context-face request body and timeout for the session-aware recall plan.",
+  "categoryOrder": [
+    "events",
+    "entities",
+    "preferences",
+    "experiences",
+    "resources",
+    "skills"
+  ],
+  "derivation": "Hand-authored from the contract recorded in src/host/recall-contract.ts (field names and optional-field rules from the documented request schema; quota allocation derived by applying the documented weights and unmet-proportional-demand rule). These are invented inputs; no real server response and no private data are involved.",
+  "cases": [
+    {
+      "id": "default-config",
+      "note": "no config: server defaults apply; no quotas, no max_tokens, dedup 5, expansion/rewrite absent",
+      "input": {
+        "query": "what should I remember about the release checklist",
+        "sessionId": "dsh-session-fixture",
+        "config": null
+      },
+      "expected": {
+        "body": {
+          "query": "what should I remember about the release checklist",
+          "mode": "context",
+          "purpose": "coding",
+          "score_threshold": 0.35,
+          "session_id": "dsh-session-fixture",
+          "dedup_turns": 5
+        },
+        "timeoutMs": 15000
+      }
+    },
+    {
+      "id": "limit-configured-1",
+      "note": "limit 1: fewer slots than categories, every category keeps its guaranteed seat",
+      "input": {
+        "query": "what should I remember about the release checklist",
+        "sessionId": "dsh-session-fixture",
+        "config": {
+          "recallLimit": 1,
+          "recallLimitConfigured": true
+        }
+      },
+      "expected": {
+        "body": {
+          "query": "what should I remember about the release checklist",
+          "mode": "context",
+          "purpose": "coding",
+          "score_threshold": 0.35,
+          "session_id": "dsh-session-fixture",
+          "quotas": {
+            "events": 1,
+            "entities": 1,
+            "preferences": 1,
+            "experiences": 1,
+            "resources": 1,
+            "skills": 1
+          },
+          "dedup_turns": 5
+        },
+        "timeoutMs": 15000
+      }
+    },
+    {
+      "id": "limit-configured-2",
+      "note": "limit 2: same edge as limit 1",
+      "input": {
+        "query": "what should I remember about the release checklist",
+        "sessionId": "dsh-session-fixture",
+        "config": {
+          "recallLimit": 2,
+          "recallLimitConfigured": true
+        }
+      },
+      "expected": {
+        "body": {
+          "query": "what should I remember about the release checklist",
+          "mode": "context",
+          "purpose": "coding",
+          "score_threshold": 0.35,
+          "session_id": "dsh-session-fixture",
+          "quotas": {
+            "events": 1,
+            "entities": 1,
+            "preferences": 1,
+            "experiences": 1,
+            "resources": 1,
+            "skills": 1
+          },
+          "dedup_turns": 5
+        },
+        "timeoutMs": 15000
+      }
+    },
+    {
+      "id": "limit-configured-5",
+      "note": "limit 5: the last edge case below the six-category floor",
+      "input": {
+        "query": "what should I remember about the release checklist",
+        "sessionId": "dsh-session-fixture",
+        "config": {
+          "recallLimit": 5,
+          "recallLimitConfigured": true
+        }
+      },
+      "expected": {
+        "body": {
+          "query": "what should I remember about the release checklist",
+          "mode": "context",
+          "purpose": "coding",
+          "score_threshold": 0.35,
+          "session_id": "dsh-session-fixture",
+          "quotas": {
+            "events": 1,
+            "entities": 1,
+            "preferences": 1,
+            "experiences": 1,
+            "resources": 1,
+            "skills": 1
+          },
+          "dedup_turns": 5
+        },
+        "timeoutMs": 15000
+      }
+    },
+    {
+      "id": "limit-configured-6",
+      "note": "limit 6: exactly one guaranteed seat per category",
+      "input": {
+        "query": "what should I remember about the release checklist",
+        "sessionId": "dsh-session-fixture",
+        "config": {
+          "recallLimit": 6,
+          "recallLimitConfigured": true
+        }
+      },
+      "expected": {
+        "body": {
+          "query": "what should I remember about the release checklist",
+          "mode": "context",
+          "purpose": "coding",
+          "score_threshold": 0.35,
+          "session_id": "dsh-session-fixture",
+          "quotas": {
+            "events": 1,
+            "entities": 1,
+            "preferences": 1,
+            "experiences": 1,
+            "resources": 1,
+            "skills": 1
+          },
+          "dedup_turns": 5
+        },
+        "timeoutMs": 15000
+      }
+    },
+    {
+      "id": "limit-configured-8",
+      "note": "limit 8: two residual seats, both to resources after demand comparison",
+      "input": {
+        "query": "what should I remember about the release checklist",
+        "sessionId": "dsh-session-fixture",
+        "config": {
+          "recallLimit": 8,
+          "recallLimitConfigured": true
+        }
+      },
+      "expected": {
+        "body": {
+          "query": "what should I remember about the release checklist",
+          "mode": "context",
+          "purpose": "coding",
+          "score_threshold": 0.35,
+          "session_id": "dsh-session-fixture",
+          "quotas": {
+            "events": 1,
+            "entities": 2,
+            "preferences": 1,
+            "experiences": 1,
+            "resources": 2,
+            "skills": 1
+          },
+          "dedup_turns": 5
+        },
+        "timeoutMs": 15000
+      }
+    },
+    {
+      "id": "limit-configured-10",
+      "note": "limit 10: the fallback limit, four residual seats",
+      "input": {
+        "query": "what should I remember about the release checklist",
+        "sessionId": "dsh-session-fixture",
+        "config": {
+          "recallLimit": 10,
+          "recallLimitConfigured": true
+        }
+      },
+      "expected": {
+        "body": {
+          "query": "what should I remember about the release checklist",
+          "mode": "context",
+          "purpose": "coding",
+          "score_threshold": 0.35,
+          "session_id": "dsh-session-fixture",
+          "quotas": {
+            "events": 1,
+            "entities": 2,
+            "preferences": 1,
+            "experiences": 1,
+            "resources": 3,
+            "skills": 2
+          },
+          "dedup_turns": 5
+        },
+        "timeoutMs": 15000
+      }
+    },
+    {
+      "id": "limit-configured-12",
+      "note": "limit 12: six residual seats",
+      "input": {
+        "query": "what should I remember about the release checklist",
+        "sessionId": "dsh-session-fixture",
+        "config": {
+          "recallLimit": 12,
+          "recallLimitConfigured": true
+        }
+      },
+      "expected": {
+        "body": {
+          "query": "what should I remember about the release checklist",
+          "mode": "context",
+          "purpose": "coding",
+          "score_threshold": 0.35,
+          "session_id": "dsh-session-fixture",
+          "quotas": {
+            "events": 1,
+            "entities": 3,
+            "preferences": 1,
+            "experiences": 1,
+            "resources": 4,
+            "skills": 2
+          },
+          "dedup_turns": 5
+        },
+        "timeoutMs": 15000
+      }
+    },
+    {
+      "id": "limit-configured-25",
+      "note": "limit 25: the panel maximum",
+      "input": {
+        "query": "what should I remember about the release checklist",
+        "sessionId": "dsh-session-fixture",
+        "config": {
+          "recallLimit": 25,
+          "recallLimitConfigured": true
+        }
+      },
+      "expected": {
+        "body": {
+          "query": "what should I remember about the release checklist",
+          "mode": "context",
+          "purpose": "coding",
+          "score_threshold": 0.35,
+          "session_id": "dsh-session-fixture",
+          "quotas": {
+            "events": 3,
+            "entities": 5,
+            "preferences": 3,
+            "experiences": 2,
+            "resources": 7,
+            "skills": 5
+          },
+          "dedup_turns": 5
+        },
+        "timeoutMs": 15000
+      }
+    },
+    {
+      "id": "max-tokens-configured-64",
+      "note": "token cap at the server floor",
+      "input": {
+        "query": "what should I remember about the release checklist",
+        "sessionId": "dsh-session-fixture",
+        "config": {
+          "recallMaxTokens": 64,
+          "recallMaxTokensConfigured": true
+        }
+      },
+      "expected": {
+        "body": {
+          "query": "what should I remember about the release checklist",
+          "mode": "context",
+          "purpose": "coding",
+          "score_threshold": 0.35,
+          "session_id": "dsh-session-fixture",
+          "max_tokens": 64,
+          "dedup_turns": 5
+        },
+        "timeoutMs": 15000
+      }
+    },
+    {
+      "id": "max-tokens-configured-4000",
+      "note": "a large explicit token cap",
+      "input": {
+        "query": "what should I remember about the release checklist",
+        "sessionId": "dsh-session-fixture",
+        "config": {
+          "recallMaxTokens": 4000,
+          "recallMaxTokensConfigured": true
+        }
+      },
+      "expected": {
+        "body": {
+          "query": "what should I remember about the release checklist",
+          "mode": "context",
+          "purpose": "coding",
+          "score_threshold": 0.35,
+          "session_id": "dsh-session-fixture",
+          "max_tokens": 4000,
+          "dedup_turns": 5
+        },
+        "timeoutMs": 15000
+      }
+    },
+    {
+      "id": "dedup-zero",
+      "note": "dedup 0: the field is omitted rather than sent as 0",
+      "input": {
+        "query": "what should I remember about the release checklist",
+        "sessionId": "dsh-session-fixture",
+        "config": {
+          "recallDedupTurns": 0
+        }
+      },
+      "expected": {
+        "body": {
+          "query": "what should I remember about the release checklist",
+          "mode": "context",
+          "purpose": "coding",
+          "score_threshold": 0.35,
+          "session_id": "dsh-session-fixture"
+        },
+        "timeoutMs": 15000
+      }
+    },
+    {
+      "id": "dedup-three",
+      "note": "dedup 3: sent as written",
+      "input": {
+        "query": "what should I remember about the release checklist",
+        "sessionId": "dsh-session-fixture",
+        "config": {
+          "recallDedupTurns": 3
+        }
+      },
+      "expected": {
+        "body": {
+          "query": "what should I remember about the release checklist",
+          "mode": "context",
+          "purpose": "coding",
+          "score_threshold": 0.35,
+          "session_id": "dsh-session-fixture",
+          "dedup_turns": 3
+        },
+        "timeoutMs": 15000
+      }
+    },
+    {
+      "id": "peer-scope-actor",
+      "note": "actor peer scope adds peer_scope",
+      "input": {
+        "query": "what should I remember about the release checklist",
+        "sessionId": "dsh-session-fixture",
+        "config": {
+          "recallPeerScope": "actor"
+        }
+      },
+      "expected": {
+        "body": {
+          "query": "what should I remember about the release checklist",
+          "mode": "context",
+          "purpose": "coding",
+          "score_threshold": 0.35,
+          "session_id": "dsh-session-fixture",
+          "dedup_turns": 5,
+          "peer_scope": "actor"
+        },
+        "timeoutMs": 15000
+      }
+    },
+    {
+      "id": "peer-scope-all",
+      "note": "all peer scope omits the field",
+      "input": {
+        "query": "what should I remember about the release checklist",
+        "sessionId": "dsh-session-fixture",
+        "config": {
+          "recallPeerScope": "all"
+        }
+      },
+      "expected": {
+        "body": {
+          "query": "what should I remember about the release checklist",
+          "mode": "context",
+          "purpose": "coding",
+          "score_threshold": 0.35,
+          "session_id": "dsh-session-fixture",
+          "dedup_turns": 5
+        },
+        "timeoutMs": 15000
+      }
+    },
+    {
+      "id": "rewrite-server",
+      "note": "server rewrite sends rewrite:true",
+      "input": {
+        "query": "what should I remember about the release checklist",
+        "sessionId": "dsh-session-fixture",
+        "config": {
+          "recallRewrite": "server"
+        }
+      },
+      "expected": {
+        "body": {
+          "query": "what should I remember about the release checklist",
+          "mode": "context",
+          "purpose": "coding",
+          "score_threshold": 0.35,
+          "session_id": "dsh-session-fixture",
+          "dedup_turns": 5,
+          "rewrite": true
+        },
+        "timeoutMs": 45000
+      }
+    },
+    {
+      "id": "rewrite-auto",
+      "note": "auto rewrite sends rewrite:\"auto\" (the real call site never passes the local-compressor flag)",
+      "input": {
+        "query": "what should I remember about the release checklist",
+        "sessionId": "dsh-session-fixture",
+        "config": {
+          "recallRewrite": "auto"
+        }
+      },
+      "expected": {
+        "body": {
+          "query": "what should I remember about the release checklist",
+          "mode": "context",
+          "purpose": "coding",
+          "score_threshold": 0.35,
+          "session_id": "dsh-session-fixture",
+          "dedup_turns": 5,
+          "rewrite": "auto"
+        },
+        "timeoutMs": 45000
+      }
+    },
+    {
+      "id": "rewrite-off",
+      "note": "off rewrite omits the field",
+      "input": {
+        "query": "what should I remember about the release checklist",
+        "sessionId": "dsh-session-fixture",
+        "config": {
+          "recallRewrite": "off"
+        }
+      },
+      "expected": {
+        "body": {
+          "query": "what should I remember about the release checklist",
+          "mode": "context",
+          "purpose": "coding",
+          "score_threshold": 0.35,
+          "session_id": "dsh-session-fixture",
+          "dedup_turns": 5
+        },
+        "timeoutMs": 15000
+      }
+    },
+    {
+      "id": "events-decay",
+      "note": "decay protection is trimmed before sending",
+      "input": {
+        "query": "what should I remember about the release checklist",
+        "sessionId": "dsh-session-fixture",
+        "config": {
+          "recallEventsDecayProtection": " 30d "
+        }
+      },
+      "expected": {
+        "body": {
+          "query": "what should I remember about the release checklist",
+          "mode": "context",
+          "purpose": "coding",
+          "score_threshold": 0.35,
+          "session_id": "dsh-session-fixture",
+          "dedup_turns": 5,
+          "events_time_decay_protection": "30d"
+        },
+        "timeoutMs": 15000
+      }
+    },
+    {
+      "id": "exclude-uris",
+      "note": "two excluded URIs",
+      "input": {
+        "query": "what should I remember about the release checklist",
+        "sessionId": "dsh-session-fixture",
+        "config": {
+          "recallExcludeUris": [
+            "viking://user/default/memories/events/a.md",
+            "viking://user/default/memories/entities/b.md"
+          ]
+        }
+      },
+      "expected": {
+        "body": {
+          "query": "what should I remember about the release checklist",
+          "mode": "context",
+          "purpose": "coding",
+          "score_threshold": 0.35,
+          "session_id": "dsh-session-fixture",
+          "dedup_turns": 5,
+          "exclude_uris": [
+            "viking://user/default/memories/events/a.md",
+            "viking://user/default/memories/entities/b.md"
+          ]
+        },
+        "timeoutMs": 15000
+      }
+    },
+    {
+      "id": "exclude-uris-over-cap",
+      "note": "201 excluded URIs: capped at 200",
+      "input": {
+        "query": "what should I remember about the release checklist",
+        "sessionId": "dsh-session-fixture",
+        "config": {
+          "recallExcludeUris": [
+            "viking://fixture/excluded/0.md",
+            "viking://fixture/excluded/1.md",
+            "viking://fixture/excluded/2.md",
+            "viking://fixture/excluded/3.md",
+            "viking://fixture/excluded/4.md",
+            "viking://fixture/excluded/5.md",
+            "viking://fixture/excluded/6.md",
+            "viking://fixture/excluded/7.md",
+            "viking://fixture/excluded/8.md",
+            "viking://fixture/excluded/9.md",
+            "viking://fixture/excluded/10.md",
+            "viking://fixture/excluded/11.md",
+            "viking://fixture/excluded/12.md",
+            "viking://fixture/excluded/13.md",
+            "viking://fixture/excluded/14.md",
+            "viking://fixture/excluded/15.md",
+            "viking://fixture/excluded/16.md",
+            "viking://fixture/excluded/17.md",
+            "viking://fixture/excluded/18.md",
+            "viking://fixture/excluded/19.md",
+            "viking://fixture/excluded/20.md",
+            "viking://fixture/excluded/21.md",
+            "viking://fixture/excluded/22.md",
+            "viking://fixture/excluded/23.md",
+            "viking://fixture/excluded/24.md",
+            "viking://fixture/excluded/25.md",
+            "viking://fixture/excluded/26.md",
+            "viking://fixture/excluded/27.md",
+            "viking://fixture/excluded/28.md",
+            "viking://fixture/excluded/29.md",
+            "viking://fixture/excluded/30.md",
+            "viking://fixture/excluded/31.md",
+            "viking://fixture/excluded/32.md",
+            "viking://fixture/excluded/33.md",
+            "viking://fixture/excluded/34.md",
+            "viking://fixture/excluded/35.md",
+            "viking://fixture/excluded/36.md",
+            "viking://fixture/excluded/37.md",
+            "viking://fixture/excluded/38.md",
+            "viking://fixture/excluded/39.md",
+            "viking://fixture/excluded/40.md",
+            "viking://fixture/excluded/41.md",
+            "viking://fixture/excluded/42.md",
+            "viking://fixture/excluded/43.md",
+            "viking://fixture/excluded/44.md",
+            "viking://fixture/excluded/45.md",
+            "viking://fixture/excluded/46.md",
+            "viking://fixture/excluded/47.md",
+            "viking://fixture/excluded/48.md",
+            "viking://fixture/excluded/49.md",
+            "viking://fixture/excluded/50.md",
+            "viking://fixture/excluded/51.md",
+            "viking://fixture/excluded/52.md",
+            "viking://fixture/excluded/53.md",
+            "viking://fixture/excluded/54.md",
+            "viking://fixture/excluded/55.md",
+            "viking://fixture/excluded/56.md",
+            "viking://fixture/excluded/57.md",
+            "viking://fixture/excluded/58.md",
+            "viking://fixture/excluded/59.md",
+            "viking://fixture/excluded/60.md",
+            "viking://fixture/excluded/61.md",
+            "viking://fixture/excluded/62.md",
+            "viking://fixture/excluded/63.md",
+            "viking://fixture/excluded/64.md",
+            "viking://fixture/excluded/65.md",
+            "viking://fixture/excluded/66.md",
+            "viking://fixture/excluded/67.md",
+            "viking://fixture/excluded/68.md",
+            "viking://fixture/excluded/69.md",
+            "viking://fixture/excluded/70.md",
+            "viking://fixture/excluded/71.md",
+            "viking://fixture/excluded/72.md",
+            "viking://fixture/excluded/73.md",
+            "viking://fixture/excluded/74.md",
+            "viking://fixture/excluded/75.md",
+            "viking://fixture/excluded/76.md",
+            "viking://fixture/excluded/77.md",
+            "viking://fixture/excluded/78.md",
+            "viking://fixture/excluded/79.md",
+            "viking://fixture/excluded/80.md",
+            "viking://fixture/excluded/81.md",
+            "viking://fixture/excluded/82.md",
+            "viking://fixture/excluded/83.md",
+            "viking://fixture/excluded/84.md",
+            "viking://fixture/excluded/85.md",
+            "viking://fixture/excluded/86.md",
+            "viking://fixture/excluded/87.md",
+            "viking://fixture/excluded/88.md",
+            "viking://fixture/excluded/89.md",
+            "viking://fixture/excluded/90.md",
+            "viking://fixture/excluded/91.md",
+            "viking://fixture/excluded/92.md",
+            "viking://fixture/excluded/93.md",
+            "viking://fixture/excluded/94.md",
+            "viking://fixture/excluded/95.md",
+            "viking://fixture/excluded/96.md",
+            "viking://fixture/excluded/97.md",
+            "viking://fixture/excluded/98.md",
+            "viking://fixture/excluded/99.md",
+            "viking://fixture/excluded/100.md",
+            "viking://fixture/excluded/101.md",
+            "viking://fixture/excluded/102.md",
+            "viking://fixture/excluded/103.md",
+            "viking://fixture/excluded/104.md",
+            "viking://fixture/excluded/105.md",
+            "viking://fixture/excluded/106.md",
+            "viking://fixture/excluded/107.md",
+            "viking://fixture/excluded/108.md",
+            "viking://fixture/excluded/109.md",
+            "viking://fixture/excluded/110.md",
+            "viking://fixture/excluded/111.md",
+            "viking://fixture/excluded/112.md",
+            "viking://fixture/excluded/113.md",
+            "viking://fixture/excluded/114.md",
+            "viking://fixture/excluded/115.md",
+            "viking://fixture/excluded/116.md",
+            "viking://fixture/excluded/117.md",
+            "viking://fixture/excluded/118.md",
+            "viking://fixture/excluded/119.md",
+            "viking://fixture/excluded/120.md",
+            "viking://fixture/excluded/121.md",
+            "viking://fixture/excluded/122.md",
+            "viking://fixture/excluded/123.md",
+            "viking://fixture/excluded/124.md",
+            "viking://fixture/excluded/125.md",
+            "viking://fixture/excluded/126.md",
+            "viking://fixture/excluded/127.md",
+            "viking://fixture/excluded/128.md",
+            "viking://fixture/excluded/129.md",
+            "viking://fixture/excluded/130.md",
+            "viking://fixture/excluded/131.md",
+            "viking://fixture/excluded/132.md",
+            "viking://fixture/excluded/133.md",
+            "viking://fixture/excluded/134.md",
+            "viking://fixture/excluded/135.md",
+            "viking://fixture/excluded/136.md",
+            "viking://fixture/excluded/137.md",
+            "viking://fixture/excluded/138.md",
+            "viking://fixture/excluded/139.md",
+            "viking://fixture/excluded/140.md",
+            "viking://fixture/excluded/141.md",
+            "viking://fixture/excluded/142.md",
+            "viking://fixture/excluded/143.md",
+            "viking://fixture/excluded/144.md",
+            "viking://fixture/excluded/145.md",
+            "viking://fixture/excluded/146.md",
+            "viking://fixture/excluded/147.md",
+            "viking://fixture/excluded/148.md",
+            "viking://fixture/excluded/149.md",
+            "viking://fixture/excluded/150.md",
+            "viking://fixture/excluded/151.md",
+            "viking://fixture/excluded/152.md",
+            "viking://fixture/excluded/153.md",
+            "viking://fixture/excluded/154.md",
+            "viking://fixture/excluded/155.md",
+            "viking://fixture/excluded/156.md",
+            "viking://fixture/excluded/157.md",
+            "viking://fixture/excluded/158.md",
+            "viking://fixture/excluded/159.md",
+            "viking://fixture/excluded/160.md",
+            "viking://fixture/excluded/161.md",
+            "viking://fixture/excluded/162.md",
+            "viking://fixture/excluded/163.md",
+            "viking://fixture/excluded/164.md",
+            "viking://fixture/excluded/165.md",
+            "viking://fixture/excluded/166.md",
+            "viking://fixture/excluded/167.md",
+            "viking://fixture/excluded/168.md",
+            "viking://fixture/excluded/169.md",
+            "viking://fixture/excluded/170.md",
+            "viking://fixture/excluded/171.md",
+            "viking://fixture/excluded/172.md",
+            "viking://fixture/excluded/173.md",
+            "viking://fixture/excluded/174.md",
+            "viking://fixture/excluded/175.md",
+            "viking://fixture/excluded/176.md",
+            "viking://fixture/excluded/177.md",
+            "viking://fixture/excluded/178.md",
+            "viking://fixture/excluded/179.md",
+            "viking://fixture/excluded/180.md",
+            "viking://fixture/excluded/181.md",
+            "viking://fixture/excluded/182.md",
+            "viking://fixture/excluded/183.md",
+            "viking://fixture/excluded/184.md",
+            "viking://fixture/excluded/185.md",
+            "viking://fixture/excluded/186.md",
+            "viking://fixture/excluded/187.md",
+            "viking://fixture/excluded/188.md",
+            "viking://fixture/excluded/189.md",
+            "viking://fixture/excluded/190.md",
+            "viking://fixture/excluded/191.md",
+            "viking://fixture/excluded/192.md",
+            "viking://fixture/excluded/193.md",
+            "viking://fixture/excluded/194.md",
+            "viking://fixture/excluded/195.md",
+            "viking://fixture/excluded/196.md",
+            "viking://fixture/excluded/197.md",
+            "viking://fixture/excluded/198.md",
+            "viking://fixture/excluded/199.md",
+            "viking://fixture/excluded/200.md"
+          ]
+        }
+      },
+      "expected": {
+        "body": {
+          "query": "what should I remember about the release checklist",
+          "mode": "context",
+          "purpose": "coding",
+          "score_threshold": 0.35,
+          "session_id": "dsh-session-fixture",
+          "dedup_turns": 5,
+          "exclude_uris": [
+            "viking://fixture/excluded/0.md",
+            "viking://fixture/excluded/1.md",
+            "viking://fixture/excluded/2.md",
+            "viking://fixture/excluded/3.md",
+            "viking://fixture/excluded/4.md",
+            "viking://fixture/excluded/5.md",
+            "viking://fixture/excluded/6.md",
+            "viking://fixture/excluded/7.md",
+            "viking://fixture/excluded/8.md",
+            "viking://fixture/excluded/9.md",
+            "viking://fixture/excluded/10.md",
+            "viking://fixture/excluded/11.md",
+            "viking://fixture/excluded/12.md",
+            "viking://fixture/excluded/13.md",
+            "viking://fixture/excluded/14.md",
+            "viking://fixture/excluded/15.md",
+            "viking://fixture/excluded/16.md",
+            "viking://fixture/excluded/17.md",
+            "viking://fixture/excluded/18.md",
+            "viking://fixture/excluded/19.md",
+            "viking://fixture/excluded/20.md",
+            "viking://fixture/excluded/21.md",
+            "viking://fixture/excluded/22.md",
+            "viking://fixture/excluded/23.md",
+            "viking://fixture/excluded/24.md",
+            "viking://fixture/excluded/25.md",
+            "viking://fixture/excluded/26.md",
+            "viking://fixture/excluded/27.md",
+            "viking://fixture/excluded/28.md",
+            "viking://fixture/excluded/29.md",
+            "viking://fixture/excluded/30.md",
+            "viking://fixture/excluded/31.md",
+            "viking://fixture/excluded/32.md",
+            "viking://fixture/excluded/33.md",
+            "viking://fixture/excluded/34.md",
+            "viking://fixture/excluded/35.md",
+            "viking://fixture/excluded/36.md",
+            "viking://fixture/excluded/37.md",
+            "viking://fixture/excluded/38.md",
+            "viking://fixture/excluded/39.md",
+            "viking://fixture/excluded/40.md",
+            "viking://fixture/excluded/41.md",
+            "viking://fixture/excluded/42.md",
+            "viking://fixture/excluded/43.md",
+            "viking://fixture/excluded/44.md",
+            "viking://fixture/excluded/45.md",
+            "viking://fixture/excluded/46.md",
+            "viking://fixture/excluded/47.md",
+            "viking://fixture/excluded/48.md",
+            "viking://fixture/excluded/49.md",
+            "viking://fixture/excluded/50.md",
+            "viking://fixture/excluded/51.md",
+            "viking://fixture/excluded/52.md",
+            "viking://fixture/excluded/53.md",
+            "viking://fixture/excluded/54.md",
+            "viking://fixture/excluded/55.md",
+            "viking://fixture/excluded/56.md",
+            "viking://fixture/excluded/57.md",
+            "viking://fixture/excluded/58.md",
+            "viking://fixture/excluded/59.md",
+            "viking://fixture/excluded/60.md",
+            "viking://fixture/excluded/61.md",
+            "viking://fixture/excluded/62.md",
+            "viking://fixture/excluded/63.md",
+            "viking://fixture/excluded/64.md",
+            "viking://fixture/excluded/65.md",
+            "viking://fixture/excluded/66.md",
+            "viking://fixture/excluded/67.md",
+            "viking://fixture/excluded/68.md",
+            "viking://fixture/excluded/69.md",
+            "viking://fixture/excluded/70.md",
+            "viking://fixture/excluded/71.md",
+            "viking://fixture/excluded/72.md",
+            "viking://fixture/excluded/73.md",
+            "viking://fixture/excluded/74.md",
+            "viking://fixture/excluded/75.md",
+            "viking://fixture/excluded/76.md",
+            "viking://fixture/excluded/77.md",
+            "viking://fixture/excluded/78.md",
+            "viking://fixture/excluded/79.md",
+            "viking://fixture/excluded/80.md",
+            "viking://fixture/excluded/81.md",
+            "viking://fixture/excluded/82.md",
+            "viking://fixture/excluded/83.md",
+            "viking://fixture/excluded/84.md",
+            "viking://fixture/excluded/85.md",
+            "viking://fixture/excluded/86.md",
+            "viking://fixture/excluded/87.md",
+            "viking://fixture/excluded/88.md",
+            "viking://fixture/excluded/89.md",
+            "viking://fixture/excluded/90.md",
+            "viking://fixture/excluded/91.md",
+            "viking://fixture/excluded/92.md",
+            "viking://fixture/excluded/93.md",
+            "viking://fixture/excluded/94.md",
+            "viking://fixture/excluded/95.md",
+            "viking://fixture/excluded/96.md",
+            "viking://fixture/excluded/97.md",
+            "viking://fixture/excluded/98.md",
+            "viking://fixture/excluded/99.md",
+            "viking://fixture/excluded/100.md",
+            "viking://fixture/excluded/101.md",
+            "viking://fixture/excluded/102.md",
+            "viking://fixture/excluded/103.md",
+            "viking://fixture/excluded/104.md",
+            "viking://fixture/excluded/105.md",
+            "viking://fixture/excluded/106.md",
+            "viking://fixture/excluded/107.md",
+            "viking://fixture/excluded/108.md",
+            "viking://fixture/excluded/109.md",
+            "viking://fixture/excluded/110.md",
+            "viking://fixture/excluded/111.md",
+            "viking://fixture/excluded/112.md",
+            "viking://fixture/excluded/113.md",
+            "viking://fixture/excluded/114.md",
+            "viking://fixture/excluded/115.md",
+            "viking://fixture/excluded/116.md",
+            "viking://fixture/excluded/117.md",
+            "viking://fixture/excluded/118.md",
+            "viking://fixture/excluded/119.md",
+            "viking://fixture/excluded/120.md",
+            "viking://fixture/excluded/121.md",
+            "viking://fixture/excluded/122.md",
+            "viking://fixture/excluded/123.md",
+            "viking://fixture/excluded/124.md",
+            "viking://fixture/excluded/125.md",
+            "viking://fixture/excluded/126.md",
+            "viking://fixture/excluded/127.md",
+            "viking://fixture/excluded/128.md",
+            "viking://fixture/excluded/129.md",
+            "viking://fixture/excluded/130.md",
+            "viking://fixture/excluded/131.md",
+            "viking://fixture/excluded/132.md",
+            "viking://fixture/excluded/133.md",
+            "viking://fixture/excluded/134.md",
+            "viking://fixture/excluded/135.md",
+            "viking://fixture/excluded/136.md",
+            "viking://fixture/excluded/137.md",
+            "viking://fixture/excluded/138.md",
+            "viking://fixture/excluded/139.md",
+            "viking://fixture/excluded/140.md",
+            "viking://fixture/excluded/141.md",
+            "viking://fixture/excluded/142.md",
+            "viking://fixture/excluded/143.md",
+            "viking://fixture/excluded/144.md",
+            "viking://fixture/excluded/145.md",
+            "viking://fixture/excluded/146.md",
+            "viking://fixture/excluded/147.md",
+            "viking://fixture/excluded/148.md",
+            "viking://fixture/excluded/149.md",
+            "viking://fixture/excluded/150.md",
+            "viking://fixture/excluded/151.md",
+            "viking://fixture/excluded/152.md",
+            "viking://fixture/excluded/153.md",
+            "viking://fixture/excluded/154.md",
+            "viking://fixture/excluded/155.md",
+            "viking://fixture/excluded/156.md",
+            "viking://fixture/excluded/157.md",
+            "viking://fixture/excluded/158.md",
+            "viking://fixture/excluded/159.md",
+            "viking://fixture/excluded/160.md",
+            "viking://fixture/excluded/161.md",
+            "viking://fixture/excluded/162.md",
+            "viking://fixture/excluded/163.md",
+            "viking://fixture/excluded/164.md",
+            "viking://fixture/excluded/165.md",
+            "viking://fixture/excluded/166.md",
+            "viking://fixture/excluded/167.md",
+            "viking://fixture/excluded/168.md",
+            "viking://fixture/excluded/169.md",
+            "viking://fixture/excluded/170.md",
+            "viking://fixture/excluded/171.md",
+            "viking://fixture/excluded/172.md",
+            "viking://fixture/excluded/173.md",
+            "viking://fixture/excluded/174.md",
+            "viking://fixture/excluded/175.md",
+            "viking://fixture/excluded/176.md",
+            "viking://fixture/excluded/177.md",
+            "viking://fixture/excluded/178.md",
+            "viking://fixture/excluded/179.md",
+            "viking://fixture/excluded/180.md",
+            "viking://fixture/excluded/181.md",
+            "viking://fixture/excluded/182.md",
+            "viking://fixture/excluded/183.md",
+            "viking://fixture/excluded/184.md",
+            "viking://fixture/excluded/185.md",
+            "viking://fixture/excluded/186.md",
+            "viking://fixture/excluded/187.md",
+            "viking://fixture/excluded/188.md",
+            "viking://fixture/excluded/189.md",
+            "viking://fixture/excluded/190.md",
+            "viking://fixture/excluded/191.md",
+            "viking://fixture/excluded/192.md",
+            "viking://fixture/excluded/193.md",
+            "viking://fixture/excluded/194.md",
+            "viking://fixture/excluded/195.md",
+            "viking://fixture/excluded/196.md",
+            "viking://fixture/excluded/197.md",
+            "viking://fixture/excluded/198.md",
+            "viking://fixture/excluded/199.md"
+          ]
+        },
+        "timeoutMs": 15000
+      }
+    },
+    {
+      "id": "query-expansion-off",
+      "note": "explicit expansion off: the timeout no longer needs the expansion floor",
+      "input": {
+        "query": "what should I remember about the release checklist",
+        "sessionId": "dsh-session-fixture",
+        "config": {
+          "recallQueryExpansion": "off",
+          "recallQueryExpansionConfigured": true
+        }
+      },
+      "expected": {
+        "body": {
+          "query": "what should I remember about the release checklist",
+          "mode": "context",
+          "purpose": "coding",
+          "score_threshold": 0.35,
+          "session_id": "dsh-session-fixture",
+          "dedup_turns": 5,
+          "query_expansion": "off"
+        },
+        "timeoutMs": null
+      }
+    },
+    {
+      "id": "rewrite-max-bullets",
+      "note": "rewrite bullets are sent only with a rewrite",
+      "input": {
+        "query": "what should I remember about the release checklist",
+        "sessionId": "dsh-session-fixture",
+        "config": {
+          "recallRewrite": "server",
+          "recallCompressMaxBullets": 4,
+          "recallCompressMaxBulletsConfigured": true
+        }
+      },
+      "expected": {
+        "body": {
+          "query": "what should I remember about the release checklist",
+          "mode": "context",
+          "purpose": "coding",
+          "score_threshold": 0.35,
+          "session_id": "dsh-session-fixture",
+          "dedup_turns": 5,
+          "rewrite": true,
+          "rewrite_max_bullets": 4
+        },
+        "timeoutMs": 45000
+      }
+    },
+    {
+      "id": "timeout-explicit-override",
+      "note": "explicit deadline wins",
+      "input": {
+        "query": "what should I remember about the release checklist",
+        "sessionId": "dsh-session-fixture",
+        "config": {
+          "recallContextTimeoutMs": 60000
+        }
+      },
+      "expected": {
+        "body": {
+          "query": "what should I remember about the release checklist",
+          "mode": "context",
+          "purpose": "coding",
+          "score_threshold": 0.35,
+          "session_id": "dsh-session-fixture",
+          "dedup_turns": 5
+        },
+        "timeoutMs": 60000
+      }
+    },
+    {
+      "id": "configured-recall",
+      "note": "every knob at once",
+      "input": {
+        "query": "what should I remember about the release checklist",
+        "sessionId": "dsh-session-fixture",
+        "config": {
+          "recallLimit": 12,
+          "recallLimitConfigured": true,
+          "recallMaxTokens": 2200,
+          "recallMaxTokensConfigured": true,
+          "recallDedupTurns": 2,
+          "recallPeerScope": "actor",
+          "recallQueryExpansion": "off",
+          "recallQueryExpansionConfigured": true,
+          "recallEventsDecayProtection": "7d",
+          "recallExcludeUris": [
+            "viking://fixture/one"
+          ],
+          "recallRewrite": "server",
+          "recallCompressMaxBullets": 3,
+          "recallCompressMaxBulletsConfigured": true
+        }
+      },
+      "expected": {
+        "body": {
+          "query": "what should I remember about the release checklist",
+          "mode": "context",
+          "purpose": "coding",
+          "score_threshold": 0.35,
+          "session_id": "dsh-session-fixture",
+          "quotas": {
+            "events": 1,
+            "entities": 3,
+            "preferences": 1,
+            "experiences": 1,
+            "resources": 4,
+            "skills": 2
+          },
+          "max_tokens": 2200,
+          "dedup_turns": 2,
+          "query_expansion": "off",
+          "peer_scope": "actor",
+          "events_time_decay_protection": "7d",
+          "exclude_uris": [
+            "viking://fixture/one"
+          ],
+          "rewrite": true,
+          "rewrite_max_bullets": 3
+        },
+        "timeoutMs": 45000
+      }
+    }
+  ]
+}

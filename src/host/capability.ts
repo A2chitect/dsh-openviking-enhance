@@ -22,6 +22,8 @@
  */
 import type { ScopeCapability } from '../shared/protocol.ts'
 import type { OpenVikingApi } from './openviking-api.ts'
+import { classifyRuleProbe, type RuleSearchCapability } from './catalog-service.ts'
+import { RULES_CAPABILITY_TTL_MS } from '../shared/limits.ts'
 
 /** The health facts the scope banner shows, secret-free. */
 export interface HealthFacts {
@@ -46,6 +48,12 @@ export interface CapabilitySnapshot {
   health: HealthFacts
   snapshot: SnapshotCapability
   tasks: ScopeCapability
+  /**
+   * The cheap `rules/search` route probe (S2). Cached for
+   * {@link RULES_CAPABILITY_TTL_MS}: a rule-route answer changes only when the
+   * server build changes, not between panel opens.
+   */
+  rules: RuleSearchCapability
 }
 
 export interface CapabilityOptions {
@@ -53,11 +61,13 @@ export interface CapabilityOptions {
   /** Whether the authenticated mutation transport is present (writes gate). */
   transport: () => boolean
   cacheTtlMs?: number
+  /** How long one rules-route probe is trusted (default S2's 10 minutes). */
+  rulesCacheTtlMs?: number
   now?: () => number
 }
 
 /** The design's gate name for a capability, used as the map key in `/scope`. */
-export const CAPABILITY_NAMES = ['health', 'identity', 'snapshot', 'tasks', 'acl', 'mutation-transport'] as const
+export const CAPABILITY_NAMES = ['health', 'identity', 'snapshot', 'tasks', 'rules', 'acl', 'mutation-transport'] as const
 
 function unavailable(detail: string, kind: SnapshotCapability['kind'] = 'unknown'): SnapshotCapability {
   return { available: false, detail, kind }
@@ -66,19 +76,53 @@ function unavailable(detail: string, kind: SnapshotCapability['kind'] = 'unknown
 export class CapabilityService {
   private readonly options: CapabilityOptions
   private readonly cacheTtlMs: number
+  private readonly rulesCacheTtlMs: number
   private readonly now: () => number
   private cached: CapabilitySnapshot | null = null
   private inflight: Promise<CapabilitySnapshot> | null = null
+  private rulesCached: RuleSearchCapability | null = null
+  private rulesObservedAt = 0
+  private rulesInflight: Promise<RuleSearchCapability> | null = null
 
   constructor(options: CapabilityOptions) {
     this.options = options
     this.cacheTtlMs = options.cacheTtlMs ?? 10_000
+    this.rulesCacheTtlMs = options.rulesCacheTtlMs ?? RULES_CAPABILITY_TTL_MS
     this.now = options.now ?? Date.now
   }
 
   /** Forget the probe; called on a profile switch and by a `fresh=1` read. */
   invalidate(): void {
     this.cached = null
+    this.rulesCached = null
+    this.rulesObservedAt = 0
+  }
+
+  /**
+   * The cached rules-route capability, probing with the validation-only empty
+   * body only when stale.
+   *
+   * This is the S2 answer the Rules section uses: it never runs a rule search,
+   * and a 10-minute cache keeps opening the section free even when the scope
+   * prompt has not been opened.
+   */
+  async rules(fresh = false): Promise<RuleSearchCapability> {
+    if (!fresh && this.rulesCached !== null && this.now() - this.rulesObservedAt < this.rulesCacheTtlMs) {
+      return this.rulesCached
+    }
+    if (this.rulesInflight !== null) return this.rulesInflight
+    this.rulesInflight = this.options.api
+      .probeRuleSearchRoute()
+      .then((reply) => {
+        const capability = classifyRuleProbe(reply)
+        this.rulesCached = capability
+        this.rulesObservedAt = this.now()
+        return capability
+      })
+      .finally(() => {
+        this.rulesInflight = null
+      })
+    return this.rulesInflight
   }
 
   /**
@@ -126,15 +170,18 @@ export class CapabilityService {
         },
         snapshot: unavailable('profile-unhealthy'),
         tasks: { available: false, detail: 'profile-unhealthy' },
+        rules: { available: true, detail: 'profile-unhealthy', kind: 'unknown' },
       }
       this.cached = result
       return result
     }
     // The two capability probes are independent reads; run them together so the
     // current scope prompt pays one round trip, not two.
-    const [snapshotResult, tasksResult] = await Promise.all([
+    const staleness = this.rulesCached !== null && this.now() - this.rulesObservedAt < this.rulesCacheTtlMs
+    const [snapshotResult, tasksResult, rules] = await Promise.all([
       this.options.api.snapshotLog({ limit: 1 }),
       this.options.api.listTasks({ limit: 1 }),
+      staleness ? Promise.resolve(this.rulesCached as RuleSearchCapability) : this.rules(),
     ])
     const snapshot = this.classifySnapshot(snapshotResult)
     const tasks: ScopeCapability = tasksResult.ok
@@ -156,6 +203,7 @@ export class CapabilityService {
       },
       snapshot,
       tasks,
+      rules,
     }
     this.cached = result
     return result
@@ -205,6 +253,7 @@ export function scopeCapabilities(
     },
     snapshot: { available: snapshot.snapshot.available, detail: snapshot.snapshot.detail },
     tasks: snapshot.tasks,
+    rules: { available: snapshot.rules.available, detail: snapshot.rules.detail },
     acl: { available: false, detail: 'not-enabled' },
     'mutation-transport': { available: transport, detail: transport ? null : 'transport-unavailable' },
     'writes-master': { available: writesEnabled, detail: writesEnabled ? null : 'writes-disabled' },

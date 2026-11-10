@@ -4,8 +4,8 @@
 
 **v0.3.0** · [更新记录](CHANGELOG.md) · [路线图](ROADMAP.md)
 
-> 下面的 v0.4 Act 与 v0.5 Collaborate 功能位于 `Unreleased`；版本行与包版本保持
-> 0.3.0，直到发布脚本将它们提升并打标签。
+> 下面的 v0.4 Act、v0.5 Collaborate 与 v0.6 Trust and verify 变更位于
+> `Unreleased`；版本行与包版本保持 0.3.0，直到发布脚本将它们提升并打标签。
 
 把本地 [OpenViking](https://docs.openviking.ai) 记忆服务接进 DeepSeek Harness
 （DSH）的 Web 界面：左侧边栏的 OpenViking Studio 面板、输入框下方的 commit 状态
@@ -185,39 +185,178 @@ peer 和身份指纹，并对远程端点给出警告；写入弹窗无论 chip 
 快照，因此单独限制每分钟 10 次（取消不会退还配额）。同一时间只有一个写入；关闭弹窗会释放
 待确认令牌，被拒绝的尝试也会审计。
 
-## 前置条件
+## 宿主契约与兼容性
 
-| | |
-| --- | --- |
-| DSH | 0.2.0-rc.2 或更新（desktop / web profile 均可；已在 0.2.0-rc.2、0.2.1-rc.5、0.2.2-rc.1 实测） |
-| OpenViking | 需要一个本地服务，实测 0.5.1.1–0.5.3（0.5.3 含上下文接口）。预览、搜索与技能在 0.5.1.1+ 可用；Experience 路由在同一批版本中存在，已在 0.5.3 上验证；**规则需要 0.5.3+**。Studio 由同一端口的 `/studio/` 提供 |
-| 记忆插件 | 建议装 `@openviking/dsh-memory-plugin`——会话提交由它完成。不装也能用，只是看不到提交阈值进度 |
-| 写入 | 需要手动开启（`enableWrites`，默认关闭），且需要 **DSH 0.2.2-rc.1+** 提供的认证 `ctx.connection.fetch` 传输。会话认证由该 DSH 传输负责、不由本插件负责；插件自己的 HTTP 服务**不暴露任何写入路由**（冒烟脚本断言这些路径在本机服务上返回 404）。旧版本保留所有只读界面，写入会带原因禁用 |
+这一章是本插件的宿主契约：支持范围、安装方式、进程模型、读写边界、时限、降级路径、
+不承担的能力，以及隐私边界。带日期的验证证据在 [`VERIFICATION.md`](VERIFICATION.md)。
 
-## 安装
+### 支持范围
 
-从 Plugins 页安装（Add plugin → 填包名或 tarball），或：
+| 组件 | 支持范围 | 实测 / 说明 |
+| --- | --- | --- |
+| DSH（只读） | `>=0.2.0-rc.2 <1.0.0-0`（`engines.dsh`，上界锁在 1.0 之前） | 按 0.2.2-rc.1 构建与类型检查；在 0.2.0-rc.2、0.2.1-rc.5、0.2.2-rc.1 实测 |
+| DSH（写入） | **0.2.2-rc.1+** | 需要认证的 `ctx.connection.fetch`；旧版本保留全部只读界面，写入带原因禁用 |
+| OpenViking | 实测 0.5.1.1 – 0.5.3 | 0.5.2 未验证，0.5.4 未探测。预览/搜索/技能/Experience 在 0.5.1.1+ 可用（Experience 在 0.5.3 验证）；**规则需要 0.5.3+**；上下文接口为 0.5.3 |
+| 官方记忆插件 | `@openviking/dsh-memory-plugin`（可选） | 在维护者机器上验证 0.5.32；它进程内的状态是**被读取**的接口事实，不是上游发布的稳定契约（见“已知缺口”） |
+| Node | `^22.19.0 || >=24`（`engines.node`） | CI 使用 Node 22 |
+| 操作系统 | Linux CI；macOS 15 手工验证；**Windows 未验证** | 本版本没有 macOS/Windows 的 CI 自动化 |
+
+本版本声称的 OpenViking 实测范围是 **OpenViking 0.5.1.1 – 0.5.3**（0.5.2 未验证，
+0.5.4 未探测）。
+
+清单里的 `peerDependencies` 按 DSH 预发布版本线拆成同一策略（`<0.2.2-0` /
+`<0.3.0-0`）：npm 风格的 semver 不会让单个 `>=0.2.0-rc.2` 区间接受 0.2.x 预发布版，
+而 DSH 自己的兼容检查是包含预发布的。每一段都保留低于 1.0 的上界。
+
+### 安装 / 升级 / 卸载
+
+**CLI / web profile**（npm 安装的 `dsh`）：
 
 ```bash
 # 从 npm 装
-dsh plugin --profile desktop add dsh-openviking-enhance
+dsh plugin --profile web add dsh-openviking-enhance
 
-# 或从最新 release 装预构建 tarball
-dsh plugin --profile desktop add https://github.com/A2chitect/dsh-openviking-enhance/releases/latest/download/dsh-openviking-enhance.tgz
+# 或最新 release 的预构建 tarball / 本地打包
+dsh plugin --profile web add https://github.com/A2chitect/dsh-openviking-enhance/releases/latest/download/dsh-openviking-enhance.tgz
+pnpm pack && dsh plugin --profile web add ./dsh-openviking-enhance-<版本>.tgz
+
+# 卸载
+dsh plugin --profile web remove dsh-openviking-enhance
 ```
 
-直接用 Git 地址安装会被 pnpm 拒绝（这个包声明了构建脚本，pnpm 在得到允许前一律不放行），
-所以源码目录要打成 tarball 再装——客户端半部分是**预构建产物**，源码安装等于装了个没东西可加载的壳：
+**Desktop 应用**：从 Plugins 页安装（**Add plugin** → 包名或 tarball），或用 Desktop
+自带的启动器安装。npm 安装的 `dsh` **拒绝**保留的 `desktop` profile——这是官方 DSH 的
+行为，不是本插件的限制。
 
-```bash
-pnpm pack && dsh plugin --profile desktop add ./dsh-openviking-enhance-<版本>.tgz
-```
+**升级** = 安装新版本后重启应用。*宿主部分*（`lib/index.js`）在启动时加载，改宿主必须重启；
+*客户端部分*（`lib/client.js`）在页面加载时取用，只改客户端重载窗口即可。**卸载** = 移除
+包后重启；行、路由与组合出的客户端产物都会消失（`pnpm run verify:install` 会验证这一点）。
 
-安装后**重启一次 DSH 应用**（宿主部分在启动时加载）。卸载：
+客户端半部分是**预构建产物**：从源码目录直接安装（没有 `pnpm pack`）等于给壳一个加载不了的东西。
 
-```bash
-dsh plugin --profile desktop remove dsh-openviking-enhance
-```
+### 进程模型、输入与输出
+
+- **进程内宿主插件 + 浏览器 bundle**：没有守护进程、没有 worker、没有常驻后台定时器
+  （只有已挂载面板的轮询）。
+- **没有生命周期 hook、没有 MCP proxy、没有工具、没有 URI guard、没有 Skill 下发**
+  （这些属于官方记忆插件，见下面的 N/A 矩阵）。唯一的可选命令 `/viking` 通过
+  `ctx.commands` 注册。
+- **DSH web server 上的只读路由**：GET，加两个只读 POST（统一搜索、规则测试）。
+  只响应 loopback + 同源请求，JSON body 上限 64 KiB，且从不写入。
+- **变更只能走认证的 `ctx.connection.fetch` 传输**（DSH 0.2.2-rc.1+）；刻意不提供
+  loopback POST 写入通道。会话认证由该 DSH 传输负责，不由本插件负责；插件自己的 HTTP
+  服务端不暴露任何写入路由——对任何插件路由直接发未认证 POST 只会得到只读查询或 404
+  （冒烟测试断言所有 `/write/*` 路径都是 404）。
+- **从官方插件读取**：按会话的运行时配置/状态、pending queue 目录（只读文件名/时间，
+  从不读 payload）、能力 memo，以及服务端产出的提交/归档文件；从不写它们。
+- **本插件自己写的东西**：`${DSH_HOME:-~/.dsh}/state/dsh-openviking-enhance/` 下的
+  `profiles.json` 与 `audit.jsonl`，以及用户手动触发的 OpenViking 策展请求。
+- **启动不阻塞、失败被隔离**：激活失败只记日志、该条目不提供任何东西，不会拖垮 profile；
+  OpenViking 不在线只影响路由答案，不影响宿主。
+
+### 时限与上限
+
+下表的数值都来自 `src/shared/limits.ts`；`test/v06-docs.test.mjs` 会从两份 README 中
+解析这个代码块，所以文档契约不会与代码漂移。时间单位毫秒，大小未特别注明时为字节。
+
+<!-- contract:limits -->
+| constant | value |
+| --- | --- |
+| DEFAULT_REQUEST_TIMEOUT_MS | 8000 |
+| HEALTH_TIMEOUT_MS | 4000 |
+| STATUS_TIMEOUT_MS | 5000 |
+| FS_TIMEOUT_MS | 8000 |
+| LIST_SEARCH_TIMEOUT_MS | 12000 |
+| CONTEXT_SEARCH_TIMEOUT_MS | 20000 |
+| RECALL_CONTENT_TIMEOUT_MS | 10000 |
+| WRITE_TIMEOUT_MS | 20000 |
+| SET_TAGS_TIMEOUT_MS | 10000 |
+| SNAPSHOT_TIMEOUT_MS | 30000 |
+| WRITE_TOKEN_TTL_MS | 120000 |
+| WRITE_BODY_MAX_BYTES | 65536 |
+| RULE_LIST_DEADLINE_MS | 15000 |
+| RULE_LIST_CONCURRENCY | 4 |
+| PREVIEW_BODY_MAX_LINES | 400 |
+| PREVIEW_BODY_MAX_LINES_RESPONSE | 1000 |
+| PREVIEW_MAX_CHARS | 20000 |
+| AUDIT_MAX_BYTES | 1048576 |
+| AUDIT_KEEP_ROTATIONS | 2 |
+| ACTIVITY_TASKS_MAX_LIMIT | 50 |
+<!-- /contract:limits -->
+
+另外固定：每个召回桶/搜索请求最多 25 条，召回解释与单次正文载入各 20 000 字符，
+规则列表上限 100 条规则 / 20 个场景，L2 预览一页最多返回 1 000 行。
+
+### 能力探测与降级
+
+| 能力 | 探测 / 闸门 | 可用条件 | 降级方式 |
+| --- | --- | --- | --- |
+| 只读界面（预览、搜索、技能、会话日志、提交） | 每次请求的 HTTP 结果 | OpenViking 0.5.1.1+ | 明确的「不可用」状态，不堆错误 |
+| 上下文接口（召回解释） | 一次 `search/search` + `mode:"context"`（仅 Doctor） | 服务端支持上下文接口 | 退回逐目标检索，并在统计里说明是旧路径 |
+| 规则列表 / 规则测试 | 校验用的 `POST rules/search {}`（不产生 embedding/judge 开销） | OpenViking 0.5.3+ | 一行翻译好的「需要 0.5.3+」 |
+| Experience | `fs/ls` + `agent-evolution` 接口 | 在 0.5.3 验证 | 空状态或「该服务端不可用」 |
+| 快照撤销 | `GET /snapshot/log` 分类 | 路由存在（新账号报「无历史」） | 编辑/删除带原因禁用 |
+| 写入 | `enableWrites` **且** 认证传输 **且** 探测到健康身份 | DSH 0.2.2-rc.1+ | 只读并说明原因；所有变更 fail closed |
+| Activity 任务/指标 | `GET /tasks` 与逐卡片探测 | 路由存在 | 逐卡片「不可用」；`/metrics` 从不探测 |
+| ACL | 不探测 | 从不 | 明确的「未启用」行 |
+| Studio | `endpoint + studioPath` 的 iframe | 服务端提供 `/studio/` | 新标签页/浏览器兜底；X-Frame-Options/CSP 拒绝会如实显示 |
+
+### 不适用（由官方记忆插件承担）
+
+| 职责 | 归属 | 本插件 |
+| --- | --- | --- |
+| 自动召回、捕获、提交 | `@openviking/dsh-memory-plugin` | 解释、诊断、（手动开启后）强制提交；从不替代记忆管道 |
+| 生命周期 hook、MCP proxy/工具、URI guard、Skill 下发 | 官方插件 / 服务端 | 不存在；不向模型暴露任何工具 |
+| pending queue 写入、重试、恢复 | 官方插件 | 只读诊断（只看文件名/时间） |
+| 捕获暂停/恢复、归档重试 | 实测的构建里没有上游 API | 明确不提供，并在展示状态处说明 |
+
+### 数据、隐私与安全边界
+
+- **本地优先**：插件只与配置的 OpenViking 地址通信（默认 loopback），**没有任何遥测**
+  或其他外发请求。允许配置远程地址，但作用域 chip 会警告。
+- **只读路由仅限 loopback，而 loopback 不是用户边界。** 围栏会检查 socket、`Host`、
+  同源请求头和请求形状，但在多用户机器上本机其他进程仍可 `curl` 这些只读数据。变更从不
+  走这些路由：它们走框架认证的 `connection.fetch`。
+- **Studio 是服务端自己的 UI，装在 iframe 里。** 如果服务端拒绝被嵌入
+  （`X-Frame-Options`/CSP），插件提供新标签页/浏览器打开；它不代理也不重绘 Studio。
+  原生只读视图是 v0.7+ 的事。
+- **凭据优先级**：`~/.openviking/ovcli.conf` → `OPENVIKING_*` 环境变量 → 插件自己的
+  `profiles.json` 命名配置档。旧版 `apiKey` 配置字段已声明为 `role('secret')`，但保存它
+  会把明文 key 写进你的 profile 补丁——只当兜底。`profiles.json` 是命名配置档的
+  凭据存储（0600），插件不备份、不随包分发；密钥从不写日志，也不进入
+  Doctor/diagnostics。
+- **日志里没有对话或记忆正文**：本地审计文件只记录动作/身份/URI/结果，从不记录正文。
+  冒烟脚本默认脱敏（`SMOKE_VERBOSE=1` 是仅供本机调试的显式开关）。
+- **插件持久化的内容**：`profiles.json`（0600）与 `audit.jsonl`（0600，1 MiB 轮转、
+  保留 2 份），都在 `${DSH_HOME:-~/.dsh}/state/dsh-openviking-enhance/` 下。
+
+### 插件会发什么（以及代价）
+
+「只读」**不等于免费**：有些只读动作会让服务端做真实工作。全局动作与代价：
+
+| 动作 | 服务端工作 |
+| --- | --- |
+| 预览、召回列表、会话日志、技能目录、Experience 列表 | 便宜的 `fs`/`content` 读取 |
+| 回忆解释 | 一次上下文接口检索（embedding + 服务端的查询扩展/重写阶段） |
+| 探索搜索（默认） | 一次 `search/search` list 调用（embedding），覆盖记忆/资源/技能 |
+| 探索搜索——**勾选包含规则** | 额外一次 `rules/search`：场景向量召回；若配置了规则评审模型，还会增加模型调用 |
+| 规则测试 **Run** | 同样的 `rules/search` 代价（按钮旁有说明） |
+| Activity tab 可见时 | `tasks`/指标轮询；**tab 隐藏时不轮询** |
+| 写入、强制提交 | 仅用户触发，一次一个已确认动作 |
+
+打开规则列表**不会**花一次规则检索：能力闸门是校验用的 `POST rules/search {}`
+（服务端在 body 校验阶段就拒绝，先于任何召回/judge 工作），列表本身是有界文件读取
+（15 s 总截止、并发 4、100 条规则/20 个场景上限，部分结果保留并显示
+「显示 N 条（上限 M）」）。
+
+### 已知缺口
+
+- 官方插件进程内的配置/状态对象**不是上游发布的稳定契约**；它的大版本升级可能改变形状。
+  本插件会降级为「unknown/skipped」，而不是猜测。
+- 兼容性只对上面列出的 DSH/OpenViking 版本负责；0.5.4 未探测，Windows 未验证。
+- 写入需要 DSH 0.2.2-rc.1+；更老的版本按设计只读。
+- 仓库级验证是 CI（Linux）+ macOS 手工；Desktop 载体是手工安装验证，不在 CI 里。
+- 本插件由社区维护，**不是 OpenViking 官方项目**。
 
 ## 配置
 
@@ -226,7 +365,7 @@ dsh plugin --profile desktop remove dsh-openviking-enhance
 每个字段还有 **默认** 按钮——它是清除覆盖、恢复继承，而不是写入一个空值。
 
 同样的设置也仍然可以手写在 profile 的 patch 文件
-（`~/.dsh/profiles/desktop/cordis.patch.yml`）里 `openviking-enhance` 这一行下面：
+（`~/.dsh/profiles/<profile>/cordis.patch.yml`；CLI 用 `web`，Desktop 应用用 `desktop`）里 `openviking-enhance` 这一行下面：
 
 ```yaml
 - id: openviking-enhance
@@ -238,7 +377,7 @@ dsh plugin --profile desktop remove dsh-openviking-enhance
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
 | `endpoint` | 读 `~/.openviking/ovcli.conf`，否则 `http://127.0.0.1:1933` | OpenViking 地址 |
-| `apiKey` | 读 `ovcli.conf` | 仅在服务端开启鉴权时需要 |
+| `apiKey` | 读 `ovcli.conf` | 仅当服务端要求鉴权时的最后兜底：保存该字段会把明文 key 写进 profile 补丁。优先用 `ovcli.conf`、`OPENVIKING_*` 环境变量或命名配置档 |
 | `account` / `user` | `default` / `default` | 读取记忆所用的身份 |
 | `studioPath` | `/studio/` | Studio 在该地址下的路径 |
 | `cacheTtlMs` | `2500` | 状态结果的缓存时长 |

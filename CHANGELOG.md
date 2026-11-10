@@ -10,6 +10,72 @@ promotes to a dated section — see [RELEASING.md](RELEASING.md).
 
 ## Unreleased
 
+### v0.6 — Trust and verify (this PR)
+
+Trust and verify. v0.6 is a trust/verification release: it removes the last
+mirrored upstream expression from the MIT build, makes the package's install,
+host contract and privacy claims checkable, and adds explicit cost governance for
+the server work read actions can trigger. **No new UX surfaces**: the only UI
+changes are cost/privacy wording, a "Show more" on large previews and a partial
+rules-list notice.
+
+#### Added
+
+- **Independent recall contract (licence).** `src/host/recall-contract.ts` re-expresses
+  the coding-purpose quota apportionment, the context-face request body and the
+  request-deadline derivation from the documented wire contract, replacing the
+  upstream-mirrored implementation. `PROVENANCE.md` records every upstream-coupled
+  behaviour and its source of truth, `THIRD_PARTY_NOTICES` carries the bundled MIT
+  attributions, and `scripts/check-independence.mjs` (part of `pnpm test` and CI)
+  fails on provenance wording, upstream imports or real-server captures.
+- **Verifiable installs.** `scripts/verify-install.mjs` and `pnpm run verify:install`
+  pack the tarball, install it into a scratch `DSH_HOME` web profile, boot it,
+  assert the shell composes and serves this plugin's client half, check the plugin
+  host route answers without a secret, reinstall (one row, same version) and
+  uninstall (row, route and bundle gone). A CI `install-verify` job runs it on
+  every PR (pinned DSH 0.2.2-rc.1; the upgrade leg runs on tags); `VERIFICATION.md`
+  is the tracked, dated evidence record and `RELEASING.md` makes a row mandatory
+  before tagging.
+- **Host contract and compatibility matrix in both READMEs.** Supported DSH/Node/OS/
+  OpenViking ranges (including the 0.2.2-rc.1 write floor), correct web-CLI vs
+  Desktop install/upgrade/uninstall commands, the process model and inputs/outputs,
+  a timeouts/limits table kept in sync with `src/shared/limits.ts` by a test, a
+  capability/degradation table, the explicit "owned by the official plugin" N/A
+  matrix, privacy/loopback boundary, Studio fallback and known gaps.
+- **Privacy and request identity.** The smoke harness is redacted by default
+  (`SMOKE_VERBOSE=1` for raw local detail); the legacy `apiKey` config field is
+  declared `role('secret')` with credential guidance; every outbound request sends
+  a version-only `User-Agent` (`dsh-openviking-enhance/<v> dsh/<v> node/<v> platform/<os>`);
+  the Doctor reports its build block and keeps per-probe `x-request-id`s in
+  diagnostics only.
+- **Configuration-source health in the Doctor.** `ovcli.conf`, `ovcli.conf.local`,
+  `profiles.json`, the pending queue and the memo directory are reported as
+  ok/missing/malformed/unreadable/wrong-shape (values only), so a corrupt config
+  file no longer looks like a fresh machine.
+
+#### Changed
+
+- **Rules listing budget (review S1).** One listing has a 15 s total deadline,
+  concurrency 4, a 100-rule/20-scenario cap, and returns `partial`/`limitedBy`/`progress`
+  with the rows already read plus a `ruleListTruncated` notice instead of hanging
+  for minutes. Hitting a cap is reported instead of silently truncating.
+- **Rule-search cost policy (review S2).** Opening the Rules list no longer runs a
+  rule search; the capability gate is a validation-only `POST rules/search {}` with
+  a 10-minute cache. Explore search defaults to memories/resources/skills, and the
+  rules bucket is an explicit **"include rules (server cost)"** opt-in; the Rule
+  tester states that Run costs a server-side rule search. Both READMEs and this
+  changelog now say that read-only is not the same as free.
+- The `engines.dsh` / peer range is now upper-bounded: `>=0.2.0-rc.2 <1.0.0-0`.
+- Explore `RulesSection` aborts its request on unmount (no setState after unmount);
+  the `viking://` preview loads L2 as bounded line pages (`offset`/`limit`) with a
+  "Show more" control instead of downloading the whole file.
+
+#### Fixed
+
+- Stale "verified against 0.4.22" and mirrored-request comments replaced with the
+  tested range and the actual contract; timeouts/limits centralized in
+  `src/shared/limits.ts` with a README parity test.
+
 ### v0.5 — Collaborate (PR #3)
 
 Collaborate. v0.5 adds the first write-capable layer on top of the read-only

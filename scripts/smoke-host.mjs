@@ -14,6 +14,20 @@
 // given, else it lists candidates from the OpenViking session index.
 import http from 'node:http'
 import { Config, apply } from '../lib/index.js'
+import { createRedactor } from './smoke-redact.mjs'
+
+/**
+ * Privacy: the live-data path prints redacted facts by default (counts, states,
+ * durations, URI scope/kind) and never session ids, URI leaves, query text,
+ * plan text, identity values or home paths. `SMOKE_VERBOSE=1` restores the old
+ * detailed output for local debugging. See `scripts/smoke-redact.mjs`.
+ */
+const redactor = createRedactor()
+if (!redactor.verbose) {
+  // Say why the output is terse: an operator who expected the old detail needs
+  // the documented escape hatch in front of them, not in a README.
+  console.log('[smoke] privacy     redacted (set SMOKE_VERBOSE=1 for raw local detail)')
+}
 
 const routes = []
 const context = {
@@ -85,7 +99,7 @@ if (sessionId) {
 } else {
   const reason = config?.ok !== true
     ? 'the plugin routes did not answer'
-    : `OpenViking is not healthy at ${config.endpoint}`
+    : `OpenViking is not healthy at ${redactor.endpoint(config.endpoint)}`
   if (requireServer || requested) {
     console.error(`[smoke] FAIL ${reason}`)
     process.exitCode = 1
@@ -373,13 +387,13 @@ async function checkFence(base) {
 
 async function report(base, sessionId) {
   const config = await get(`${base}/api/openviking-enhance/config`)
-  console.log('[smoke] config     ', summarise(config))
+  console.log('[smoke] config     ', redactor.summarise(config))
 
   const status = await get(`${base}/api/openviking-enhance/status?sessionId=${encodeURIComponent(sessionId)}`)
-  console.log('[smoke] status     ', summarise(status))
+  console.log('[smoke] status     ', redactor.summarise(status))
 
   const commits = await get(`${base}/api/openviking-enhance/commits?sessionId=${encodeURIComponent(sessionId)}`)
-  console.log('[smoke] commits    ', summarise({ status: commits?.status, tasks: `${commits?.tasks?.length ?? 0} tasks` }))
+  console.log('[smoke] commits    ', redactor.summarise({ status: commits?.status, tasks: `${commits?.tasks?.length ?? 0} tasks` }))
   console.log(`[smoke] timeline    newest ${commits?.summaries?.length ?? 0} of ${commits?.status?.archives?.length ?? 0} archives`)
   // The durable-marker contract the client renders from: `latest` is null only
   // before the first commit, and every summary carries a terminal state.
@@ -394,7 +408,7 @@ async function report(base, sessionId) {
   )
   if (!latestOk || !summariesOk) process.exitCode = 1
   for (const entry of commits?.summaries ?? []) {
-    const name = entry.archiveUri.split('/').at(-1)
+    const name = redactor.archiveName(entry.archiveUri)
     const s = entry.summary
     const counts = s ? `${s.totalAdds} adds / ${s.totalUpdates} updates / ${s.totalDeletes} deletes` : '(no diff yet)'
     const failed = entry.state === 'failed' ? ` [${entry.failure?.stage ?? 'failed'}]` : ''
@@ -425,17 +439,19 @@ async function report(base, sessionId) {
     const payload = recall.recall
     console.log(
       `[smoke] recall      ${payload.query.source === 'session' ? 'session query' : 'explicit query'} ` +
-        `"${payload.query.text.slice(0, 40)}" · ${payload.targets.length} targets · ` +
+        `${redactor.query(payload.query.text)} · ${payload.targets.length} targets · ` +
         `${payload.total} hits · ${payload.latencyMs} ms`,
     )
     for (const bucket of payload.buckets) {
       const top = bucket.items[0]
       console.log(
         `[smoke]   ${bucket.bucket.padEnd(10)} ${String(bucket.items.length).padStart(2)}` +
-          (top ? `  ${top.score.toFixed(3)}  ${top.uri.replace('viking://user/default/', '~/')}` : ''),
+          (top ? `  ${top.score.toFixed(3)}  ${redactor.uri(top.uri)}` : ''),
       )
     }
-    if (payload.plan) console.log(`[smoke] plan        ${payload.plan.split('\n')[0].slice(0, 90)}`)
+    if (payload.plan && redactor.verbose) {
+      console.log(`[smoke] plan        ${payload.plan.split('\n')[0].slice(0, 90)}`)
+    }
     for (const warning of payload.warnings) console.log(`[smoke]   warning   ${warning.code}`)
 
     // The detail view is a second route; exercise it on a real hit.
@@ -569,7 +585,8 @@ async function report(base, sessionId) {
     if (!previewOk) process.exitCode = 1
   }
 
-  // Unified search: one call, four display buckets, rules merged in.
+  // Unified search (S2): the DEFAULT is the three cheap buckets — rules are an
+  // explicit opt-in because `rules/search` can spend a server-side judge call.
   const search = await postJson(`${base}/api/openviking-enhance/search`, {
     query: 'OpenViking plugin',
     limit: 3,
@@ -578,14 +595,26 @@ async function report(base, sessionId) {
   const searchOk =
     search?.ok === true &&
     Array.isArray(searchBuckets) &&
-    searchBuckets.length === 4 &&
-    searchBuckets.map((bucket) => bucket.bucket).join(',') === 'memories,resources,skills,rules'
+    searchBuckets.map((bucket) => bucket.bucket).join(',') === 'memories,resources,skills'
   console.log(
     `[smoke] search      ${searchOk ? 'ok  ' : 'FAIL'} ${
       searchOk ? searchBuckets.map((bucket) => `${bucket.bucket}:${bucket.items.length}`).join(' ') : search?.error ?? 'no answer'
     }`,
   )
   if (!searchOk) process.exitCode = 1
+  const searchWithRules = await postJson(`${base}/api/openviking-enhance/search`, {
+    query: 'OpenViking plugin',
+    limit: 3,
+    buckets: ['memories', 'resources', 'skills', 'rules'],
+  })
+  const rulesBucket = (searchWithRules?.search?.buckets ?? []).find((bucket) => bucket.bucket === 'rules')
+  const optInOk = searchWithRules?.ok === true && rulesBucket !== undefined
+  console.log(
+    `[smoke] search opt-in ${optInOk ? 'ok  ' : 'FAIL'} ${
+      optInOk ? `rules bucket requested explicitly (${rulesBucket.items.length} hit(s))` : searchWithRules?.error ?? 'no answer'
+    }`,
+  )
+  if (!optInOk) process.exitCode = 1
   if (!(search?.search?.warnings ?? []).some((warning) => warning.code === 'keywordsUnavailable')) {
     console.log('[smoke] search      ok   semantic path (no keyword fallback needed)')
   }
@@ -599,7 +628,9 @@ async function report(base, sessionId) {
       : rules?.error === 'unsupported'
   console.log(
     `[smoke] rules       ${rulesOk ? 'ok  ' : 'FAIL'} ${
-      rules?.ok === true ? `${rules.list.rules.length} rule(s), ${rules.list.scenarios.length} scenario(s), empty=${rules.list.empty}` : rules?.error
+      rules?.ok === true
+        ? `${rules.list.rules.length} rule(s), ${rules.list.scenarios.length} scenario(s), empty=${rules.list.empty}, partial=${rules.list.partial}`
+        : rules?.error
     }`,
   )
   if (!rulesOk) process.exitCode = 1
@@ -648,13 +679,13 @@ async function report(base, sessionId) {
   const diff = await get(
     `${base}/api/openviking-enhance/diff?sessionId=${encodeURIComponent(sessionId)}&archive=${encodeURIComponent(archive.archiveUri)}`,
   )
-  console.log('[smoke] diff        ', summarise(diff))
+  console.log('[smoke] diff        ', redactor.summarise(diff))
   if (diff?.diff) {
     console.log(
       `[smoke] affected    adds=${diff.diff.summary.totalAdds} updates=${diff.diff.summary.totalUpdates} deletes=${diff.diff.summary.totalDeletes}`,
     )
     for (const entry of [...diff.diff.adds, ...diff.diff.updates].slice(0, 5)) {
-      console.log(`[smoke]   ${entry.memoryType.padEnd(12)} ${entry.uri}`)
+      console.log(`[smoke]   ${entry.memoryType.padEnd(12)} ${redactor.uri(entry.uri)}`)
     }
   }
 
@@ -685,12 +716,4 @@ async function get(url) {
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) }
   }
-}
-
-function summarise(payload) {
-  if (!payload || typeof payload !== 'object') return String(payload)
-  if (payload.ok === false) return `NOT OK: ${payload.error}`
-  const { ok, ...rest } = payload
-  const text = JSON.stringify(rest)
-  return text.length > 420 ? `${text.slice(0, 420)}…` : text
 }

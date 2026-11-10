@@ -42,6 +42,7 @@ import {
   type WriteAction,
 } from '../shared/protocol.ts'
 import {
+  configSourceHealth,
   describeConnection,
   identityFingerprint,
   resolveConnectionForProfile,
@@ -65,7 +66,7 @@ import { OpenVikingApi } from './openviking-api.ts'
 import { RecallService } from './recall-service.ts'
 import { SessionLogService } from './session-log.ts'
 import { DoctorService } from './doctor-service.ts'
-import { readMemoryPluginVersion } from './local-state.ts'
+import { localStateHealth, readMemoryPluginVersion } from './local-state.ts'
 import { CatalogService, normalizeExperienceKind } from './catalog-service.ts'
 import { PreviewFailure, PreviewService } from './preview-service.ts'
 import { SearchService } from './search-service.ts'
@@ -94,8 +95,17 @@ export const inject = ['webServer']
 export const Config = z.object({
   /** Override the OpenViking base URL; default comes from `~/.openviking/ovcli.conf`. */
   endpoint: z.string().default('').volatile(),
-  /** Override the API key (prefer the config file; this is for unusual setups). */
-  apiKey: z.string().default('').volatile(),
+  /**
+   * Legacy API-key override.
+   *
+   * Kept for compatibility (removing it is a breaking change), but marked
+   * `role('secret')` so DSH's settings layer treats the value as a secret on
+   * remote reads/forms, and documented as the LAST resort: prefer
+   * `~/.openviking/ovcli.conf`, the `OPENVIKING_*` environment variables, or a
+   * named profile, because saving this field writes the plaintext key into your
+   * profile patch.
+   */
+  apiKey: z.string().default('').role('secret').volatile(),
   /** Override the identity the panel reads under. */
   account: z.string().default('').volatile(),
   user: z.string().default('').volatile(),
@@ -346,6 +356,29 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
   const host = ctx as unknown as HostContext
   const logger = host.logger
 
+  /**
+   * The running app's release, when the web host publishes it.
+   *
+   * Read lazily: it feeds the outbound `User-Agent` (through a client-info
+   * callback), the Doctor and `/viking` output, all of which may run before the
+   * host has published anything — "unknown" is then correct and honest.
+   */
+  const dshVersion = (): string | null => {
+    try {
+      const clientModules = host.get('clientModules') as
+        | { release?: { version?: unknown } }
+        | undefined
+      if (typeof clientModules?.release?.version === 'string') return clientModules.release.version
+      const app = host.get('app') as { version?: unknown } | undefined
+      if (typeof app?.version === 'string') return app.version
+    } catch {
+      // An optional host service that throws is simply not available.
+    }
+    return typeof process.env.DSH_VERSION === 'string' && process.env.DSH_VERSION.length > 0
+      ? process.env.DSH_VERSION
+      : null
+  }
+
   /* ---- v0.5 identity (F12 / decision A) -------------------------------- */
 
   /**
@@ -369,7 +402,7 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
   let resolvedIdentity: ResolvedIdentity = resolveActive()
   const connection = resolvedIdentity.connection
   const origins = resolvedIdentity.origins
-  let currentApi = new OpenVikingApi(connection)
+  let currentApi = new OpenVikingApi(connection, { dshVersion })
 
   /**
    * One API instance per active profile, behind a proxy.
@@ -424,7 +457,7 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
     Object.assign(connection, next.connection)
     origins.splice(0, origins.length, ...next.origins)
     resolvedIdentity = { ...next, connection, origins }
-    currentApi = new OpenVikingApi(connection)
+    currentApi = new OpenVikingApi(connection, { dshVersion })
     capability.invalidate()
     // v0.4 caches are keyed by session, not by identity: an answer read under
     // the previous profile must not survive the switch.
@@ -459,23 +492,6 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
 
   const sessionLog = new SessionLogService({ api, commit: service })
 
-  /** The running app's release, when the web host publishes it. */
-  const dshVersion = (): string | null => {
-    try {
-      const clientModules = host.get('clientModules') as
-        | { release?: { version?: unknown } }
-        | undefined
-      if (typeof clientModules?.release?.version === 'string') return clientModules.release.version
-      const app = host.get('app') as { version?: unknown } | undefined
-      if (typeof app?.version === 'string') return app.version
-    } catch {
-      // An optional host service that throws is simply not available.
-    }
-    return typeof process.env.DSH_VERSION === 'string' && process.env.DSH_VERSION.length > 0
-      ? process.env.DSH_VERSION
-      : null
-  }
-
   /** Tool names the model can see, when the tool registry exposes them. */
   const listToolNames = (): string[] | null => {
     try {
@@ -500,6 +516,12 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
     origins,
     dshVersion,
     tools: listToolNames,
+    // P1-4: per-file health of every local source (values only, never contents).
+    configSources: () => [
+      ...configSourceHealth(),
+      profileStore.sourceHealth(),
+      ...localStateHealth(),
+    ],
   })
 
   const preview = new PreviewService({ api, studioUrl: () => `${connection.endpoint}${studioPath}` })
@@ -684,12 +706,15 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
         }
         // The key is the one already in force, never the staged edit: a secret in
         // a query string ends up in logs.
-        const health = await new OpenVikingApi({
-          endpoint: candidate.origin,
-          apiKey: connection.apiKey,
-          account: connection.account,
-          user: connection.user,
-        }).health()
+        const health = await new OpenVikingApi(
+          {
+            endpoint: candidate.origin,
+            apiKey: connection.apiKey,
+            account: connection.account,
+            user: connection.user,
+          },
+          { dshVersion },
+        ).health()
         writeJson(res, 200, { ok: true, reachable: health.ok, version: health.version, error: health.error })
       },
     },
@@ -886,9 +911,19 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
           writeJson(res, 400, { ok: false, error: 'uri is required' } satisfies ApiResult<never>)
           return
         }
+        const params = query(req)
         try {
-          // One request returns stat + L0/L1/L2; the panel never fans out.
-          writeJson(res, 200, { ok: true, preview: await preview.preview(uri) })
+          // One request returns stat + L0/L1 plus ONE bounded L2 page; "Show
+          // more" asks for the next offset instead of downloading the whole file.
+          const offset = params.get('offset') === null ? undefined : Number(params.get('offset'))
+          const limit = params.get('limit') === null ? undefined : Number(params.get('limit'))
+          writeJson(res, 200, {
+            ok: true,
+            preview: await preview.preview(uri, {
+              ...(Number.isFinite(offset) ? { offset } : {}),
+              ...(Number.isFinite(limit) ? { limit } : {}),
+            }),
+          })
         } catch (error) {
           if (error instanceof PreviewFailure) {
             // A bad URI is a caller error; "not found"/"unreadable" are answers
@@ -957,7 +992,13 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
       handler: async (req, res) => {
         if (!guard(req, res)) return
         try {
-          writeJson(res, 200, { ok: true, list: await catalog.listRules() })
+          // S2: the capability answer comes from the cached validation-only probe,
+          // so opening the section never runs a rule search (embedding/judge work).
+          const rulesCapability = await capability.rules()
+          writeJson(res, 200, {
+            ok: true,
+            list: await catalog.listRules({ rulesAvailable: rulesCapability.available }),
+          })
         } catch (error) {
           writeJson(res, 200, { ok: false, error: message(error) } satisfies ApiResult<never>)
         }
@@ -1409,7 +1450,10 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
       }
       // Reachability only: no stored key is sent, so a test never authenticates
       // a candidate endpoint with the active profile's credentials.
-      const health = await new OpenVikingApi({ endpoint, apiKey: '', account: 'default', user: 'default' }).health()
+      const health = await new OpenVikingApi(
+        { endpoint, apiKey: '', account: 'default', user: 'default' },
+        { dshVersion },
+      ).health()
       return { ok: true, reachable: health.ok, version: health.version, authMode: health.authMode, error: health.error }
     })
     return disposers

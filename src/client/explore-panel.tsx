@@ -27,6 +27,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   RULE_TASK_CONTEXT_MAX,
+  SEARCH_BUCKETS,
   type ExperienceEntry,
   type ExperienceKind,
   type ExperiencePayload,
@@ -156,6 +157,13 @@ function SearchSection() {
   const [payload, setPayload] = useState<SearchPayload | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  /**
+   * S2: rules are searched only on explicit request. `rules/search` runs
+   * scenario vector recall and (with a configured Rule judge model) an LLM
+   * judgment per candidate, so the extra bucket costs the server real work.
+   * The choice is remembered for this mounted panel session only.
+   */
+  const [includeRules, setIncludeRules] = useState(false)
   const generation = useRef(0)
 
   // The semantic/keywords control the design brief first imagined is NOT here:
@@ -163,13 +171,16 @@ function SearchSection() {
   // INVALID_ARGUMENT (the configured vector backend has no full-text index), so
   // the search is always the server's semantic list mode. The host keeps the
   // fallback for a future backend that grows keyword support.
-  const run = useCallback(async (query: string) => {
+  const run = useCallback(async (query: string, includeRulesNow: boolean) => {
     const trimmed = query.trim()
     if (trimmed.length === 0) return
     const ticket = (generation.current += 1)
     setLoading(true)
     try {
-      const answer = await fetchSearch({ query: trimmed })
+      const answer = await fetchSearch({
+        query: trimmed,
+        ...(includeRulesNow ? { buckets: [...SEARCH_BUCKETS] } : {}),
+      })
       if (ticket !== generation.current) return
       if (answer.ok) {
         setPayload(answer.search)
@@ -203,14 +214,14 @@ function SearchSection() {
             spellCheck={false}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === 'Enter') void run(draft)
+              if (event.key === 'Enter') void run(draft, includeRules)
             }}
           />
         </label>
         <button
           type="button"
           className="ove-explore-button"
-          onClick={() => void run(draft)}
+          onClick={() => void run(draft, includeRules)}
           disabled={loading || draft.trim().length === 0}
         >
           {t('explore.search')}
@@ -220,11 +231,23 @@ function SearchSection() {
           className="ove-explore-icon"
           title={t('explore.refresh')}
           aria-label={t('explore.refresh')}
-          onClick={() => void run(payload?.query ?? draft)}
+          onClick={() => void run(payload?.query ?? draft, includeRules)}
           disabled={loading || (payload === null && draft.trim().length === 0)}
         >
           <RefreshGlyph />
         </button>
+      </div>
+
+      <div className="ove-explore-options">
+        <label className="ove-explore-toggle">
+          <input
+            type="checkbox"
+            checked={includeRules}
+            onChange={(event) => setIncludeRules(event.target.checked)}
+          />
+          <span>{t('explore.includeRules')}</span>
+        </label>
+        <span className="ove-explore-hint">{t('explore.includeRulesHint')}</span>
       </div>
 
       {loading && <p className="ove-explore-status">{t('explore.searching')}</p>}
@@ -288,11 +311,17 @@ function RulesSection() {
   const [list, setList] = useState<RuleListPayload | null>(null)
   const [listError, setListError] = useState<string | null>(null)
   const [listLoading, setListLoading] = useState(true)
+  /** One in-flight listing; unmount or a refresh aborts the previous one. */
+  const controller = useRef<AbortController | null>(null)
 
   const loadList = useCallback(async () => {
+    controller.current?.abort()
+    const next = new AbortController()
+    controller.current = next
     setListLoading(true)
     try {
-      const answer = await fetchRules()
+      const answer = await fetchRules(next.signal)
+      if (next.signal.aborted) return
       if (answer.ok) {
         setList(answer.list)
         setListError(null)
@@ -301,15 +330,22 @@ function RulesSection() {
         setListError(answer.error)
       }
     } catch (problem) {
+      if (next.signal.aborted) return
       setList(null)
       setListError(problem instanceof Error ? problem.message : String(problem))
     } finally {
-      setListLoading(false)
+      if (!next.signal.aborted) setListLoading(false)
     }
   }, [])
 
+  // No setState after unmount: the abort stops the request and the guards above
+  // drop its answer even if the response had already been delivered.
   useEffect(() => {
     void loadList()
+    return () => {
+      controller.current?.abort()
+      controller.current = null
+    }
   }, [loadList])
 
   return (
@@ -320,6 +356,26 @@ function RulesSection() {
           <span className="ove-explore-group-name">{t('explore.rules')}</span>
           <span className="ove-explore-group-count">{list?.rules.length ?? 0}</span>
         </div>
+        {list !== null && list.partial && (
+          <div className="ove-explore-hint ove-explore-partial">
+            <span>
+              {t('explore.rulesPartial', {
+                rules: list.progress.rules,
+                ruleCap: list.progress.ruleCap,
+                deadlineMs: list.progress.deadlineMs,
+              })}
+            </span>
+            <button
+              type="button"
+              className="ove-explore-icon"
+              title={t('explore.refresh')}
+              aria-label={t('explore.refresh')}
+              onClick={() => void loadList()}
+            >
+              <RefreshGlyph />
+            </button>
+          </div>
+        )}
         {listLoading && <p className="ove-explore-status">{t('explore.loading')}</p>}
         {listError !== null &&
           (isUnsupported(listError) ? (
@@ -358,14 +414,28 @@ function RuleTester() {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const generation = useRef(0)
+  const controller = useRef<AbortController | null>(null)
+
+  // A tester run is abandoned on unmount like the list itself: a slow server
+  // must not deliver state into a torn-down component.
+  useEffect(() => {
+    return () => {
+      controller.current?.abort()
+      controller.current = null
+    }
+  }, [])
 
   const run = useCallback(async () => {
     const context = taskContext.trim()
     if (context.length === 0) return
+    controller.current?.abort()
+    const next = new AbortController()
+    controller.current = next
     const ticket = (generation.current += 1)
     setLoading(true)
     try {
-      const answer = await fetchRulesSearch(context)
+      const answer = await fetchRulesSearch(context, next.signal)
+      if (next.signal.aborted) return
       if (ticket !== generation.current) return
       if (answer.ok) {
         setResult(answer.rules)
@@ -375,11 +445,12 @@ function RuleTester() {
         setError(answer.error)
       }
     } catch (problem) {
+      if (next.signal.aborted) return
       if (ticket !== generation.current) return
       setResult(null)
       setError(problem instanceof Error ? problem.message : String(problem))
     } finally {
-      if (ticket === generation.current) setLoading(false)
+      if (!next.signal.aborted && ticket === generation.current) setLoading(false)
     }
   }, [taskContext])
 
@@ -409,6 +480,8 @@ function RuleTester() {
         </button>
         {result !== null && <span className="ove-explore-hint">{result.latencyMs} ms</span>}
       </div>
+      {/* S2 cost wording: this is a server-side search, unlike the file reads above. */}
+      <p className="ove-explore-hint">{t('explore.rulesTestCost')}</p>
       {error !== null &&
         (isUnsupported(error) ? (
           <p className="ove-explore-status">{t('explore.rulesUnavailable')}</p>

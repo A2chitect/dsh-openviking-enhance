@@ -13,14 +13,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { OpenVikingApi } from '../src/host/openviking-api.ts'
+import { RecallService, bucketOf, effectiveRecallSettings } from '../src/host/recall-service.ts'
 import {
-  RecallService,
-  bucketOf,
-  codingQuotas,
-  contextRequestBody,
-  contextRequestTimeoutMs,
-  effectiveRecallSettings,
-} from '../src/host/recall-service.ts'
+  allocateRecallQuotas,
+  buildRecallContextBody,
+  recallContextTimeoutMs,
+} from '../src/host/recall-contract.ts'
 import { deriveSessionState, toEvents } from '../src/host/session-log.ts'
 import { DoctorService, compatibilityOf } from '../src/host/doctor-service.ts'
 import { readPendingQueue } from '../src/host/local-state.ts'
@@ -213,8 +211,8 @@ test('a legacy server falls back to per-target search and says why', async () =>
   )
 })
 
-test('the context request mirrors the mounted plugin, and omits knobs it did not configure', () => {
-  const plain = contextRequestBody('why', 'dsh-s1', null)
+test('the context request follows the configured knobs, and omits ones it did not configure', () => {
+  const plain = buildRecallContextBody({ query: 'why', sessionId: 'dsh-s1', config: null })
   assert.equal(plain.mode, 'context')
   assert.equal(plain.purpose, 'coding')
   assert.equal(plain.score_threshold, 0.35)
@@ -223,21 +221,25 @@ test('the context request mirrors the mounted plugin, and omits knobs it did not
   assert.equal(plain.quotas, undefined, 'quotas stay server-default unless configured')
   assert.equal(plain.max_tokens, undefined, 'max_tokens stays server-default unless configured')
 
-  const configured = contextRequestBody('why', 'dsh-s1', {
-    recallLimit: 12,
-    recallLimitConfigured: true,
-    recallMaxTokens: 2200,
-    recallMaxTokensConfigured: true,
-    recallDedupTurns: 2,
-    recallPeerScope: 'actor',
-    recallQueryExpansion: 'off',
-    recallQueryExpansionConfigured: true,
-    recallExcludeUris: ['viking://a', 'viking://b'],
-    recallRewrite: 'server',
-    recallCompressMaxBullets: 4,
-    recallCompressMaxBulletsConfigured: true,
+  const configured = buildRecallContextBody({
+    query: 'why',
+    sessionId: 'dsh-s1',
+    config: {
+      recallLimit: 12,
+      recallLimitConfigured: true,
+      recallMaxTokens: 2200,
+      recallMaxTokensConfigured: true,
+      recallDedupTurns: 2,
+      recallPeerScope: 'actor',
+      recallQueryExpansion: 'off',
+      recallQueryExpansionConfigured: true,
+      recallExcludeUris: ['viking://a', 'viking://b'],
+      recallRewrite: 'server',
+      recallCompressMaxBullets: 4,
+      recallCompressMaxBulletsConfigured: true,
+    },
   })
-  assert.deepEqual(configured.quotas, codingQuotas(12))
+  assert.deepEqual(configured.quotas, allocateRecallQuotas(12))
   assert.equal(configured.max_tokens, 2200)
   assert.equal(configured.dedup_turns, 2)
   assert.equal(configured.peer_scope, 'actor')
@@ -247,28 +249,29 @@ test('the context request mirrors the mounted plugin, and omits knobs it did not
   assert.equal(configured.rewrite_max_bullets, 4)
 })
 
-test('decay protection and rewrite=auto are mirrored, not silently dropped', () => {
-  const body = contextRequestBody('why', 'dsh-s1', {
-    recallEventsDecayProtection: ' 30d ',
-    recallRewrite: ' AUTO ',
+test('decay protection and rewrite=auto are normalized, not silently dropped', () => {
+  const body = buildRecallContextBody({
+    query: 'why',
+    sessionId: 'dsh-s1',
+    config: { recallEventsDecayProtection: ' 30d ', recallRewrite: ' AUTO ' },
   })
-  assert.equal(body.events_time_decay_protection, '30d', 'decay protection is trimmed like the official request')
-  assert.equal(body.rewrite, 'auto', 'rewrite is lowercased like the official request')
+  assert.equal(body.events_time_decay_protection, '30d', 'decay protection is trimmed like every string field')
+  assert.equal(body.rewrite, 'auto', 'rewrite is lowercased')
 })
 
 test('the context timeout covers the expansion and rewrite fuses', () => {
   const base = { query: 'why', mode: 'context', session_id: 'dsh-s1' }
-  assert.equal(contextRequestTimeoutMs(null, base), 15_000)
-  assert.equal(contextRequestTimeoutMs(null, { ...base, rewrite: true }), 45_000)
-  assert.equal(contextRequestTimeoutMs(null, { ...base, rewrite: 'auto' }), 45_000)
-  assert.equal(contextRequestTimeoutMs({ timeoutMs: 30_000 }, base), 30_000)
-  assert.equal(contextRequestTimeoutMs({ recallContextTimeoutMs: 60_000 }, base), 60_000)
-  assert.equal(contextRequestTimeoutMs(null, { ...base, query_expansion: 'off' }), undefined)
+  assert.equal(recallContextTimeoutMs(null, base), 15_000)
+  assert.equal(recallContextTimeoutMs(null, { ...base, rewrite: true }), 45_000)
+  assert.equal(recallContextTimeoutMs(null, { ...base, rewrite: 'auto' }), 45_000)
+  assert.equal(recallContextTimeoutMs({ timeoutMs: 30_000 }, base), 30_000)
+  assert.equal(recallContextTimeoutMs({ recallContextTimeoutMs: 60_000 }, base), 60_000)
+  assert.equal(recallContextTimeoutMs(null, { ...base, query_expansion: 'off' }), undefined)
 })
 
 test('coding quotas stay within the requested slot count', () => {
   for (const limit of [1, 3, 10, 12]) {
-    const quotas = codingQuotas(limit)
+    const quotas = allocateRecallQuotas(limit)
     const total = Object.values(quotas).reduce((sum, value) => sum + value, 0)
     assert.equal(total, Math.max(limit, Object.keys(quotas).length))
   }
@@ -440,6 +443,14 @@ test('the Doctor reports connection, plugin and capability facts without a secre
       return reply({ entries: [], stats: {} })
     },
     rulesSearch: async () => reply({ rules: [], warning: 'rule library is empty' }),
+    probeRuleSearchRoute: async () => ({
+      ok: false,
+      status: 422,
+      result: null,
+      error: 'validation',
+      errorCode: null,
+      requestId: 'req-rules-probe',
+    }),
     fsStat: async () => reply({ uri: 'viking://user/default', isDir: true }),
   }
   const commit = fakeCommit({

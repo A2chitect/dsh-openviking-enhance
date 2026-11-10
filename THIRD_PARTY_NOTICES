@@ -1,0 +1,63 @@
+# Third-party notices
+
+`dsh-openviking-enhance` is MIT-licensed (see `LICENSE`). The published bundle
+(`lib/index.js`, `lib/client.js`) includes or is matched to the MIT-licensed
+material listed here. Their full permission notice is reproduced once at the
+bottom of this file and applies to each of them.
+
+## Bundled at build time (host half)
+
+| Package | Version | Licence | Copyright |
+| --- | --- | --- | --- |
+| `@deepseek-ai/schemastery` | 3.19.0 | MIT | Copyright (c) 2021-present Shigma |
+| `@deepseek-ai/cosmokit` (bundled through schemastery) | 1.9.0 | MIT | Copyright (c) 2021-present Shigma |
+
+Both are bundled by `build.mjs` into `lib/index.js` (schemastery is a real
+runtime import of this plugin's configuration schema; cosmokit is schemastery's
+own dependency). They are not exposed as separate packages by this project.
+
+## Matched styling (client half)
+
+The CSS values in `src/client/styles.ts` are matched to the shipped DSH web
+shell panels so this plugin's surfaces sit in the same visual system. The DSH
+client packages are MIT-licensed:
+
+| Package family | Licence | Copyright |
+| --- | --- | --- |
+| `@deepseek-ai/dsh-client-ui-*` (styling values matched) | MIT | Copyright (c) 2026 DeepSeek |
+
+No DSH source code is bundled into `lib/client.js`; React and the other platform
+modules stay external and are provided by the shell.
+
+## Dev-only dependencies
+
+Everything in `devDependencies` is used to build, type-check or test this
+package and is **not** part of the installed plugin (React is a peer dependency
+provided by the shell). Their licence texts remain in their own packages.
+
+## MIT licence text
+
+```
+MIT License
+
+Copyright (c) 2021-present Shigma (schemastery, cosmokit)
+Copyright (c) 2026 DeepSeek (DSH client packages)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

@@ -74,7 +74,7 @@ const CSS = `
    Nothing here may reserve width or absorb free space — see the position notes
    at the top of this file for why that only ever shifts the group. */
 
-/* ---- Commit status pill (mirrors StatsPills.module.css) ------------------ */
+/* ---- Commit status pill (matched to StatsPills.module.css) ------------- */
 .ove-dock {
   box-sizing: border-box; min-width: 0; max-width: 100%;
   font-size: ${FONT_SIZE};
@@ -109,7 +109,7 @@ button.ove-pill-errored:hover, button.ove-pill-errored[aria-expanded="true"] {
 .ove-pulse { animation: ove-pulse 1s ease-in-out infinite alternate; }
 @keyframes ove-pulse { from { opacity: .45; } to { opacity: 1; } }
 
-/* ---- Commit detail popover (mirrors stat-dialog.module.css) -------------- */
+/* ---- Commit detail popover (matched to stat-dialog.module.css) --------- */
 .ove-pop {
   z-index: 1100; box-sizing: border-box; position: absolute;
   bottom: calc(100% + 8px); right: 0;
@@ -191,7 +191,7 @@ button.ove-pill-errored:hover, button.ove-pill-errored[aria-expanded="true"] {
 .ove-failure-msg { margin-top: 4px; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }
 
 /* ---- Recall panel (right Sidebar tab) ----------------------------------- */
-/* Every value below is copied from the shipped right-Sidebar tabs, so the panel
+/* Every value below is matched to the shipped right-Sidebar tabs, so the panel
    reads as one of them rather than as a plugin's own idea of a list:
 
      tab body        @deepseek-ai/dsh-client-ui-sidebar-right   .tabBody
@@ -743,6 +743,7 @@ button.ove-pill-errored:hover, button.ove-pill-errored[aria-expanded="true"] {
 .ove-preview-tier-active { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); font-weight: 500; }
 .ove-preview-tier:disabled { opacity: .4; cursor: not-allowed; }
 .ove-preview-text-wrap { margin-top: 2px; }
+.ove-preview-more { display: flex; justify-content: flex-start; margin: 2px 0 6px; }
 .ove-preview-text {
   margin: 0; padding: 8px; background: var(--dsw-alias-bg-l1); border-radius: var(--dsw-radius-sm);
   font-family: var(--dsh-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
@@ -770,6 +771,20 @@ button.ove-pill-errored:hover, button.ove-pill-errored[aria-expanded="true"] {
 .ove-explore-seg-active { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); font-weight: 500; }
 .ove-explore-body { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 10px 12px; }
 .ove-explore-bar { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.ove-explore-options {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin: 0 0 6px;
+}
+.ove-explore-toggle {
+  display: inline-flex; align-items: center; gap: 5px; font-size: 12px;
+  color: var(--dsw-alias-label-secondary); cursor: pointer; white-space: nowrap;
+}
+.ove-explore-toggle input { margin: 0; }
+.ove-explore-options .ove-explore-hint { margin: 0; flex: 1; min-width: 160px; }
+.ove-explore-partial {
+  display: flex; align-items: center; gap: 6px; justify-content: space-between;
+  padding: 3px 6px; border-radius: var(--dsw-radius-sm, 4px);
+  background: var(--dsw-alias-bg-l1); border: .5px solid var(--dsw-alias-border-l3);
+}
 .ove-explore-field {
   display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; height: 30px;
   padding: 0 8px; background: var(--dsw-alias-bg-l1); border: .5px solid var(--dsw-alias-border-l3);

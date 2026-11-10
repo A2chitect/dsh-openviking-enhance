@@ -42,6 +42,16 @@ check(pkg.private !== true, 'the package is not private (npm refuses to publish 
 check(pkg.license === 'MIT', 'a licence is declared')
 check(existsSync(join(root, 'LICENSE')), 'the licence file exists and ships')
 check(pkg.files?.includes('LICENSE'), 'files includes LICENSE')
+// The MIT build bundles two MIT libraries and matches DSH styling; their
+// permission notices have to travel with the tarball.
+check(existsSync(join(root, 'THIRD_PARTY_NOTICES')), 'THIRD_PARTY_NOTICES exists')
+check(pkg.files?.includes('THIRD_PARTY_NOTICES'), 'files includes THIRD_PARTY_NOTICES')
+const notices = readFileSync(join(root, 'THIRD_PARTY_NOTICES'), 'utf8')
+check(notices.includes('@deepseek-ai/schemastery'), 'THIRD_PARTY_NOTICES names the bundled schemastery')
+check(notices.includes('@deepseek-ai/cosmokit'), 'THIRD_PARTY_NOTICES names the bundled cosmokit')
+// The provenance record is the audit trail behind the independence gate.
+check(existsSync(join(root, 'PROVENANCE.md')), 'PROVENANCE.md exists')
+check(pkg.files?.includes('PROVENANCE.md'), 'files includes PROVENANCE.md')
 check(typeof pkg.description === 'string' && pkg.description.length > 20, 'a one-line description is set')
 check(Array.isArray(pkg.keywords) && pkg.keywords.length > 0, 'keywords are set')
 // The marketplace links an npm package to its repository through this field, and
@@ -60,6 +70,26 @@ check(
 check(typeof pkg.engines?.node === 'string', 'engines.node is declared')
 check(typeof pkg.engines?.dsh === 'string', 'engines.dsh is declared')
 check(pkg.dsh?.engines?.dsh === pkg.engines?.dsh, 'dsh.engines.dsh and engines.dsh agree')
+// The old range was a logically unbounded disjunction (`>=0.2.0-rc.2 || …`), so a
+// future 1.x would have been accepted silently. The upper bound is intentional.
+check(
+  typeof pkg.engines?.dsh === 'string' && /<\d+\.\d+\.\d+-0/.test(pkg.engines.dsh),
+  'engines.dsh has an upper bound below the next major',
+)
+// `engines.dsh` is the authoritative DSH check. The peer range states the same
+// policy split per DSH prerelease line, because npm-style semver excludes the
+// 0.2.x pre-releases from a single `>=0.2.0-rc.2` comparator set (DSH's own check
+// evaluates with `includePrerelease`); every alternative still has an upper bound.
+const peerRange = pkg.peerDependencies?.['@deepseek-ai/dsh']
+check(
+  typeof peerRange === 'string' &&
+    peerRange.split('||').every((alternative) => /<\d+\.\d+\.\d+-0/.test(alternative)),
+  'the @deepseek-ai/dsh peer range is bounded below the next major on every line',
+)
+check(
+  typeof peerRange === 'string' && peerRange.includes('>=0.2.2-rc.1'),
+  'the peer range admits the authenticated-write DSH generation',
+)
 
 // ---- a stranger can install it --------------------------------------------
 // pnpm refuses to install while any dependency build script is undecided, and its
@@ -106,6 +136,21 @@ if (existsSync(join(root, 'lib/index.js')) && typeof pkg.engines?.dsh === 'strin
   const built = readFileSync(join(root, 'lib/index.js'), 'utf8')
   const builtRange = /PLUGIN_DSH_RANGE\s*=\s*"([^"]+)"/.exec(built)?.[1] ?? null
   check(builtRange === pkg.engines.dsh, 'the built host carries the manifest DSH range verbatim')
+}
+// The plugin's own version is baked into the bundle at build time (`define` in
+// build.mjs), which is what the outbound User-Agent and the Doctor report. A
+// stale `lib/` from an older build would ship the previous version, so assert the
+// replacement actually happened and carries the manifest version.
+if (existsSync(join(root, 'lib/index.js'))) {
+  const built = readFileSync(join(root, 'lib/index.js'), 'utf8')
+  check(
+    !built.includes('__DSH_OPENVIKING_ENHANCE_VERSION__'),
+    'the built host carries the build-time plugin version (define applied)',
+  )
+  check(
+    built.includes(JSON.stringify(pkg.version)),
+    `the built host embeds package version ${pkg.version}`,
+  )
 }
 check(
   typeof pkg.scripts?.prepack === 'string',

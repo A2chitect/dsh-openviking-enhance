@@ -495,6 +495,35 @@ export interface ConnectionFieldOrigin {
 
 export type DoctorCapabilityState = 'available' | 'unavailable' | 'legacy' | 'unknown' | 'skipped'
 
+/** One local configuration/metadata file the host read (or failed to read). */
+export type ConfigSourceId =
+  | 'ovcli.conf'
+  | 'ovcli.conf.local'
+  | 'profiles.json'
+  | 'pending-queue'
+  | 'plugin-state'
+
+/** How a local source read went; values only, never contents. */
+export type ConfigSourceState = 'ok' | 'missing' | 'malformed' | 'unreadable' | 'wrong-shape' | 'unknown'
+
+export interface ConfigSourceHealth {
+  source: ConfigSourceId
+  /** Symbolic path (`~/.openviking/...`, `$DSH_HOME/...`), never a secret. */
+  path: string
+  state: ConfigSourceState
+  /** The filesystem/parse error code when one applies, else null. */
+  errorCode: string | null
+}
+
+/** The plugin's own build facts, for the Doctor (never in ordinary copy). */
+export interface PluginBuildInfo {
+  pluginVersion: string
+  dshVersion: string | null
+  nodeVersion: string
+  platform: string
+  userAgent: string
+}
+
 export interface DoctorCapability {
   state: DoctorCapabilityState
   /** A short server fact, e.g. `233 queries`, or the failing status. */
@@ -555,6 +584,10 @@ export interface DoctorReport {
     observer: DoctorCapability & { avgLatencyMs: number | null; queries: number | null }
   }
   checks: DoctorCheck[]
+  /** Which local config/metadata sources were readable, and how (no contents). */
+  configSources: ConfigSourceHealth[]
+  /** The build identity of the running bundle (plugin/DSH/Node/platform/UA). */
+  build: PluginBuildInfo
   compatibility: {
     /** DSH version detected from the running web host, when it exposes one. */
     dshVersion: string | null
@@ -625,6 +658,13 @@ export interface PreviewTier {
   text: string
   /** Whether `text` was cut at {@link PREVIEW_MAX_CHARS}. */
   truncated: boolean
+  /** L2 only: the 0-based line this page starts at. L0/L1 are whole, so 0. */
+  offset: number
+  /**
+   * L2 only: the next line offset to request, or null when this is the last
+   * page. The panel offers "Show more" while this is non-null.
+   */
+  nextOffset: number | null
   available: boolean
   /**
    * True when the server answered with its "not generated yet" placeholder
@@ -666,9 +706,19 @@ export interface PreviewPayload {
 
 /* ---- F7: unified search ---------------------------------------------- */
 
-/** The four groups the Explore "Search" segment shows. */
+/** The four groups the Explore "Search" segment can show. */
 export const SEARCH_BUCKETS = ['memories', 'resources', 'skills', 'rules'] as const
 export type SearchBucketId = (typeof SEARCH_BUCKETS)[number]
+
+/**
+ * The buckets a search request asks for when the caller names none.
+ *
+ * The rules bucket is deliberately absent: `rules/search` is not a pure read
+ * (scenario vector recall, and an LLM judge when a Rule judge model is
+ * configured), so it is an explicit opt-in in the Explore search. See the
+ * "what the plugin sends (and what it costs)" README section.
+ */
+export const DEFAULT_SEARCH_BUCKETS = ['memories', 'resources', 'skills'] as const
 
 export const SEARCH_DEFAULT_LIMIT = 8
 export const SEARCH_MAX_LIMIT = 25
@@ -740,11 +790,39 @@ export interface RuleScenarioGroup {
   ruleCount: number
 }
 
+/** Why a rules listing stopped short, when it did. */
+export type RuleListLimitedBy = 'deadline' | 'rule-cap' | 'scenario-cap'
+
+/** Where a (possibly partial) rules listing stopped, for the partial notice. */
+export interface RuleListProgress {
+  /** Rows served in this answer. */
+  rules: number
+  /** Scenario folders that were attempted. */
+  scenarios: number
+  /** Wall-clock milliseconds the listing spent before answering. */
+  elapsedMs: number
+  /** The total deadline the listing was given. */
+  deadlineMs: number
+  /** The per-answer rule cap this listing applies. */
+  ruleCap: number
+  /** The per-answer scenario cap this listing applies. */
+  scenarioCap: number
+}
+
 export interface RuleListPayload {
   rules: RuleSummary[]
   scenarios: RuleScenarioGroup[]
   /** True when the rules tree exists but holds no rule files yet. */
   empty: boolean
+  /**
+   * True when the list is usable but incomplete: the deadline stopped it or a
+   * cap was reached. The rows already served stay — this is not an error state.
+   */
+  partial: boolean
+  /** Which bound stopped the listing, or null when it is complete. */
+  limitedBy: RuleListLimitedBy | null
+  /** Counts for the partial notice. */
+  progress: RuleListProgress
   warnings: PluginNotice[]
   observedAt: string
 }

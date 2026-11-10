@@ -22,6 +22,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { classifyCuratableUri } from '../shared/curation.ts'
 import {
+  PREVIEW_MAX_CHARS,
   PREVIEW_TIERS,
   type PreviewPayload,
   type PreviewStat,
@@ -163,6 +164,8 @@ export function PreviewPanel(props: PreviewPanelProps) {
   const [tierId, setTierId] = useState<PreviewTierId>('l0')
   const [copied, setCopied] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
+  /** L2 paging state: "Show more" appends one bounded page instead of the whole file. */
+  const [pageLoading, setPageLoading] = useState(false)
   const scope = useScope()
   const writeState = useWriteStore()
   /** Guards a slow reply from a previous URI overwriting the current one. */
@@ -243,6 +246,59 @@ export function PreviewPanel(props: PreviewPanelProps) {
     if (next === targetUri) void load(next)
     else openPreview(next)
   }, [draft, targetUri, load])
+
+  /**
+   * Append the next L2 line page.
+   *
+   * The first read asks for `PREVIEW_BODY_MAX_LINES`; the server's `offset` is a
+   * 0-based line number, so each click is one more bounded read. The displayed
+   * text stays capped at `PREVIEW_MAX_CHARS`; when the server says there is no
+   * next page (or the display cap is hit) the control disappears.
+   */
+  const showMore = useCallback(async () => {
+    if (payload === null) return
+    const l2 = payload.tiers.find((candidate) => candidate.id === 'l2')
+    if (l2 === undefined || l2.nextOffset === null) return
+    const ticket = generation.current
+    setPageLoading(true)
+    try {
+      const answer = await fetchPreview(payload.uri, { offset: l2.nextOffset })
+      if (generation.current !== ticket) return
+      if (!answer.ok) {
+        setActionError(errorText(answer.error))
+        return
+      }
+      const page = answer.preview.tiers.find((candidate) => candidate.id === 'l2')
+      if (page === undefined) return
+      setPayload((current) => {
+        if (current === null || current.uri !== payload.uri) return current
+        const currentL2 = current.tiers.find((candidate) => candidate.id === 'l2')
+        if (currentL2 === undefined) return current
+        const separator = currentL2.text.length > 0 && !currentL2.text.endsWith('\n') && page.text.length > 0 ? '\n' : ''
+        const merged = `${currentL2.text}${separator}${page.text}`
+        const clipped = merged.length > PREVIEW_MAX_CHARS
+        return {
+          ...current,
+          tiers: current.tiers.map((candidate) =>
+            candidate.id === 'l2'
+              ? {
+                  ...candidate,
+                  text: merged.slice(0, PREVIEW_MAX_CHARS),
+                  truncated: clipped || candidate.truncated || page.truncated,
+                  nextOffset: clipped ? null : page.nextOffset,
+                }
+              : candidate,
+          ),
+        }
+      })
+    } catch (problem) {
+      if (generation.current === ticket) {
+        setActionError(problem instanceof Error ? problem.message : String(problem))
+      }
+    } finally {
+      if (generation.current === ticket) setPageLoading(false)
+    }
+  }, [payload])
 
   const copy = useCallback(async () => {
     if (payload === null) return
@@ -422,6 +478,18 @@ export function PreviewPanel(props: PreviewPanelProps) {
                   <>
                     <pre className="ove-preview-text">{tier.text}</pre>
                     {tier.truncated && <p className="ove-preview-hint">{t('preview.truncated')}</p>}
+                    {tier.id === 'l2' && tier.nextOffset !== null && (
+                      <div className="ove-preview-more">
+                        <button
+                          type="button"
+                          className="ove-preview-button"
+                          disabled={pageLoading}
+                          onClick={() => void showMore()}
+                        >
+                          {pageLoading ? t('preview.loading') : t('preview.showMore')}
+                        </button>
+                      </div>
+                    )}
                   </>
                 )}
               </div>

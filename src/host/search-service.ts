@@ -18,6 +18,7 @@
  * unticking "resources" costs no extra work server-side.
  */
 import {
+  DEFAULT_SEARCH_BUCKETS,
   SEARCH_BUCKETS,
   SEARCH_DEFAULT_LIMIT,
   SEARCH_MAX_LIMIT,
@@ -61,9 +62,16 @@ export function clampSearchLimit(raw: number | undefined): number {
   return Math.min(Math.max(Math.trunc(raw), 1), SEARCH_MAX_LIMIT)
 }
 
-/** Only the four known buckets survive; an empty list means "all". */
+/**
+ * Only the four known buckets survive.
+ *
+ * An absent/empty list means the S2 default: memories, resources and skills.
+ * Rules are omitted because searching them can spend server-side embedding and
+ * model work; the client opts in explicitly when the person ticks "include
+ * rules (server cost)".
+ */
 export function normalizeSearchBuckets(raw: readonly string[] | undefined): SearchBucketId[] {
-  if (raw === undefined || raw.length === 0) return [...SEARCH_BUCKETS]
+  if (raw === undefined || raw.length === 0) return [...DEFAULT_SEARCH_BUCKETS]
   const seen = new Set<SearchBucketId>()
   for (const candidate of raw) {
     if ((SEARCH_BUCKETS as readonly string[]).includes(candidate)) seen.add(candidate as SearchBucketId)
