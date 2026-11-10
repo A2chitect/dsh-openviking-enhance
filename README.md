@@ -637,8 +637,9 @@ with a "showing N of up to M" line).
 An exported `.ovpack` is written to a **0600 temp file** under the plugin state
 directory (the directory is 0700), streamed to the browser through a
 **single-use token** that lives 120 s, and deleted after the one download, on
-expiry, on the next history/export sweep, or on plugin unload (startup sweeps
-orphans too). The audit records the URI, byte count and request id only — never
+expiry, on the next history/export sweep, or on plugin unload (startup sweeps orphans too). Temp filenames carry the owning pid, so a
+second plugin instance sharing the same `DSH_HOME/state` tree keeps its own
+live downloads; only dead-owner and aged legacy files are swept. The audit records the URI, byte count and request id only — never
 the content or the token. The export is capped at 64 MiB and a body that stalls
 for 30 s (or exceeds the overall export deadline) is aborted so a slow server
 cannot hold the shared mutation gate.

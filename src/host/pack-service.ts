@@ -17,7 +17,7 @@
  * files are deleted after the one download, on expiry, or on plugin unload.
  * This is user data by definition; the UI says so.
  */
-import { closeSync, chmodSync, existsSync, openSync, readdirSync, unlinkSync, writeSync } from 'node:fs'
+import { closeSync, chmodSync, existsSync, openSync, readdirSync, statSync, unlinkSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import {
@@ -186,7 +186,10 @@ export class PackDownloadBroker {
       // Best effort: the mode passed at mkdir already asked for 0700.
     }
     const token = this.randomToken()
-    const filePath = join(this.directory, `pack-${token.slice(0, 16)}.ovpack`)
+    // N5: the pid makes the filename owner-scoped across plugin instances that
+    // share one DSH_HOME (desktop + another profile/service). The startup sweep
+    // can then leave another LIVE instance's files alone.
+    const filePath = join(this.directory, `pack-${process.pid}-${token.slice(0, 16)}.ovpack`)
     const fileName = sanitizePackFileName(
       fileNameFromDisposition(response.response.headers.get('content-disposition')),
       uri,
@@ -210,7 +213,7 @@ export class PackDownloadBroker {
             requestId: response.requestId ?? null,
           }
         }
-        const next = await readWithInactivity(reader, this.inactivityMs, () => this.now())
+        const next = await readWithInactivity(reader, this.inactivityMs)
         if (next === 'timeout') {
           closeSync(handle)
           deleteFile(filePath)
@@ -351,7 +354,17 @@ export class PackDownloadBroker {
     for (const token of [...this.downloads.keys()]) this.remove(token)
   }
 
-  /** Delete every `pack-*.ovpack` left over from a previous process (startup). */
+  /**
+   * Startup sweep of `pack-*.ovpack` files.
+   *
+   * N5: `pluginStateDir()` lives under the shared `DSH_HOME/state`, so a second
+   * plugin instance on the same home (another profile, or a desktop+web pair)
+   * must NOT delete the other instance's live one-time download or its
+   * mid-write temp file. New filenames carry the owning pid: files of a live
+   * process are kept, files of a dead process are deleted. Legacy pid-less
+   * filenames are only deleted once they are older than one download TTL, so a
+   * freshly written file is never mistaken for an orphan.
+   */
   sweepOrphans(): void {
     let entries: string[]
     try {
@@ -359,9 +372,25 @@ export class PackDownloadBroker {
     } catch {
       return
     }
+    const agedOut = this.now() - PACK_DOWNLOAD_TTL_MS
     for (const entry of entries) {
-      if (!/^pack-[0-9a-f]+\.ovpack$/.test(entry)) continue
-      deleteFile(join(this.directory, entry))
+      const match = /^pack-(?:(\d+)-)?([0-9a-f]+)\.ovpack$/.exec(entry)
+      if (match === null) continue
+      const path = join(this.directory, entry)
+      const ownerPid = match[1] === undefined ? null : Number(match[1])
+      if (ownerPid !== null) {
+        // Keep our own and any live owner's files; delete a dead owner's.
+        if (ownerPid === process.pid || isProcessAlive(ownerPid)) continue
+        deleteFile(path)
+        continue
+      }
+      // Legacy pid-less file: sweep only after it could no longer be served.
+      try {
+        if (statSync(path).mtimeMs > agedOut) continue
+      } catch {
+        continue
+      }
+      deleteFile(path)
     }
   }
 
@@ -433,10 +462,8 @@ async function cancelReader(reader: ReadableStreamDefaultReader<Uint8Array>): Pr
 function readWithInactivity(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   inactivityMs: number,
-  now: () => number,
 ): Promise<ReadableStreamReadResult<Uint8Array> | 'timeout'> {
-  return new Promise((resolve) => {
-    const startedAt = now()
+  return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       // The race settles with 'timeout'; cancel in the background so the socket
       // is released even if the server never answers.
@@ -446,15 +473,25 @@ function readWithInactivity(
     reader.read().then(
       (result) => {
         clearTimeout(timer)
-        // `now()` is read for symmetry with the total deadline; the promise
-        // settles on the chunk, not on elapsed time.
-        void startedAt
         resolve(result)
       },
       (error: unknown) => {
         clearTimeout(timer)
-        resolve(Promise.reject(error))
+        // N10: reject the outer promise directly; resolve(rejectedPromise) would
+        // create an unhandled rejection when the timeout already settled.
+        reject(error)
       },
     )
   })
+}
+
+/** Whether a pid is alive (ownership check for the cross-instance file sweep). */
+function isProcessAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
 }

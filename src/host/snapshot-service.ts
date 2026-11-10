@@ -38,9 +38,6 @@ import type {
 } from '../shared/protocol.ts'
 import type { OpenVikingApi } from './openviking-api.ts'
 
-/** Re-exported for the services that render commit messages. */
-export { SNAPSHOT_MESSAGE_MAX_CHARS }
-
 /** A scope refusal: a stable code plus the human-readable explanation. */
 export interface ScopeRefusal {
   code: string
@@ -87,6 +84,11 @@ export function classifySnapshotScope(
   if (parts.length === 0) return refuse('invalid-scope', 'The viking:// root cannot be an operation scope.')
   if (parts.some((part) => part === '.' || part === '..')) return refuse('invalid-scope', 'The scope must not contain . or .. segments.')
   if (parts.includes('_system')) return refuse('invalid-scope', 'The internal _system scope is not an operation scope.')
+  // B2: `parts` tolerates empty segments (`viking://user//alice`, `viking:///user/alice`),
+  // so every SAFETY comparison and every value sent downstream must use the
+  // canonical form. Comparing the raw string while validating the normalized
+  // segments is exactly how the sessions ancestor rule was bypassed.
+  const canonical = `viking://${parts.join('/')}`
   const scope = parts[0] as string
   const rest = parts.slice(1)
   if (kind === 'pack') {
@@ -115,7 +117,11 @@ export function classifySnapshotScope(
     // whole `viking://user/<me>` would rewrite sessions/** and corrupt capture).
     // Refuse the sessions tree, its descendants, and every ancestor of it.
     const sessions = `viking://user/${user}/sessions`
-    if (uri === sessions || uri.startsWith(`${sessions}/`) || sessions.startsWith(`${uri}/`)) {
+    if (
+      canonical === sessions ||
+      canonical.startsWith(`${sessions}/`) ||
+      sessions.startsWith(`${canonical}/`)
+    ) {
       return refuse(
         'restore-scope-refused',
         'Sessions are pipeline-owned: a restore/commit scope may not be, contain, or be contained by the sessions directory.',
@@ -135,7 +141,10 @@ export function classifySnapshotScope(
   if (kind === 'restore' && parts.length < 2) {
     return refuse('restore-scope-refused', 'A restore needs a concrete directory scope, not the whole tree.')
   }
-  return { ok: true, uri }
+  // The canonical form is the contract downstream: plan.projectDir, the audit
+  // snapshot columns, the typed word and the undo handle all carry this exact
+  // string, so support can tell what the server actually restored.
+  return { ok: true, uri: canonical }
 }
 
 /** Validate a bounded path list (commit paths / diff-path filter). */
@@ -622,12 +631,12 @@ export class SnapshotService {
         ok: false,
         partial,
         code:
-          response.status === 409
-            ? 'revision-mismatch'
-            : response.status === 404
-              ? 'not-found'
-              : partial !== null
-                ? 'rejected-by-server'
+          partial !== null
+            ? 'rejected-by-server'
+            : response.status === 409
+              ? 'revision-mismatch'
+              : response.status === 404
+                ? 'not-found'
                 : 'rejected-by-server',
         message: response.error ?? 'The restore failed.',
         status: response.status,
@@ -680,17 +689,21 @@ export class SnapshotService {
   /**
    * Verify a just-created commit through the snapshot log.
    *
-   * The log is a read, so a short bounded retry is safe (three attempts, 100 ms
-   * apart, ~0.2 s total) and covers the server's commit-visibility lag without
-   * ever retrying the write itself. The branch is passed through: verification
-   * must look at the same history the action wrote to, not an assumed `main`.
+   * The retry exists for ONE case: the server answered successfully but HEAD has
+   * not advanced yet (a visibility lag). A failed request (`!ok`, including a
+   * timeout) is NOT retried: both call sites hold the shared mutation gate, and
+   * three 8 s timeouts would keep every curation write and ops action refused as
+   * `write-in-flight` for up to 24 s. Only successful stale answers get the
+   * bounded three-attempt, ~0.2 s retry. The branch is passed through so the
+   * read looks at the same history the action wrote to (v0.8 actions use the
+   * documented fixed `main` branch).
    */
   async verifyCommit(commit: string | null, branch = 'main'): Promise<boolean> {
     if (commit === null) return false
     for (let attempt = 0; attempt < 3; attempt += 1) {
       if (attempt > 0) await sleep(100)
       const response = await this.options.api.snapshotLog({ branch, limit: 1 })
-      if (!response.ok) continue
+      if (!response.ok) return false
       const newest = (response.result ?? [])[0]
       if (typeof newest?.oid === 'string' && newest.oid === commit) return true
     }

@@ -23,7 +23,7 @@
 import type { ScopeCapability } from '../shared/protocol.ts'
 import type { OpenVikingApi } from './openviking-api.ts'
 import { classifyRuleProbe, type RuleSearchCapability } from './catalog-service.ts'
-import { PACK_CAPABILITY_TTL_MS, RULES_CAPABILITY_TTL_MS } from '../shared/limits.ts'
+import { PACK_CAPABILITY_TTL_MS, RULES_CAPABILITY_TTL_MS, STATUS_TIMEOUT_MS } from '../shared/limits.ts'
 
 /** The health facts the scope banner shows, secret-free. */
 export interface HealthFacts {
@@ -155,7 +155,10 @@ export class CapabilityService {
     }
     if (this.packInflight !== null) return this.packInflight
     this.packInflight = this.options.api
-      .streamPackExport('', false)
+      // The probe is a cheap validation request: give it the 5 s status budget,
+      // not the 120 s export-stream default, so an offline/hung network cannot
+      // stall every prepare/execute/Packs open behind it.
+      .streamPackExport('', false, { timeoutMs: STATUS_TIMEOUT_MS })
       .then((reply) => {
         // A streaming method cannot be used for a validation probe without
         // consuming its body; the service classifies status codes only.

@@ -8,7 +8,7 @@
 // of the real state directory.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -31,6 +31,8 @@ import { OpsService } from '../src/host/ops-service.ts'
 import { AuditLog } from '../src/host/audit.ts'
 import { PackDownloadBroker } from '../src/host/pack-service.ts'
 import { SnapshotService } from '../src/host/snapshot-service.ts'
+import { CapabilityService } from '../src/host/capability.ts'
+import { STATUS_TIMEOUT_MS } from '../src/shared/limits.ts'
 
 const tempDir = (label) => mkdtempSync(join(tmpdir(), `ove-v08-unit-${label}-`))
 
@@ -133,6 +135,24 @@ test('snapshot restore/create scopes allow directories and refuse sessions, syst
   // mutating kind, not just the sessions directory itself.
   assert.equal(classifySnapshotScope('viking://user/alice', 'restore', user).ok, false)
   assert.equal(classifySnapshotScope('viking://user/alice', 'commit', user).ok, false)
+  // B2: extra slashes must not bypass the ancestor rule (raw-vs-canonical bug),
+  // and a valid scope must come back in canonical form.
+  assert.equal(classifySnapshotScope('viking://user//alice', 'restore', user).ok, false)
+  assert.equal(classifySnapshotScope('viking:///user/alice', 'restore', user).ok, false)
+  assert.equal(classifySnapshotScope('viking://user///alice', 'restore', user).ok, false)
+  assert.equal(classifySnapshotScope('viking://user//alice', 'commit', user).ok, false)
+  assert.deepEqual(
+    { ok: true, uri: 'viking://user/alice/memories' },
+    classifySnapshotScope('viking://user/alice//memories', 'restore', user),
+    'the returned scope is canonical so plan/audit/undo carry one form',
+  )
+  const normalizedPaths = classifySnapshotPaths(
+    ['viking://user/alice//memories', 'viking:///resources/x'],
+    'commit',
+    user,
+  )
+  assert.equal(normalizedPaths.ok, true)
+  assert.deepEqual(normalizedPaths.paths, ['viking://user/alice/memories', 'viking://resources/x'])
   assert.equal(classifySnapshotScope('viking://user/alice/sessions', 'restore', user).ok, false)
   assert.equal(classifySnapshotScope('viking://user/alice/sessions/dsh-1', 'commit', user).ok, false)
   // S2: pack requires the active user's own tree; bare viking://user and another
@@ -338,6 +358,28 @@ test('S3: the restore plan carries the real counts even when the rows are capped
   assert.equal(plan.truncated, true)
   const restoreSummary = prepared.summary.find((line) => line.includes('will be written'))
   assert.match(restoreSummary, /60 file\(s\) will be written, 55 deleted/)
+
+  // N2: the flag is per-array; 40 writes + 40 deletes shows 80 of 80 and must
+  // NOT claim truncation.
+  const balanced = opsRig({
+    snapshot: {
+      dryRunRestore: async () => ({
+        ok: true,
+        head: 'head-1',
+        toWrite: Array.from({ length: 40 }, (_, index) => ({ path: `w${index}.md`, oid: null })),
+        toDelete: Array.from({ length: 40 }, (_, index) => ({ path: `d${index}.md`, oid: null })),
+        unchanged: 0,
+      }),
+    },
+  })
+  const balancedPlan = await balanced.service.prepare({
+    action: 'snapshot-restore',
+    projectDir: 'viking://resources/out',
+    sourceCommit: 'c1',
+  })
+  assert.equal(balancedPlan.ok, true)
+  assert.equal(balancedPlan.plan.truncated, false, '80 of 80 is complete, not truncated')
+  assert.equal(balancedPlan.plan.writeTotal + balancedPlan.plan.deleteTotal, 80)
 })
 
 test('S4: execute re-runs the action capability gate after the identity check', async () => {
@@ -380,10 +422,24 @@ test('S6: verifyCommit retries a lagging log a bounded number of times and passe
   const staleApi = { snapshotLog: async () => ({ ok: true, status: 200, result: [{ oid: 'c-old' }], error: null, errorCode: null }) }
   const stale = new SnapshotService({ api: staleApi, user: () => 'default' })
   assert.equal(await stale.verifyCommit('c-new', 'main'), false, 'the retry budget is bounded')
+
+  // N3: a failed read is NOT retried (three 8 s timeouts while holding the
+  // shared mutation gate would be a 24 s stall).
+  let failingCalls = 0
+  const failingApi = {
+    snapshotLog: async () => {
+      failingCalls += 1
+      return { ok: false, status: 500, result: null, error: 'boom', errorCode: 'INTERNAL' }
+    },
+  }
+  const failing = new SnapshotService({ api: failingApi, user: () => 'default' })
+  assert.equal(await failing.verifyCommit('c-new', 'main'), false)
+  assert.equal(failingCalls, 1, 'a failed request returns false immediately, no retry')
 })
 
-test('S5: undo expected paths compare normalized full URIs, not basenames', async () => {
-  // Prepare + execute use two dry runs; the undo plan is the third.
+test('S5/N1: undo expected paths compare normalized full URIs, not basenames', async () => {
+  // Prepare (1), execute re-check (2), undo plan (3). The undo apply path reuses
+  // its own dry run instead of adding a fourth (N7).
   let dryCalls = 0
   const rig = opsRig({
     snapshot: {
@@ -394,6 +450,20 @@ test('S5: undo expected paths compare normalized full URIs, not basenames', asyn
         // this the action's own inverse; the normalized URI must not.
         return { ok: true, head: 'head-1', toWrite: [{ path: 'other/report.md', oid: null }], toDelete: [], unchanged: 0 }
       },
+      // N1: a real inverse set is required or the test would pass with either
+      // implementation (expected would be empty and always "unexpected").
+      applyRestore: async () => ({
+        ok: true,
+        newCommit: 'commit-2',
+        parentCommit: 'commit-1',
+        written: 1,
+        deleted: 0,
+        unchanged: 0,
+        writtenPaths: ['report.md'],
+        deletedPaths: [],
+        taskId: null,
+        requestId: 'req-2',
+      }),
     },
   })
   const prepared = await rig.service.prepare({ action: 'snapshot-restore', projectDir: 'viking://resources/out', sourceCommit: 'c1' })
@@ -402,11 +472,14 @@ test('S5: undo expected paths compare normalized full URIs, not basenames', asyn
   const plan = await rig.service.plan({ undoId: executed.undoId })
   assert.equal(plan.ok, true)
   assert.equal(plan.plan.extraChanges, true, 'other/report.md is outside the action inverse set, not "report.md"')
+  assert.equal(dryCalls, 3, 'prepare + execute recheck + plan each ran one dry run')
   const refused = await rig.service.undo({ undoId: executed.undoId })
   assert.equal(refused.ok, false)
   assert.equal(refused.error.code, 'extra-changes')
+  assert.equal(dryCalls, 4, 'one undo attempt = one dry run, not two (N7)')
   const applied = await rig.service.undo({ undoId: executed.undoId, confirmExtra: true })
   assert.equal(applied.ok, true)
+  assert.equal(dryCalls, 5, 'the applied undo also uses exactly one dry run (N7)')
 })
 
 test('undo stays available when enableOps is switched off after the action; identity switch still refuses', async () => {
@@ -459,7 +532,7 @@ test('an identity switch between prepare and execute is refused at execute', asy
 
 /* ---- pack broker: deadlines, caps, signature, expiry, identity, eviction -- */
 
-function packBrokerRig({ bodyFactory, maxBytes = 1024, inactivityMs = 60, totalMs = 500 } = {}) {
+function packBrokerRig({ bodyFactory, maxBytes = 1024, inactivityMs = 60, totalMs = 500, nowFn } = {}) {
   const dir = tempDir('pack-b')
   const audit = new AuditLog({ dir })
   const clock = { now: 1000 }
@@ -482,7 +555,7 @@ function packBrokerRig({ bodyFactory, maxBytes = 1024, inactivityMs = 60, totalM
     maxBytes,
     inactivityMs,
     totalMs,
-    now: () => clock.now,
+    now: nowFn ?? (() => clock.now),
   })
   return { broker, audit, dir, clock, identity, downloadsDir: join(dir, 'downloads') }
 }
@@ -617,4 +690,67 @@ test('the task-evidence server-request fan-out stops at its overall deadline', a
   assert.equal(evidence.ok, true)
   assert.equal(evidence.evidence.correlation.serverRequests.length, 1, 'only the first lookup ran before the deadline')
   assert.equal(evidence.evidence.correlation.warnings.includes('server-request-log-deadline'), true)
+})
+
+test('N5: the startup sweep only deletes dead-owner and aged legacy pack files', () => {
+  const dir = tempDir('pack-sweep')
+  const downloads = join(dir, 'downloads')
+  mkdirSync(downloads, { recursive: true, mode: 0o700 })
+  const write = (name) => writeFileSync(join(downloads, name), 'stub', { mode: 0o600 })
+  const liveOwner = `pack-${process.pid}-aaaaaaaaaaaaaaaa.ovpack`
+  const deadOwner = 'pack-999999-bbbbbbbbbbbbbbbb.ovpack'
+  const legacyFresh = 'pack-cccccccccccccccc.ovpack'
+  const legacyOld = 'pack-dddddddddddddddd.ovpack'
+  for (const name of [liveOwner, deadOwner, legacyFresh, legacyOld]) write(name)
+  const old = new Date(Date.now() - 10 * 60_000)
+  utimesSync(join(downloads, legacyOld), old, old)
+
+  const broker = new PackDownloadBroker({
+    api: { streamPackExport: async () => ({ ok: false, status: 404, response: null, error: 'n/a', errorCode: null, requestId: null }) },
+    audit: new AuditLog({ dir }),
+    identity: () => IDENTITY,
+    dir,
+    now: () => Date.now(),
+  })
+  assert.equal(typeof broker.sweepOrphans, 'function')
+  const remaining = readdirSync(downloads).sort()
+  assert.deepEqual(remaining, [legacyFresh, liveOwner].sort(), 'live-owner and fresh legacy files survive; dead/aged are swept')
+})
+
+test('N9: the overall export body deadline aborts a slow-but-alive stream (and is tested)', async () => {
+  let nowCalls = 0
+  const rig = packBrokerRig({
+    // The stream sends one chunk and then stays open forever. The inactivity
+    // window is long, so only the overall deadline can stop it.
+    bodyFactory: stalledBody,
+    inactivityMs: 60_000,
+    totalMs: 200,
+    nowFn: () => {
+      nowCalls += 1
+      // Calls 1-2 are the constructor/sweep and export start; from the first
+      // loop iteration (call 3+) the injected clock is past the total budget.
+      return nowCalls <= 3 ? 1000 : 1201
+    },
+  })
+  const outcome = await rig.broker.export('viking://resources/x', false)
+  assert.equal(outcome.ok, false)
+  assert.equal(outcome.code, 'pack-failed')
+  assert.match(outcome.message, /deadline/i)
+  assert.equal(readdirSync(rig.downloadsDir).length, 0, 'no partial file is kept')
+})
+
+test('N6: the pack capability probe uses the 5 s status budget, not the stream default', async () => {
+  const seen = []
+  const api = {
+    streamPackExport: async (_uri, _includeVectors, options) => {
+      seen.push(options)
+      return { ok: false, status: 404, response: null, error: 'Not Found', errorCode: null, requestId: null }
+    },
+  }
+  const capability = new CapabilityService({ api, transport: () => true, now: () => 1000 })
+  const answer = await capability.pack()
+  assert.equal(seen.length, 1)
+  assert.equal(seen[0]?.timeoutMs, STATUS_TIMEOUT_MS, 'an offline probe must not wait the 120 s stream default')
+  assert.equal(answer.available, false)
+  assert.equal(answer.detail, 'not-supported')
 })

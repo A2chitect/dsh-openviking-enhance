@@ -58,7 +58,6 @@ import type {
   SnapshotCreatePlan,
   SnapshotRestorePlan,
 } from '../shared/protocol.ts'
-import { isUndoableOpsAction } from '../shared/protocol.ts'
 import {
   ConfirmationStore,
   MutationGate,
@@ -339,26 +338,23 @@ export class OpsService {
       this.auditDenied(record.action, record.target, error)
       return { ok: false, error }
     }
-    const plan = await this.buildUndoPlan(record)
+    // Build the undo plan from exactly ONE dry run on the apply path (N7/S5): it
+    // is the latest read immediately before the mutation, so the reviewed plan
+    // is the applied plan and no extra round trip is spent. A file-version undo
+    // needs no snapshot dry run (it reads the version list instead).
+    let plan: OpsUndoPlan
+    if (record.action === 'snapshot-restore') {
+      const dry = await this.options.snapshot.dryRunRestore(record.projectDir, record.sourceCommit)
+      if (!dry.ok) {
+        this.auditUndoFailed(record, dry.message)
+        return { ok: false, error: err(dry.code, dry.message) }
+      }
+      plan = this.planFromDryRun(record, dry)
+    } else {
+      plan = await this.buildUndoPlan(record)
+    }
     if (plan.extraChanges && request.confirmExtra !== true) {
       return { ok: false, error: err('extra-changes', 'The undo plan touches files this action did not change. Confirm explicitly to continue.', plan) }
-    }
-    // S5: re-run the dry run immediately before applying. The plan is a read,
-    // so this stays cheap, and it closes the window where another session wrote
-    // under the restore scope between the plan dialog and Apply.
-    if (record.action === 'snapshot-restore') {
-      const recheck = await this.options.snapshot.dryRunRestore(record.projectDir, record.sourceCommit)
-      if (!recheck.ok) {
-        this.auditUndoFailed(record, recheck.message)
-        return { ok: false, error: err(recheck.code, recheck.message) }
-      }
-      const recheckPlan = this.planFromDryRun(record, recheck)
-      if (recheckPlan.extraChanges && request.confirmExtra !== true) {
-        return {
-          ok: false,
-          error: err('extra-changes', 'The undo plan changed since it was reviewed. Confirm explicitly to continue.', recheckPlan),
-        }
-      }
     }
     if (this.options.gate.busy) {
       return { ok: false, error: err('write-in-flight', 'Another write or operation started while this undo was prepared.') }
@@ -587,7 +583,9 @@ export class OpsService {
       }
       const dry = await this.options.snapshot.dryRunRestore(scopeCheck.uri, sourceCommit)
       if (!dry.ok) return { ok: false, error: err(dry.code, dry.message, dry.details) }
-      const truncated = dry.toWrite.length + dry.toDelete.length > SNAPSHOT_RESTORE_PLAN_PATHS
+      // Each array is clamped separately, so the truncation flag must be per-array
+      // too: 40+40 rows is NOT truncated and must not claim "first 80 of 80".
+      const truncated = dry.toWrite.length > SNAPSHOT_RESTORE_PLAN_PATHS || dry.toDelete.length > SNAPSHOT_RESTORE_PLAN_PATHS
       const plan: SnapshotRestorePlan = {
         kind: 'snapshot-restore',
         projectDir: scopeCheck.uri,
@@ -1254,7 +1252,8 @@ export class OpsService {
       expected: expected.has(projectUriOf(entry.path, record.projectDir)),
     }))
     const extraChanges = [...toWrite, ...toDelete].some((entry) => !entry.expected)
-    const truncated = dry.toWrite.length + dry.toDelete.length > SNAPSHOT_RESTORE_PLAN_PATHS
+    // Per-array flag: a 40-write + 40-delete plan shows 80 of 80 and is not truncated.
+    const truncated = dry.toWrite.length > SNAPSHOT_RESTORE_PLAN_PATHS || dry.toDelete.length > SNAPSHOT_RESTORE_PLAN_PATHS
     return {
       undoId: record.undoId,
       action: record.action,

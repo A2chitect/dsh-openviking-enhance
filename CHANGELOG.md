@@ -46,6 +46,29 @@ no new dependency, no AGPL code. One shared `OpsService` and the extracted
   identity-checked on consume, and leftover `downloads/` files are swept at
   startup plus on history reads/client aborts.
 
+#### Fixed (PR #6 review round 2)
+
+- Restore/commit scope classification compares the **canonical** `viking://` form
+  in every safety check and returns it downstream, so `viking://user//alice`,
+  `viking:///user/alice` and `viking://user///alice` are refused for the
+  sessions-ancestor rule and a valid scope comes back canonicalised
+  (`viking://user/alice//memories` → `viking://user/alice/memories`).
+- Restore/undo plan truncation is now a **per-array** decision, so 40 writes +
+  40 deletes is "80 of 80" (not truncated) instead of a contradictory
+  "first 80 of 80".
+- Snapshot-log verification retries only a successful-but-stale read; a failed
+  request returns false immediately, so a read timeout can no longer hold the
+  shared mutation gate for up to 24 s.
+- One undo dry run now both builds the plan and is the read immediately before
+  Apply (one round trip instead of two).
+- Pack probe uses the 5 s status budget (not the 120 s stream default); the
+  startup sweep is pid-aware so a second plugin instance sharing `DSH_HOME/state`
+  never deletes another instance's live/mid-write download; a rejected body read
+  rejects the outer promise cleanly.
+- Residual cleanups: removed the dead duplicate error branch, the unused import,
+  the unconsumed message-cap re-export, and the `void startedAt` workaround;
+  pack export copy now states the active-user rule correctly (EN+ZH).
+
 #### Added
 
 - **Snapshots.** Read: bounded commit history, file-at-commit preview (text only),
