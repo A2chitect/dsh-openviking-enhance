@@ -260,7 +260,7 @@ does **not** do, and the privacy boundary. Dated evidence lives in
 
 | Component | Supported | Verified / notes |
 | --- | --- | --- |
-| DSH (reads) | `>=0.2.0-rc.2 <1.0.0-0` (`engines.dsh`, `engines.dsh` upper-bounded below 1.0) | built and type-checked against 0.2.2-rc.1; verified on 0.2.0-rc.2, 0.2.1-rc.5, 0.2.2-rc.1 |
+| DSH (reads) | `>=0.2.0-rc.2 <1.0.0-0` (`engines.dsh`; every range is upper-bounded below 1.0) | built and type-checked against 0.2.2-rc.1; verified on 0.2.0-rc.2, 0.2.1-rc.5, 0.2.2-rc.1 |
 | DSH (writes) | **0.2.2-rc.1+** | authenticated `ctx.connection.fetch`; older generations keep every read surface and disable writes with a stated reason |
 | OpenViking | 0.5.1.1 – 0.5.3 tested | 0.5.2 unverified, 0.5.4 unprobed. Preview/search/skills/Experience on 0.5.1.1+ (Experience verified on 0.5.3); **Rules need 0.5.3+**; the context face is 0.5.3 |
 | Official memory plugin | `@openviking/dsh-memory-plugin` (optional) | 0.5.32 verified on the maintainer's machine; its in-process state is read, not a published stable contract (see Known gaps) |
