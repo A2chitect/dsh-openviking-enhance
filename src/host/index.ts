@@ -106,12 +106,13 @@ export const Config = z.object({
    * Host-side switch: register the read-only `/viking` command.
    *
    * Unlike the `show*` fields this one is read by the host half (the command
-   * registry is a host service). It always applies on the next plugin apply —
-   * the same save/reload path every switch uses — and it ALSO applies live when
-   * the Loader emits `loader/volatile-update` for a volatile-field save
-   * (`@deepseek-ai/cordis-plugin-loader` does). An older Loader without that
-   * event falls back to the apply/restart path; both are the same switch, no
-   * third behaviour. It is `.volatile()` so the settings form persists it.
+   * registry is a host service). It applies at plugin activation — startup or any
+   * re-apply — and ALSO applies live when the Loader emits
+   * `loader/volatile-update` for a volatile-only save
+   * (`@deepseek-ai/cordis-plugin-loader` does; a volatile-only save does not
+   * re-apply the entry by itself). A Loader that emits no such event falls back
+   * to the next activation; there is no third behaviour. It is `.volatile()` so
+   * the settings form persists it.
    */
   enableCommands: z.boolean().default(true).volatile(),
 })

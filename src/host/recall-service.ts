@@ -113,8 +113,13 @@ export class RecallService {
 
     const value = await this.collect(sessionId, explicit, capped, options)
     // Only successful, non-empty answers are worth reusing: an error is cheap to
-    // retry and caching it would pin a dead server into the panel.
-    if (value.query.text.length > 0) this.cache.set(cacheKey, { at: this.now(), value })
+    // retry and caching it would pin a dead server into the panel. A CANCELLED
+    // answer is not a result at all: aborting mid-retrieval still collects the
+    // query text with zero hits, and caching that would serve "no memories" to
+    // the panel and to `/viking recall` for the rest of the TTL.
+    if (value.query.text.length > 0 && options.signal?.aborted !== true) {
+      this.cache.set(cacheKey, { at: this.now(), value })
+    }
     return value
   }
 

@@ -228,9 +228,10 @@ entry also unmounts the Studio page (it loads fresh when shown again), and hidin
 the recall tab closes an open recall page as soon as the conversation is back
 on screen — a page that is open in a background pane has to be closed by hand,
 because the harness exposes no way to enumerate tabs. The two v0.4 tabs behave
-the same way; `enableCommands` is read by the host half, so it applies on save
-(or immediately where the Loader announces the settings change) rather than by
-mounting anything.
+the same way; `enableCommands` is read by the host half, so it applies on the
+next plugin apply (a save that reloads the plugin, or a restart) and immediately
+where the Loader emits its volatile-config update, rather than by mounting
+anything. An older Loader without that event falls back to the next apply.
 
 ## Troubleshooting
 
@@ -247,10 +248,11 @@ surface hidden.
 
 **`/viking` is not recognised.**
 The command is registered by the host half and can be switched off with
-`enableCommands` in the plugin's **Configure** form; a saved change is applied on
-the next host start (or immediately when the Loader announces the settings
-update). If the form already shows it on, restart DSH once — the host half is
-loaded at startup.
+`enableCommands` in the plugin's **Configure** form. A saved change is applied on
+the next plugin apply (a save that reloads the plugin, or a restart), or
+immediately when the Loader emits its volatile-config update; an older Loader
+without that event falls back to the next apply. If the form already shows it on,
+restart DSH once — the host half is loaded at startup.
 
 **The Rules segment says the server has no rule list, or rule search fails.**
 Rules are an OpenViking **0.5.3+** feature. On 0.5.1.1/0.5.2 the segment says so

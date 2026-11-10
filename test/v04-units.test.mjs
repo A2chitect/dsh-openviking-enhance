@@ -314,6 +314,66 @@ test('wrapped PyYAML plain scalars are folded back instead of truncated', () => 
   assert.equal(facts.name, 'Run the test suite before reporting done')
 })
 
+test('a single-quoted fold after an apostrophe does not close the scalar (N1)', () => {
+  // Genuine `yaml.safe_dump` output from the installed OpenViking server's
+  // PyYAML 6.0.3: the fold lands right after `dogs'`, which YAML writes as
+  // `dogs''`. A naive "ends with quote" check closed the scalar one line early,
+  // dropping the rest and leaving a stray apostrophe.
+  const frontmatter = [
+    "content: 'Use the tool: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx dogs''",
+    "  toys and more text that keeps going well past the eighty column limit here.'",
+  ].join('\n')
+  const fields = parseRuleDocument(`---\n${frontmatter}\n---\n\nbody\n`).fields
+  assert.equal(
+    fields.content,
+    "Use the tool: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx dogs' " +
+      'toys and more text that keeps going well past the eighty column limit here.',
+  )
+})
+
+test('blank lines inside a quoted scalar are newlines, not the end of it (N2)', () => {
+  // Genuine PyYAML output for a two-paragraph single-quoted value: every newline
+  // in the value becomes one blank line, and the next folded segment must not
+  // gain a space.
+  const twoParagraphs = [
+    "content: 'First line of the rule.",
+    '',
+    '',
+    '  Second line that is also quite long and will need folding somewhere well past the',
+    "  eighty column limit.'",
+  ].join('\n')
+  assert.equal(
+    parseRuleDocument(`---\n${twoParagraphs}\n---\n\nbody\n`).fields.content,
+    'First line of the rule.\n\n' +
+      'Second line that is also quite long and will need folding somewhere well past the eighty column limit.',
+  )
+
+  // The single-newline form has one blank line and keeps one newline.
+  const oneNewline = [
+    "content: 'Constraint: First line of the rule.",
+    '',
+    '  Second line that is also quite long and will need folding somewhere well past the',
+    "  eighty column limit.'",
+  ].join('\n')
+  assert.equal(
+    parseRuleDocument(`---\n${oneNewline}\n---\n\nbody\n`).fields.content,
+    'Constraint: First line of the rule.\n' +
+      'Second line that is also quite long and will need folding somewhere well past the eighty column limit.',
+  )
+
+  // A trailing newline in the value survives too (blank line before the closing
+  // quote), and a following field is still parsed.
+  const trailing = [
+    "content: 'Constraint: A value that ends with a newline.",
+    '',
+    "  '",
+    'name: after the quoted scalar',
+  ].join('\n')
+  const parsed = parseRuleDocument(`---\n${trailing}\n---\n\nbody\n`)
+  assert.equal(parsed.fields.content, 'Constraint: A value that ends with a newline.\n')
+  assert.equal(parsed.fields.name, 'after the quoted scalar')
+})
+
 test('folded single- and double-quoted scalars are re-joined by YAML rules', () => {
   // PyYAML chooses single quotes for a value containing `: ` / `#`; the closing
   // quote lands on the continuation line.
@@ -1688,9 +1748,11 @@ test('the command is registered optionally and lives behind enableCommands', asy
   assert.match(String(broken.state.warns[0]?.[0] ?? ''), /failed to register \/viking/)
 })
 
-test('the enableCommands switch is applied again when the settings save re-applies the plugin', () => {
-  // The real live path: saving the form updates the profile patch and the entry
-  // is re-applied. Each apply reads the new reference and registers accordingly.
+test('an activation reads the enableCommands reference and registers accordingly', () => {
+  // Activation path: startup, or a re-apply caused by a save that reloads the
+  // entry. Each apply reads the reference it was handed, in either polarity.
+  // (The volatile-only save path is covered by the loader/volatile-update test
+  // below — a volatile-only save does not re-apply the entry by itself.)
   const on = commandRegistry()
   apply(hostContext({ commands: on }).context, Config({ endpoint: DEAD_ENDPOINT, enableCommands: true }))
   assert.equal(on.definitions.length, 1)

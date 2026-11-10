@@ -32,7 +32,7 @@
  * ## Folded scalars are the normal case, not an edge case
  *
  * The server serializes this block with
- * `yaml.safe_dump(..., all_unicode=True, sort_keys=False, default_flow_style=False)`
+ * `yaml.safe_dump(..., allow_unicode=True, sort_keys=False, default_flow_style=False)`
  * (`openviking/service/rule_service.py::_render_markdown`), and PyYAML folds any
  * scalar longer than its default `width=80` onto continuation lines:
  *
@@ -80,14 +80,26 @@ function keyValue(line: string): { key: string; value: string } | null {
  * Whether a quoted scalar ends on this piece of text.
  *
  * For a double-quoted scalar a quote preceded by an odd number of backslashes
- * is escaped and does not close it. A single-quoted scalar is closed by its last
- * `'` (an embedded quote is written as `''`, so the final character is still the
- * delimiter).
+ * is escaped and does not close it.
+ *
+ * A single-quoted scalar escapes an embedded apostrophe by doubling it, so only
+ * an ODD run of trailing quotes is the delimiter; an even run is content. This
+ * matters exactly at a PyYAML fold: when the fold lands after `dogs'`, the line
+ * ends `dogs''` and a naive "ends with quote" check would close the scalar one
+ * line early and drop the rest of the value.
+ *
+ * `text` is the scalar CONTENT: callers pass `raw.slice(1)` rather than the raw
+ * `key: <value>` suffix, so the opening delimiter can never be mistaken for a
+ * doubled apostrophe (an empty `''` scalar closes immediately).
  */
 function closesQuoted(text: string, quote: '"' | "'"): boolean {
-  if (!text.trimEnd().endsWith(quote)) return false
-  if (quote === "'") return true
   const trimmed = text.trimEnd()
+  if (!trimmed.endsWith(quote)) return false
+  if (quote === "'") {
+    let quotes = 0
+    for (let index = trimmed.length - 1; index >= 0 && trimmed[index] === "'"; index -= 1) quotes += 1
+    return quotes % 2 === 1
+  }
   let backslashes = 0
   for (let index = trimmed.length - 2; index >= 0 && trimmed[index] === '\\'; index -= 1) backslashes += 1
   return backslashes % 2 === 0
@@ -195,6 +207,13 @@ export function parseRuleDocument(text: string): ParsedRuleDocument {
         parts: string[]
         /** One separator before each part after the first ('' for an escaped line break). */
         joins: string[]
+        /**
+         * Newline(s) contributed by blank lines since the last folded segment.
+         * A blank line inside a quoted scalar is a line break in the value
+         * (PyYAML writes every `\n` as one blank line), not the end of the
+         * scalar; the next segment joins with these newlines instead of a space.
+         */
+        pendingSeparator: string | null
       }
     | null = null
 
@@ -218,7 +237,7 @@ export function parseRuleDocument(text: string): ParsedRuleDocument {
     quoted = null
   }
 
-  /** A new mapping entry (or a blank/delimiter line) ends any folded scalar. */
+  /** A new mapping entry ends any folded scalar. */
   const endFoldedScalar = (): void => {
     flushQuoted()
     plainKey = null
@@ -228,7 +247,13 @@ export function parseRuleDocument(text: string): ParsedRuleDocument {
     const line = lines[index] ?? ''
     if (line.trim().length === 0) {
       if (blockKey !== null) blockLines.push('')
-      else endFoldedScalar()
+      else if (quoted !== null) {
+        // An empty line inside a quoted scalar is a folded line break, not the
+        // end of the scalar: `content` allows 16 000 characters, so a rule can
+        // legitimately have several paragraphs. PyYAML represents each `\n` in
+        // the value as one blank line, so their count is the separator.
+        quoted.pendingSeparator = `${quoted.pendingSeparator ?? ''}\n`
+      } else endFoldedScalar()
       continue
     }
     const indented = /^\s/.test(line)
@@ -251,7 +276,11 @@ export function parseRuleDocument(text: string): ParsedRuleDocument {
           escapedBreak = true
         }
       }
-      quoted.joins.push(escapedBreak ? '' : ' ')
+      const pendingSeparator = quoted.pendingSeparator
+      quoted.pendingSeparator = null
+      // A blank-line separator wins over the ordinary folded space; it is what
+      // preserves multi-paragraph values.
+      quoted.joins.push(pendingSeparator ?? (escapedBreak ? '' : ' '))
       quoted.parts.push(piece)
       if (closed) flushQuoted()
       continue
@@ -283,8 +312,8 @@ export function parseRuleDocument(text: string): ParsedRuleDocument {
       fields[entry.key] = ''
       continue
     }
-    const opensDouble = raw.startsWith('"') && !closesQuoted(raw, '"')
-    const opensSingle = raw.startsWith("'") && !closesQuoted(raw, "'")
+    const opensDouble = raw.startsWith('"') && !closesQuoted(raw.slice(1), '"')
+    const opensSingle = raw.startsWith("'") && !closesQuoted(raw.slice(1), "'")
     if (opensDouble || opensSingle) {
       // A quoted scalar can wrap too: its closing delimiter is on a later line.
       quoted = {
@@ -292,6 +321,7 @@ export function parseRuleDocument(text: string): ParsedRuleDocument {
         quote: opensDouble ? '"' : "'",
         parts: [raw.slice(1)],
         joins: [],
+        pendingSeparator: null,
       }
       continue
     }
