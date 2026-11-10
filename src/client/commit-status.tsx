@@ -63,6 +63,7 @@ import { ensureSessionScope, useSessionScope } from './session-scope.tsx'
 import { canSelectPanel, openNative } from './native-store.ts'
 import { openWriteConfirm } from './write-store.ts'
 import { writeErrorText } from './locale.ts'
+import { useA11yTabs } from './a11y.ts'
 
 export interface CommitStatusProps {
   sessionId?: string
@@ -574,6 +575,8 @@ interface DiffGroup {
 export function DiffView({ diff }: { diff: MemoryDiff }) {
   const { summary } = diff
   const [filter, setFilter] = useState<DiffFilter>('all')
+  /** v1.0 a11y: the diff-type filter is a tablist with arrow-key selection. */
+  const filterTabs = useA11yTabs(['all', 'adds', 'updates', 'deletes'] as const, filter, (id) => setFilter(id))
   const [openKey, setOpenKey] = useState<string | null>(null)
   const groups: DiffGroup[] = [
     { key: 'adds', title: t('pill.group.adds'), entries: diff.adds },
@@ -600,7 +603,7 @@ export function DiffView({ diff }: { diff: MemoryDiff }) {
         <div className="ove-empty">{t('pill.noMemoryChange')}</div>
       ) : (
         <>
-          <div className="ove-diff-filters" role="tablist" aria-label={t('pill.filter.label')}>
+          <div {...filterTabs.tabListProps} className="ove-diff-filters" aria-label={t('pill.filter.label')}>
             {(['all', 'adds', 'updates', 'deletes'] as const).map((candidate) => {
               const count =
                 candidate === 'all'
@@ -614,10 +617,8 @@ export function DiffView({ diff }: { diff: MemoryDiff }) {
                 <button
                   key={candidate}
                   type="button"
-                  role="tab"
-                  aria-selected={filter === candidate}
+                  {...filterTabs.tabProps(candidate)}
                   className={`ove-diff-filter${filter === candidate ? ' ove-diff-filter-active' : ''}`}
-                  onClick={() => setFilter(candidate)}
                 >
                   {t(`pill.filter.${candidate}`)}
                   <span className="ove-diff-filter-count">{count}</span>
@@ -626,7 +627,7 @@ export function DiffView({ diff }: { diff: MemoryDiff }) {
             })}
           </div>
           {shown === 0 ? (
-            <div className="ove-empty">{t('pill.filter.empty')}</div>
+            <div {...filterTabs.panelProps(filter)} className="ove-empty">{t('pill.filter.empty')}</div>
           ) : (
             visible.map((group) => (
               <section key={group.key}>

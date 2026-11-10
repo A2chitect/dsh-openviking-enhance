@@ -42,7 +42,9 @@ import {
   taskExportUrl,
   type SessionControlResponse,
 } from './host-api.ts'
-import { t, writeErrorText } from './locale.ts'
+import { formatDateTime, t, writeErrorText } from './locale.ts'
+import { useA11yTabs } from './a11y.ts'
+import { startVisibleInterval } from './poll-policy.ts'
 import { MetricCard, MetricsCards } from './metrics-view.tsx'
 import { nextPollDelay } from './poll-policy.ts'
 import { ScopeChip } from './scope-chip.tsx'
@@ -71,7 +73,7 @@ function formatSeconds(value: number | null): string {
 function formatTime(seconds: number | null): string {
   if (seconds === null) return '—'
   try {
-    return new Date(seconds * 1000).toLocaleString()
+    return formatDateTime(seconds * 1000)
   } catch {
     return '—'
   }
@@ -121,8 +123,7 @@ function TaskRow({ task, sessionId, canCancel }: { task: ActivityTask; sessionId
     (detail.status === 'pending' || detail.status === 'running' || detail.status === 'cancelling')
   useEffect(() => {
     if (!running) return
-    const timer = setInterval(() => void loadDetail(), 2000)
-    return () => clearInterval(timer)
+    return startVisibleInterval(() => void loadDetail(), 2000)
   }, [running, loadDetail])
 
   const doCancel = useCallback(async () => {
@@ -568,28 +569,25 @@ function StatusSection({ sessionId }: { sessionId: string }) {
 export function ActivityPanel({ sessionId }: ActivityPanelProps) {
   const [section, setSection] = useState<Section>('tasks')
   const scope = useScope()
+  const tabs = useA11yTabs(['tasks', 'status'] as const, section, (id) => setSection(id))
   const status = scope.scope?.healthy === true ? null : t('activity.unreachable')
 
   return (
     <div className="ove-act">
       <SessionScopeBanner sessionId={sessionId} />
       <div className="ove-act-head">
-        <div className="ove-act-tabs" role="tablist" aria-label={t('activity.tabTitle')}>
+        <div {...tabs.tabListProps} className="ove-act-tabs" aria-label={t('activity.tabTitle')}>
           <button
             type="button"
-            role="tab"
-            aria-selected={section === 'tasks'}
+            {...tabs.tabProps('tasks')}
             className={`ove-act-tab${section === 'tasks' ? ' ove-act-tab-active' : ''}`}
-            onClick={() => setSection('tasks')}
           >
             {t('activity.tasks')}
           </button>
           <button
             type="button"
-            role="tab"
-            aria-selected={section === 'status'}
+            {...tabs.tabProps('status')}
             className={`ove-act-tab${section === 'status' ? ' ove-act-tab-active' : ''}`}
-            onClick={() => setSection('status')}
           >
             {t('activity.status')}
           </button>
@@ -597,7 +595,9 @@ export function ActivityPanel({ sessionId }: ActivityPanelProps) {
         <ScopeChip compact />
       </div>
       {status !== null && <p className="ove-act-note">{status}</p>}
-      {section === 'tasks' ? <TasksSection sessionId={sessionId} /> : <StatusSection sessionId={sessionId} />}
+      <div {...tabs.panelProps(section)}>
+        {section === 'tasks' ? <TasksSection sessionId={sessionId} /> : <StatusSection sessionId={sessionId} />}
+      </div>
     </div>
   )
 }

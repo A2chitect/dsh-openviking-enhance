@@ -46,3 +46,42 @@ export function nextPollDelay(input: PollDecision): number {
   }
   return input.working ? POLL_ACTIVE_MS : POLL_IDLE_MS
 }
+
+/**
+ * A visibility-gated interval: the only recurring-request timer the client uses.
+ *
+ * The timer does not exist while the document is hidden, and it refreshes once
+ * immediately when the tab becomes visible again (the answer may be stale after
+ * any amount of hidden time). Components therefore cannot accidentally keep
+ * spending requests on a hidden panel by adding a bare `setInterval`.
+ *
+ * No-op in a server render / very old harness (no `document`/`window`); the
+ * returned disposer can always be called.
+ */
+export function startVisibleInterval(callback: () => void, intervalMs: number): () => void {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return () => {}
+  let timer: ReturnType<typeof setInterval> | null = null
+  const stop = (): void => {
+    if (timer !== null) {
+      clearInterval(timer)
+      timer = null
+    }
+  }
+  const start = (): void => {
+    if (timer === null && document.visibilityState !== 'hidden') timer = setInterval(callback, intervalMs)
+  }
+  const onVisibility = (): void => {
+    if (document.visibilityState === 'hidden') {
+      stop()
+      return
+    }
+    callback()
+    start()
+  }
+  start()
+  document.addEventListener('visibilitychange', onVisibility)
+  return () => {
+    stop()
+    document.removeEventListener('visibilitychange', onVisibility)
+  }
+}

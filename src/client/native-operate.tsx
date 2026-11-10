@@ -50,6 +50,7 @@ import {
   taskExportUrl,
 } from './host-api.ts'
 import { t, writeErrorText } from './locale.ts'
+import { useA11yTabs } from './a11y.ts'
 import { navigate, useNative } from './native-store.ts'
 import { ConfirmShell, OpsDialog, type OpsDialogRequest } from './ops-dialog.tsx'
 import { shortTarget } from './write-dialog.tsx'
@@ -1226,27 +1227,29 @@ export function NativeOperate(props: { refreshKey: number }) {
   }, [requested])
 
   const active = useMemo(() => tab, [tab])
+  /** v1.0 a11y: Operate sub-tabs (snapshots/compile/packs/tasks) keyboard nav. */
+  const tabs = useA11yTabs(OPERATE_TABS, active, (id) => setTab(id))
 
   return (
     <div className="ove-nat-view ove-ops">
-      <nav className="ove-ops-tabs" role="tablist" aria-label={t('native.nav.views')}>
+      <nav {...tabs.tabListProps} className="ove-ops-tabs" aria-label={t('native.nav.views')}>
         {OPERATE_TABS.map((id) => (
           <button
             key={id}
             type="button"
-            role="tab"
-            aria-selected={active === id}
+            {...tabs.tabProps(id)}
             className={`ove-ops-tab${active === id ? ' ove-ops-tab-active' : ''}`}
-            onClick={() => setTab(id)}
           >
             {t(`native.operate.tab.${id}`)}
           </button>
         ))}
       </nav>
-      {active === 'snapshots' && <SnapshotsView refreshKey={props.refreshKey} />}
-      {active === 'compile' && <CompileView refreshKey={props.refreshKey} />}
-      {active === 'packs' && <PacksView refreshKey={props.refreshKey} />}
-      {active === 'tasks' && <TasksView refreshKey={props.refreshKey} />}
+      <div {...tabs.panelProps(active)}>
+        {active === 'snapshots' && <SnapshotsView refreshKey={props.refreshKey} />}
+        {active === 'compile' && <CompileView refreshKey={props.refreshKey} />}
+        {active === 'packs' && <PacksView refreshKey={props.refreshKey} />}
+        {active === 'tasks' && <TasksView refreshKey={props.refreshKey} />}
+      </div>
     </div>
   )
 }

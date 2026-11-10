@@ -1257,6 +1257,7 @@ const zh: Record<string, string> = {
 
   // ---- v0.9: 作用域菜单 / 切换 / ACL（多作用域） ---------------------------
   'scope.menuTitle': '作用域与身份',
+  'scope.menu.servers': '服务端与配置档',
   'scope.menu.open': '切换',
   'scope.menu.refreshHealth': '刷新健康',
   'scope.menu.loading': '读取作用域列表…',
@@ -1367,6 +1368,34 @@ const zh: Record<string, string> = {
   'scope.session.restoreFailed': '切回失败：{reason}',
   'scope.session.restoreBlocked': '当前认证模式不允许恢复 {fields}；请手动处理或切换配置档。',
   'scope.rowWarn.probe-timeout': '健康探测超时：状态未知（不是不可达结论）。',
+  // ---- v1.0: 统一降级/错误文案（每个可渲染的 host code 都有 EN+ZH 文案）----
+  'notice.commitSkipped': '提交任务被跳过（{reason}）；已写入的归档不受影响。',
+  'notice.identity-not-switchable': '当前身份模式不允许切换身份（{reason}）。',
+  'notice.identity-switch-incomplete': '身份切换未完成：{error}。',
+  'notice.identityOverrideActive': '正在使用身份覆写（account/user/peer 由作用域菜单决定）。',
+  'notice.invalid-body': '请求体无效；没有执行任何操作。',
+  'notice.invalid-profile': '配置档字段无效；未保存。',
+  'notice.invalid-request': '请求参数无效；没有执行任何操作。',
+  'notice.invalid-scope': '作用域无效；请求未发送。',
+  'notice.method-not-allowed': '该方法在此路由上不被允许。',
+  'notice.pack-failed': '导出包生成失败：{error}。',
+  'notice.pack-too-large': '导出包超过大小上限，未下载（请在 Studio 中导出）。',
+  'notice.peerReadSelectorActive': 'peer 只作为读取视角，不是写入权限。',
+  'notice.profile-missing': '请求的配置档不存在；已回退到旧连接解析。',
+  'notice.profile-not-found': '没有这个配置档。',
+  'notice.rejected-by-server': '服务端拒绝了该请求：{error}。',
+  'notice.scope-changed': '作用域已改变，旧作用域下的操作已取消。',
+  'notice.scope-switch-blocked': '有进行中的确认或写入，暂不能切换作用域。',
+  'notice.too-many-profiles': '配置档数量超过上限（{max}）。',
+  'notice.write-failed': '写入失败：{error}。',
+  'wcode.commitSkipped': '提交任务被跳过。',
+  'wcode.identity-not-switchable': '当前身份模式不允许切换。',
+  'wcode.identity-switch-incomplete': '身份切换未完成。',
+  'wcode.identityOverrideActive': '身份覆写处于生效状态。',
+  'wcode.peerReadSelectorActive': 'peer 仅为读取视角。',
+  'wcode.profile-missing': '配置档不存在。',
+  'wcode.scope-changed': '作用域已改变。',
+  'wcode.scope-switch-blocked': '有进行中的操作，暂不能切换作用域。',
 }
 
 const en: Record<string, string> = {
@@ -2599,6 +2628,7 @@ const en: Record<string, string> = {
 
   // ---- v0.9: scope menu / switching / ACL (multi-scope) -------------------
   'scope.menuTitle': 'Scopes and identities',
+  'scope.menu.servers': 'Servers and profiles',
   'scope.menu.open': 'Switch',
   'scope.menu.refreshHealth': 'Refresh health',
   'scope.menu.loading': 'Reading the scope list…',
@@ -2709,6 +2739,34 @@ const en: Record<string, string> = {
   'scope.session.restoreFailed': 'Switch back failed: {reason}',
   'scope.session.restoreBlocked': 'This auth mode cannot restore {fields}; adjust it manually or switch profile.',
   'scope.rowWarn.probe-timeout': 'Health probe timed out: state unknown (not an unreachable verdict).',
+  // ---- v1.0: unified degraded/error copy (every renderable host code has EN+ZH copy) ----
+  'notice.commitSkipped': 'The commit task was skipped ({reason}); archives already written are unaffected.',
+  'notice.identity-not-switchable': 'The current auth mode does not allow switching identity ({reason}).',
+  'notice.identity-switch-incomplete': 'The identity switch did not complete: {error}.',
+  'notice.identityOverrideActive': 'An identity override is active (account/user/peer come from the scope menu).',
+  'notice.invalid-body': 'The request body is invalid; nothing was performed.',
+  'notice.invalid-profile': 'The profile fields are invalid; nothing was saved.',
+  'notice.invalid-request': 'The request parameters are invalid; nothing was performed.',
+  'notice.invalid-scope': 'The scope is invalid; the request was not sent.',
+  'notice.method-not-allowed': 'That method is not allowed on this route.',
+  'notice.pack-failed': 'Generating the exported pack failed: {error}.',
+  'notice.pack-too-large': 'The exported pack exceeds the size limit and was not downloaded (export it in Studio).',
+  'notice.peerReadSelectorActive': 'The peer is a read lens only, never write authority.',
+  'notice.profile-missing': 'The requested profile does not exist; fell back to the legacy connection.',
+  'notice.profile-not-found': 'No profile with that id.',
+  'notice.rejected-by-server': 'The server rejected the request: {error}.',
+  'notice.scope-changed': 'The scope changed; actions prepared under the old scope were cancelled.',
+  'notice.scope-switch-blocked': 'A confirmation or write is in progress, so the scope cannot switch yet.',
+  'notice.too-many-profiles': 'Too many profiles (limit {max}).',
+  'notice.write-failed': 'The write failed: {error}.',
+  'wcode.commitSkipped': 'The commit task was skipped.',
+  'wcode.identity-not-switchable': 'The current auth mode does not allow switching.',
+  'wcode.identity-switch-incomplete': 'The identity switch did not complete.',
+  'wcode.identityOverrideActive': 'An identity override is active.',
+  'wcode.peerReadSelectorActive': 'The peer is a read lens only.',
+  'wcode.profile-missing': 'The profile does not exist.',
+  'wcode.scope-changed': 'The scope changed.',
+  'wcode.scope-switch-blocked': 'An operation is in progress, so the scope cannot switch.',
 }
 
 /** Every key the plugin ships, per language. */
@@ -2803,6 +2861,32 @@ export function errorText(error: string): string {
 export function writeErrorText(error: { code: string; message: string }): string {
   const text = dict()[`wcode.${error.code}`]
   return text ?? error.message
+}
+
+/** A stable Intl locale for the active language (`zh-CN` / `en-US`). */
+export function intlLocale(): string {
+  return activeLocale() === 'zh' ? 'zh-CN' : 'en-US'
+}
+
+/**
+ * A locale-aware date+time for display (server timelines, task timestamps).
+ *
+ * v1.0 uses Intl for human-facing dates/numbers instead of slicing ISO strings,
+ * so a Chinese reader sees a Chinese date format. Accepts an ISO string, epoch
+ * milliseconds, or null/'' (rendered as an em dash). A malformed value is shown
+ * as-is — hiding it would make a data problem invisible.
+ */
+export function formatDateTime(value: string | number | null | undefined): string {
+  if (value === null || value === undefined || value === '') return '—'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return String(value)
+  return new Intl.DateTimeFormat(intlLocale(), { dateStyle: 'medium', timeStyle: 'short' }).format(date)
+}
+
+/** A locale-aware count (`1,234` / `1,234`; grouping follows Intl). */
+export function formatCount(value: number): string {
+  if (!Number.isFinite(value)) return '—'
+  return new Intl.NumberFormat(intlLocale()).format(value)
 }
 
 export function t(key: string, params?: Record<string, string | number>): string {

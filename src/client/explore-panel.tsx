@@ -40,6 +40,7 @@ import {
 import { ScopeChip } from './scope-chip.tsx'
 import { fetchExperience, fetchRules, fetchRulesSearch, fetchSearch, fetchSkills } from './host-api.ts'
 import { errorText, noticeText, t } from './locale.ts'
+import { useA11yTabs } from './a11y.ts'
 import { VikingUriLink } from './viking-uri-link.tsx'
 
 /** Panel props: the session the tab was opened in (Explore is not session-scoped). */
@@ -123,26 +124,26 @@ function RefreshGlyph() {
 
 export function ExplorePanel(_props: ExplorePanelProps) {
   const [segment, setSegment] = useState<Segment>('search')
+  /** v1.0 a11y: the four segment tabs are a real ARIA tablist (Arrows/Home/End). */
+  const tabs = useA11yTabs(SEGMENTS, segment, (id) => setSegment(id))
   return (
     <div className="ove-explore">
       <div className="ove-explore-scope-row">
         <ScopeChip compact />
       </div>
-      <div className="ove-explore-nav" role="tablist" aria-label={t('explore.tabTitle')}>
+      <div {...tabs.tabListProps} className="ove-explore-nav" aria-label={t('explore.tabTitle')}>
         {SEGMENTS.map((candidate) => (
           <button
             key={candidate}
             type="button"
-            role="tab"
-            aria-selected={segment === candidate}
+            {...tabs.tabProps(candidate)}
             className={`ove-explore-seg${segment === candidate ? ' ove-explore-seg-active' : ''}`}
-            onClick={() => setSegment(candidate)}
           >
             {t(SEGMENT_LABELS[candidate])}
           </button>
         ))}
       </div>
-      <div className="ove-explore-body">
+      <div {...tabs.panelProps(segment)} className="ove-explore-body">
         {segment === 'search' && <SearchSection />}
         {segment === 'rules' && <RulesSection />}
         {segment === 'skills' && <SkillsSection />}

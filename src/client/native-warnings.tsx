@@ -22,7 +22,12 @@ export interface NativeWarningsProps {
 export function NativeWarnings({ warnings, labelKey = 'native.warnings.summary' }: NativeWarningsProps) {
   if (warnings.length === 0) return null
   return (
-    <details className="ove-nat-warnings-box" data-dsh-plugin="openviking-enhance-warnings">
+    <details
+      className="ove-nat-warnings-box"
+      data-dsh-plugin="openviking-enhance-warnings"
+      role="status"
+      aria-live="polite"
+    >
       <summary>{t(labelKey, { count: warnings.length })}</summary>
       <ul>
         {warnings.map((warning, index) => (

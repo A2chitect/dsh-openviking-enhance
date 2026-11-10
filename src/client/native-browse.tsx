@@ -16,7 +16,8 @@
  * Deep links (`{view:'browse', browse:{uri}}`) expand the ancestor path one level
  * at a time so the requested node is visible and selected.
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
 import type {
   BrowseEntry,
   BrowseRoot,
@@ -24,6 +25,7 @@ import type {
   PluginNotice,
 } from '../shared/protocol.ts'
 import { fetchBrowsePage, fetchBrowseRoots, fetchBrowseSubtree } from './host-api.ts'
+import { flattenTreeRows, treeKeyTarget, useA11yTabs, type TreeRowFacts } from './a11y.ts'
 import { t, writeErrorText } from './locale.ts'
 import { navigate, useNative } from './native-store.ts'
 import { AccessPanel } from './access-panel.tsx'
@@ -293,6 +295,60 @@ export function NativeBrowse(props: NativeBrowseProps) {
     [],
   )
 
+  /**
+   * v1.0 a11y: the flattened list of *visible* rows is the single source for the
+   * roving tabindex, `aria-level` and the arrow-key model. Roots are level 1;
+   * a row's children only appear while its node is expanded and loaded.
+   */
+  const visibleRows = useMemo(
+    () =>
+      flattenTreeRows(
+        roots,
+        (uri) => nodes[uri]?.entries,
+        (uri) => expanded[uri] === true,
+      ),
+    [roots, expanded, nodes],
+  )
+
+  /** The one tree row that is tabbable (roving tabindex). */
+  const [activeRow, setActiveRow] = useState<string | null>(null)
+  const rowRefs = useRef<Map<string, HTMLDivElement | null>>(new Map())
+  useEffect(() => {
+    if (visibleRows.length === 0) {
+      if (activeRow !== null) setActiveRow(null)
+      return
+    }
+    if (activeRow === null || !visibleRows.some((row) => row.uri === activeRow)) {
+      setActiveRow(visibleRows[0]?.uri ?? null)
+    }
+  }, [visibleRows, activeRow])
+
+  const focusRow = useCallback((uri: string): void => {
+    setActiveRow(uri)
+    rowRefs.current.get(uri)?.focus()
+  }, [])
+
+  /**
+   * The ARIA tree keyboard model (see `a11y.ts`): Up/Down/Home/End move, Right
+   * expands or enters a directory, Left collapses or leaves it, Enter/Space
+   * select. Movement only touches the DOM element of the target row.
+   */
+  const onRowKeyDown = useCallback(
+    (uri: string, event: ReactKeyboardEvent<HTMLDivElement>): void => {
+      const action = treeKeyTarget(visibleRows, uri, event.key)
+      if (action === null) return
+      event.preventDefault()
+      if (action.toggle === 'expand' && expanded[uri] !== true) toggleNode(uri)
+      else if (action.toggle === 'collapse' && expanded[uri] === true) toggleNode(uri)
+      if (action.focus !== null) focusRow(action.focus)
+      if (action.select) select(uri)
+    },
+    [visibleRows, expanded, toggleNode, focusRow, select],
+  )
+
+  /** v1.0 a11y: the preview/access tab strip (Arrow/Home/End + aria wiring). */
+  const previewTabs = useA11yTabs(['preview', 'access'] as const, previewTab, (id) => setPreviewTab(id))
+
   // Deep link: expand the ancestor path one level at a time, then select.
   useEffect(() => {
     if (native.view !== 'browse') return
@@ -354,17 +410,28 @@ export function NativeBrowse(props: NativeBrowseProps) {
     return (
       <div key={entry.uri}>
         <div
+          ref={(element) => {
+            rowRefs.current.set(entry.uri, element)
+          }}
           className={`ove-browse-row${selected === entry.uri ? ' ove-browse-row-active' : ''}`}
           style={{ paddingLeft: 6 + depth * 14 }}
           role="treeitem"
+          aria-level={depth + 1}
+          aria-selected={selected === entry.uri}
           aria-expanded={entry.isDir ? isExpanded : undefined}
-          onClick={() => select(entry.uri)}
+          tabIndex={activeRow === entry.uri ? 0 : -1}
+          onKeyDown={(event) => onRowKeyDown(entry.uri, event)}
+          onClick={() => {
+            setActiveRow(entry.uri)
+            select(entry.uri)
+          }}
         >
           {entry.isDir ? (
             <button
               type="button"
               className="ove-browse-twisty"
               title={isExpanded ? t('browse.collapse') : t('browse.expand')}
+              aria-label={isExpanded ? t('browse.collapse') : t('browse.expand')}
               onClick={(event) => {
                 event.stopPropagation()
                 toggleNode(entry.uri)
@@ -456,14 +523,26 @@ export function NativeBrowse(props: NativeBrowseProps) {
     return (
       <div key={root.id}>
         <div
+          ref={(element) => {
+            rowRefs.current.set(root.uri, element)
+          }}
           className={`ove-browse-row ove-browse-root${selected === root.uri ? ' ove-browse-row-active' : ''}`}
           role="treeitem"
+          aria-level={1}
+          aria-selected={selected === root.uri}
           aria-expanded={isExpanded}
-          onClick={() => select(root.uri)}
+          tabIndex={activeRow === root.uri ? 0 : -1}
+          onKeyDown={(event) => onRowKeyDown(root.uri, event)}
+          onClick={() => {
+            setActiveRow(root.uri)
+            select(root.uri)
+          }}
         >
           <button
             type="button"
             className="ove-browse-twisty"
+            aria-label={isExpanded ? t('browse.collapse') : t('browse.expand')}
+            aria-expanded={isExpanded}
             onClick={(event) => {
               event.stopPropagation()
               toggleNode(root.uri)
@@ -544,7 +623,12 @@ export function NativeBrowse(props: NativeBrowseProps) {
             </button>
           </div>
         ) : (
-          <div role="tree" className="ove-browse-tree">
+          <div
+            role="tree"
+            aria-label={t('native.view.browse')}
+            aria-busy={rootsLoading}
+            className="ove-browse-tree"
+          >
             {roots.map(renderRoot)}
           </div>
         )}
@@ -558,22 +642,22 @@ export function NativeBrowse(props: NativeBrowseProps) {
               {selected}
             </div>
             {selected.startsWith('viking://resources') && (
-              <div className="ove-browse-preview-tabs" role="tablist" aria-label={t('browse.previewTabs')}>
+              <div
+                {...previewTabs.tabListProps}
+                className="ove-browse-preview-tabs"
+                aria-label={t('browse.previewTabs')}
+              >
                 <button
                   type="button"
-                  role="tab"
-                  aria-selected={previewTab === 'preview'}
+                  {...previewTabs.tabProps('preview')}
                   className={`ove-browse-tab${previewTab === 'preview' ? ' ove-browse-tab-active' : ''}`}
-                  onClick={() => setPreviewTab('preview')}
                 >
                   {t('browse.tab.preview')}
                 </button>
                 <button
                   type="button"
-                  role="tab"
-                  aria-selected={previewTab === 'access'}
+                  {...previewTabs.tabProps('access')}
                   className={`ove-browse-tab${previewTab === 'access' ? ' ove-browse-tab-active' : ''}`}
-                  onClick={() => setPreviewTab('access')}
                 >
                   {t('browse.tab.access')}
                 </button>
@@ -588,8 +672,20 @@ export function NativeBrowse(props: NativeBrowseProps) {
                 onSubtree={() => void loadSubtree(selected)}
               />
             )}
-            {previewTab === 'access' ? (
-              <AccessPanel uri={selected} refreshKey={props.refreshKey} />
+            {selected.startsWith('viking://resources') ? (
+              <div {...previewTabs.panelProps(previewTab)}>
+                {previewTab === 'access' ? (
+                  <AccessPanel uri={selected} refreshKey={props.refreshKey} />
+                ) : (
+                  <PreviewBody
+                    uri={selected}
+                    readOnly
+                    refreshKey={props.refreshKey}
+                    onOpenInActions={(uri) => openPreview(uri)}
+                    className="ove-native-preview-body"
+                  />
+                )}
+              </div>
             ) : (
               <PreviewBody
                 uri={selected}

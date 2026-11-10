@@ -18,6 +18,7 @@ import { t, writeErrorText } from './locale.ts'
 import { shortTarget } from './write-dialog.tsx'
 import { dismissNotice, notifyWriteSettled, openUndoPlan, showNotice, useWriteStore } from './write-store.ts'
 import { useScope } from './scope-store.ts'
+import { liveRegionForTone } from './a11y.ts'
 
 /** How long a notice stays before it fades; failures stay until dismissed. */
 const DISMISS_AFTER_MS = 20_000
@@ -70,7 +71,7 @@ export function WriteToast({ className = '' }: { className?: string }) {
 
   return (
     <div className={`ove-overlay ove-toast-layer ${className}`}>
-      <div className={`ove-toast ${toneClass}`} role="status">
+      <div className={`ove-toast ${toneClass}`} {...liveRegionForTone(notice.tone)}>
         <span className="ove-toast-text">{notice.text}</span>
         {notice.undoId !== null && scope.scope !== null && (
           <span className="ove-toast-scope" title={scope.scope.identity.fingerprint}>

@@ -18,6 +18,7 @@ import { useCallback, useEffect, useState } from 'react'
 import type { EnhanceConfig, StudioStatus } from '../shared/protocol.ts'
 import { fetchConfig, fetchStudioStatus } from './host-api.ts'
 import { noticeText, t, writeErrorText } from './locale.ts'
+import { useA11yTabs } from './a11y.ts'
 import { back, canSelectPanel, forward, navigate, useNative } from './native-store.ts'
 import { ScopeChip, ScopeSwitchNoticeLine } from './scope-chip.tsx'
 import { StudioPanel } from './studio-panel.tsx'
@@ -125,6 +126,8 @@ export function NativeCockpit() {
   }, [refreshKey])
 
   const refresh = useCallback(() => setRefreshKey((value) => value + 1), [])
+  /** v1.0 a11y: Arrow/Home/End view switching + aria-controls/tabpanel wiring. */
+  const views = useA11yTabs(VIEW_ORDER, native.view, (view) => navigate({ view }))
 
   const studioUrl = config?.studioUrl ?? null
   const canBack = native.index > 0
@@ -142,10 +145,10 @@ export function NativeCockpit() {
         <span className="ove-spacer" />
         <ScopeChip compact />
         <div className="ove-native-nav" role="group" aria-label={t('native.nav.label')}>
-          <button type="button" onClick={() => back()} disabled={!canBack} title={t('native.nav.back')}>
+          <button type="button" onClick={() => back()} disabled={!canBack} title={t('native.nav.back')} aria-label={t('native.nav.back')}>
             ←
           </button>
-          <button type="button" onClick={() => forward()} disabled={!canForward} title={t('native.nav.forward')}>
+          <button type="button" onClick={() => forward()} disabled={!canForward} title={t('native.nav.forward')} aria-label={t('native.nav.forward')}>
             →
           </button>
         </div>
@@ -164,15 +167,13 @@ export function NativeCockpit() {
       </div>
 
       <ScopeSwitchNoticeLine />
-      <nav className="ove-native-tabs" role="tablist" aria-label={t('native.nav.views')}>
+      <nav {...views.tabListProps} className="ove-native-tabs" aria-label={t('native.nav.views')}>
         {VIEW_ORDER.map((view) => (
           <button
             key={view}
             type="button"
-            role="tab"
-            aria-selected={native.view === view}
+            {...views.tabProps(view)}
             className={`ove-native-tab${native.view === view ? ' ove-native-tab-active' : ''}`}
-            onClick={() => navigate({ view })}
           >
             {viewLabel(view)}
           </button>
@@ -187,7 +188,7 @@ export function NativeCockpit() {
         </div>
       )}
 
-      <div className="ove-native-body">
+      <div {...views.panelProps(native.view)} className="ove-native-body">
         {native.view === 'overview' && <NativeOverview refreshKey={refreshKey} />}
         {native.view === 'browse' && <NativeBrowse refreshKey={refreshKey} />}
         {native.view === 'sessions' && <NativeSessions refreshKey={refreshKey} studioUrl={studioUrl} />}

@@ -10,6 +10,90 @@ promotes to a dated section — see [RELEASING.md](RELEASING.md).
 
 ## Unreleased
 
+### v1.0 — Native complete (this PR)
+
+Native — complete. The final roadmap version is a completion/polish/verification
+release, not a new interaction paradigm: the core explain/operate/trust flow runs
+inside DSH without the Studio iframe, the plugin's own widgets are
+accessibility-aligned, bilingual parity is enforced at render time, request
+budgets are test-enforced, degraded states share one localized copy layer, and
+the licence/API-stability decision plus the acceptance record are now tracked
+files. **No new write semantics**: every v0.3–v0.9 behaviour is additive and the
+write/ops gates are unchanged.
+
+#### Added
+
+- **F1–F14 native-completeness ledger + Studio-off core-flow walkthrough** in both
+  READMEs: every core task names its native surface, the version that shipped it,
+  and whether Studio is required (F10 capture pause/archive retry and the
+  Studio/CLI-only advanced operations stay documented non-goals with their
+  upstream dependency).
+- **Final compatibility/evidence matrix** with honest **L / CI / M / D / U**
+  labels (Windows, desktop write parity, OpenViking 0.5.2/0.5.4, non-`dev` auth
+  modes stay unverified; nothing upgraded to "verified" without evidence).
+- **Tracked decisions** — `DECISIONS.md`: MIT + independently implemented contract
+  (with the escalation trigger and the independence gate as the control) and the
+  API-stability classification (own semver surface, DSH pinned range, OpenViking
+  tested range + probes, official-plugin in-process state explicitly unstable),
+  plus the post-1.0 semver policy and the release-path/upgrade-pin decision.
+- **`ACCEPTANCE.md`** — verdict taxonomy, roadmap goal/exit-criterion mapping,
+  invariants, 12-item daily-check checklist marked **frequency-unmeasured**, the
+  5-real-users protocol marked **externally-unverified** (no fabricated study),
+  manual a11y/bilingual/degraded checklists, known limitations, and the human
+  sign-off block that gates the `v1.0.0` tag.
+- **Accessibility (WCAG 2.2 AA-aligned for the plugin's widgets)**: Browse is a real
+  ARIA tree (roving tabindex, Up/Down/Home/End, Right/Left expand-collapse-enter-
+  leave, Enter/Space select, `aria-level`/`aria-selected`/`aria-expanded`/`aria-busy`);
+  every tab strip (cockpit/Explore/Activity/Browse/Stats/Operate/Preview) is a
+  tablist/tab/tabpanel with `aria-controls`/`aria-labelledby`, arrow/Home/End
+  selection and roving tabindex; write/ops/undo dialogs trap Tab and restore focus
+  to the opener; toasts/host warnings are explicit live regions (assertive errors,
+  polite outcomes); the scope trigger announces `aria-haspopup`/`aria-expanded`,
+  Escape closes and restores focus; `:focus-visible` rings, reduced-motion CSS,
+  light/dark contrast fallbacks and 200% zoom resilience ship in the stylesheet.
+  New `test/v10-a11y.test.mjs` covers the pure keyboard models and the rendered
+  ARIA wiring (no new dependency, no browser CI; manual checklist in ACCEPTANCE).
+- **Bilingual render audit** (`test/v10-locale-audit.test.mjs`): major surfaces are
+  rendered in EN and ZH and fail on raw locale keys or hardcoded copy; `Intl`
+  date/count formatting helpers are used for user-facing timestamps. README/
+  README.zh ledger and matrix rows are mirrored and asserted. `/viking` command
+  output stays English and is documented as a limitation.
+- **Test-enforced performance/request budgets** (`test/v10-performance.test.mjs`):
+  one composed `/overview` request (single-flight, 5 s cache, per-part degradation),
+  no hidden polling (all recurring requests go through the new visibility-gated
+  interval; a hidden document schedules nothing), poll backoff schedule, bounded
+  fan-outs/caches, and the client's one-fetch overview path.
+- **Unified degraded-state / error copy**: every host code that can reach a
+  surface now has EN+ZH `notice.*`/`wcode.*` copy, enforced by
+  `test/v10-degraded.test.mjs` scanning the host vocabulary; recovery actions are
+  localized buttons.
+- **Release prep**: `VERIFICATION.md` 1.0.0 row + v1.0 manual checklist,
+  `RELEASING.md` 1.0.0 path (primary per-version vs current single-tag fallback),
+  upgrade-pin rule and no-retag rollback policy; `DECISIONS.md` ships in the
+  package (CI tarball/check-package assertions) while `ACCEPTANCE.md` is
+  repository-only.
+
+#### Changed
+
+- The READMEs' requirements/matrix wording now reflects the final tested matrix
+  and the 1.0.0 release path; the top-of-file `Unreleased` note names v0.8–v1.0.
+- Activity detail polling and the health log polling now use one
+  visibility-gated interval helper instead of per-component timers.
+
+#### Verified
+
+- `pnpm test`: typecheck, build, packaging contract, independence gate, **506**
+  unit tests, client smoke and host smoke (live read-only path redacted) all
+  green; new v1.0 a11y/locale/degraded/performance suites included.
+- `pnpm run verify:install`: 27/27 clean-profile steps; also runs as a CI
+  `install-verify` job pinned to DSH 0.2.2-rc.1.
+- `test/v10-docs.test.mjs` enforces this ledger/matrix/decisions/acceptance
+  documentation and the package-vs-repo file split.
+- Limitations recorded, not hidden: user study **externally-unverified**,
+  daily-check frequency **unmeasured**, Windows and desktop-write parity **U**,
+  real-store writes **fixture-only**, browser/a11y automation absent (manual
+  checklist), `/viking` output English.
+
 ### v0.9 — Native II: multi-scope, identity overrides and the read-only ACL view (PR #7)
 
 The scope/isolation layer. A **scope** is the active v0.5 server profile plus an

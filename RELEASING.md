@@ -99,6 +99,31 @@ gh release create v0.2.0 /tmp/dsh-openviking-enhance-0.2.0.tgz \
 
 见第四节。
 
+
+## 1.0.0 发布（当前路径与回退路径）
+
+**当前状态**：v0.4–v0.9 的 PR 仍堆叠且未发布（`package.json` 仍是 0.3.0，没有任何
+中间版本 tag/npm 包）。因此按 v1.0 设计签收的**回退路径**执行，除非维护者先按主路径
+逐个发版：
+
+1. 按 `#2 → #3 → #4 → #5 → #6 → #7 → #8` 顺序合并全部 PR（每个 PR 都过 `pnpm test`
+   与 CI `install-verify`）；不要单独把某一 PR 改基到 `main` 直接合并。
+2. 若走回退路径：`pnpm run release major` 会把整个 `## Unreleased`（v0.4–v1.0）
+   提升为一个 `1.0.0 — <日期>` 段落，并把 `package.json` 与两份 README 的版本行改成
+   `1.0.0` / `v1.0.0`。若走主路径：每个版本合并时先分别发版，最后 1.0.0 只提升
+   v1.0 段落。
+3. 发布前门禁：`pnpm test` 全绿；`pnpm run verify:install` 27/27；`VERIFICATION.md`
+   的 1.0.0 行已填 CI run id 与浏览器证据；`ACCEPTANCE.md` 的人工签署块完成。
+4. 提交 `release 1.0.0`，打注解标签 `v1.0.0`（标签正文即 changelog 段落），推送；
+   npm 发布仍由维护者手动执行 2FA 发布。
+5. **升级腿的 pin**：标签 CI 的 `--upgrade-from` 永远指向**最新已发布版本**。回退路径
+   下本次标签仍保留 `dsh-openviking-enhance@0.3.0`（那是上一个已发布版本）；但下一个版本
+   发布时必须把它改成 `@1.0.0`，否则升级测试会悄悄变成跨代跳跃。
+6. **回滚/热修策略**：绝不移动、删除或重打 `v1.0.0` 标签；已发布版本发现问题时发
+   `1.0.1`（patch），必要时用 `npm deprecate dsh-openviking-enhance@1.0.0 <原因>` 标记
+   问题版本，并在 `VERIFICATION.md` 追加受影响版本的记录。若安装验证或硬门禁在标签前
+   失败，直接停止发布，不产生任何 tag。
+
 ## 三、自动化在守什么
 
 `pnpm test` 里包含 `test/release-meta.test.mjs`，它保证：

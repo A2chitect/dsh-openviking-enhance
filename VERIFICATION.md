@@ -33,9 +33,15 @@ link **before tagging**.
 | 0.8.0 (PR #6) | 2026-11 | 0.2.2-rc.1 (web, scratch profile) | 22 | macOS 15 | 0.5.3 read-only + deterministic fake fixture for the action layer | tarball into a scratch DSH home; browser capture of the v0.7 cockpit + v0.8 fixture-labelled dialogs/plans/downloads | pending release — no live-store write: every action is exercised against the fake server/fake transport; live reads only) | `pnpm test` (v08 route/unit/component suites + smoke); fixture-labelled action screenshots; live read-only Snapshots/Compile/Tasks/Observability rows |
 | 0.9.0 (PR #7) | 2026-11 | 0.2.2-rc.1 (web, scratch profile) | 22.22.3 | macOS 15 | 0.5.3 read-only (single live scope) + three invented fake servers (dev A, dev B, api_key C) for the multi-scope evidence | `pnpm test`; no live-store write anywhere — every scope/identity switch in tests is exercised against the fake servers and the fake `ctx.connection.fetch` transport; live server is read-only `/health`/reads | **pending release** — browser/evidence set: fixture-labelled two-scope capture (scope menu, banners, switch notice, ACL states) + live single-scope read-only screenshots; `pnpm test` includes the v0.9 host route/unit + component render suites |
 
+| 1.0.0 (PR #8 — final; ships the whole v0.4–v0.9 stack if no intermediate tags are cut) | 2026-11 | 0.2.2-rc.1 pinned in CI; 0.2.1-rc.3 local | 22 | macOS 15 M; Linux CI | 0.5.3 read-only + deterministic fake fixtures for the action/scope layers | `pnpm pack` tarball → scratch `DSH_HOME` web profile (`verify:install`) + browser BEFORE(v0.9)/AFTER(v1.0) capture | pending tag — hard gates green at drafting (`pnpm test`, `verify:install` 27/27); a11y/bilingual/performance/degraded suites added; human sign-off block in `ACCEPTANCE.md` still empty | v1.0 tests (`test/v10-*.test.mjs`), F1–F14 ledger, final matrix, `ACCEPTANCE.md`; CI links to be filled at tag time |
+
 These not-yet-released versions are rows in an append-only table, not release
-evidence: the stack merges in order `#2 → release 0.4.0 → #3 → release 0.5.0 →
-#4 → release 0.6.0`, and each row becomes `pass` when its tagged version ships.
+evidence. Two release paths are documented in `RELEASING.md`:
+**primary** — one tag per merged PR (`#2 → 0.4.0 → … → #8 → 1.0.0`); **fallback**
+(applicable at drafting: no intermediate version has been tagged or published) —
+the whole `## Unreleased` block is promoted into a single **1.0.0** section and
+the rows above ship in that tag. The human sign-off block in `ACCEPTANCE.md`
+gates the tag either way.
 
 ## PR #6 review round 1 (v0.8) — fixed evidence
 
@@ -166,6 +172,23 @@ them before merge (the README/CHANGELOG describe both changes):
 - `assets/v07-after-native-browse.png` — a directory whose loaded page reports
   `hasMore` now renders its count as `N+ entries (more available)` instead of a
   plain total.
+
+## v1.0 acceptance checklist (manual items + automated suites)
+
+Automated at drafting: `pnpm test` (typecheck/build/packaging/independence +
+a11y, bilingual-render, performance-budget, degraded-copy suites + client/host
+smoke) and `pnpm run verify:install` (27/27 clean-profile steps). Manual evidence
+still required before tagging, recorded here by the maintainer:
+
+- [ ] browser capture set: BEFORE = v0.9 build, AFTER = v1.0 build (a11y/final
+      diffs), fixture-labelled where data is invented
+- [ ] Studio-off core-flow walkthrough (12 steps, README section) with screenshots
+- [ ] keyboard-only pass over tree/tabs/dialogs/scope menu (ACCEPTANCE §10)
+- [ ] screen reader pass (macOS VoiceOver); Windows/NVDA remains **U**
+- [ ] both themes contrast + 200% zoom + reduced-motion checks
+- [ ] EN and ZH walkthrough of the 12 daily checks
+- [ ] CI run id (unit + install-verify jobs) linked in the 1.0.0 row
+- [ ] human sign-off block in `ACCEPTANCE.md` completed
 
 ## Live evidence
 
