@@ -1363,6 +1363,10 @@ const zh: Record<string, string> = {
   'acl.detail.acl-server-error': '服务端错误（5xx）：ACL 状态未知。',
   'acl.detail.acl-request-failed': 'ACL 请求失败：状态未知。',
   'wcode.session-scope-mismatch': '该 DSH 会话上次在另一个作用域下使用；请先切回再写入。',
+  // ---- v0.9 review round 2：切回/健康恢复 ---------------------------------
+  'scope.session.restoreFailed': '切回失败：{reason}',
+  'scope.session.restoreBlocked': '当前认证模式不允许恢复 {fields}；请手动处理或切换配置档。',
+  'scope.rowWarn.probe-timeout': '健康探测超时：状态未知（不是不可达结论）。',
 }
 
 const en: Record<string, string> = {
@@ -2701,6 +2705,10 @@ const en: Record<string, string> = {
   'acl.detail.acl-server-error': 'Server error (5xx): the ACL state is unknown.',
   'acl.detail.acl-request-failed': 'The ACL request failed: the state is unknown.',
   'wcode.session-scope-mismatch': 'This DSH session was last used under another scope; switch back before writing to it.',
+  // ---- v0.9 review round 2: switch-back / health recovery -----------------
+  'scope.session.restoreFailed': 'Switch back failed: {reason}',
+  'scope.session.restoreBlocked': 'This auth mode cannot restore {fields}; adjust it manually or switch profile.',
+  'scope.rowWarn.probe-timeout': 'Health probe timed out: state unknown (not an unreachable verdict).',
 }
 
 /** Every key the plugin ships, per language. */

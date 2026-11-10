@@ -45,6 +45,8 @@ class FakeServer {
     this.data = options.data
     this.requests = []
     this.delayMs = 0
+    /** v0.9 round 2: delay `/health` so a switch handler's payload composition can race. */
+    this.healthDelayMs = options.healthDelayMs ?? 0
     this.server = http.createServer((request, response) => {
       const url = new URL(request.url ?? '/', 'http://127.0.0.1')
       const chunks = []
@@ -120,6 +122,22 @@ class FakeServer {
     const ok = (result) => reply(200, envelope(result))
 
     if (path === '/health') {
+      if (this.healthDelayMs > 0) {
+        setTimeout(() => {
+          reply(
+            200,
+            JSON.stringify({
+              status: 'ok',
+              healthy: true,
+              version: this.data.version,
+              auth_mode: this.authMode,
+              ...(this.authMode === 'dev' ? { account_id: 'default', user_id: 'default' } : {}),
+            }),
+          )
+          return
+        }, this.healthDelayMs)
+        return
+      }
       reply(
         200,
         JSON.stringify({
@@ -139,6 +157,22 @@ class FakeServer {
     }
     if (path === '/api/v1/tasks' && request.method === 'GET') {
       ok({ items: [], has_more: false, next_cursor: null })
+      return
+    }
+    if (path.startsWith('/api/v1/tasks/') && request.method === 'GET') {
+      // v0.9 round 2 (N1): enough task detail for the evidence attachment to build.
+      const taskId = path.slice('/api/v1/tasks/'.length)
+      ok({
+        task_id: taskId,
+        task_type: 'compile',
+        status: 'completed',
+        created_at: 1760000000,
+        updated_at: 1760000042,
+        processing_seconds: 42,
+        result: { output_uri: 'viking://user/default/resources/out/report.md' },
+        meta: { task_id: taskId },
+        execution_events: { items: [], dropped_count: 0 },
+      })
       return
     }
     if (path === '/api/v1/compile/capabilities') {
@@ -274,9 +308,27 @@ async function boot(options = {}) {
   const serverA = new FakeServer({ label: 'a', data: { label: 'alpha', version: '0.5.3', memories: 111 } })
   const serverB = new FakeServer({ label: 'b', data: { label: 'beta', version: '0.5.2', memories: 222 } })
   const serverC = new FakeServer({ label: 'c', authMode: 'api_key', data: { label: 'gamma', version: '0.5.1.1', memories: 333 } })
+  if (options.healthDelayMs !== undefined) {
+    serverB.healthDelayMs = options.healthDelayMs
+    serverC.healthDelayMs = options.healthDelayMs
+  }
   await Promise.all([serverA.listen(), serverB.listen(), serverC.listen()])
 
   const profiles = [
+    ...(options.unreachableProfile === true
+      ? [
+          {
+            id: 'delta',
+            label: 'Delta down',
+            endpoint: 'http://127.0.0.1:9',
+            authMode: 'dev',
+            apiKey: '',
+            account: 'default',
+            user: 'default',
+            peerId: '',
+          },
+        ]
+      : []),
     {
       id: 'alpha',
       label: 'Alpha dev',
@@ -313,7 +365,7 @@ async function boot(options = {}) {
     writeFileSync(join(stateHome, STATE_DIR, 'scope-state.json'), '{broken json', { mode: 0o600 })
   }
 
-  const holder = { activeProfile: options.configActiveProfile ?? '' }
+  const holder = { activeProfile: options.configActiveProfile ?? '', endpoint: options.configEndpoint ?? '' }
   const module = await import('../lib/index.js')
   const webRoutes = []
   const fetchRoutes = []
@@ -360,7 +412,13 @@ async function boot(options = {}) {
     },
     logger: { info: () => {}, warn: () => {} },
   }
-  const config = { ...module.Config({ enableWrites: true, enableOps: false }), activeProfile: { get: () => holder.activeProfile } }
+  const config = {
+    ...module.Config({ enableWrites: true, enableOps: false }),
+    activeProfile: { get: () => holder.activeProfile },
+    // v0.9 round 2 (N5): a dynamic legacy endpoint, so a legacy-mode scope switch
+    // can be simulated without named profiles.
+    endpoint: { get: () => holder.endpoint ?? '' },
+  }
   module.apply(context, config)
 
   const server = http.createServer((request, response) => {
@@ -741,10 +799,11 @@ test('a session that read under one scope warns after a switch and keeps its rec
       after.body.sessionScope.warnings.some((warning) => warning.code === 'sessionScopeMismatch'),
       true,
     )
-    // The local map carries no bodies/keys and is private.
+    // The local map carries no bodies or keys (N5 stores the endpoint on
+    // purpose so legacy-mode endpoint changes are detected) and is private.
     const raw = readFileSync(join(app.stateHome, STATE_DIR, 'session-scopes.json'), 'utf8')
     assert.equal(raw.includes('gamma-secret'), false)
-    assert.equal(raw.includes('http://'), false)
+    assert.match(raw, /"endpoint": "http:\/\/127\.0\.0\.1/, 'N5: the endpoint is recorded')
     assert.equal(statSync(join(app.stateHome, STATE_DIR, 'session-scopes.json')).mode & 0o777, 0o600)
   } finally {
     await app.shutdown()
@@ -972,6 +1031,134 @@ test('S7: a corrupt scope-state.json is kept (not overwritten) and reported at b
       true,
       'the Doctor still sees the config-source health evidence',
     )
+  } finally {
+    await app.shutdown()
+  }
+})
+
+/* ========================================================================
+ * Review round 2 regression tests (N1/N3/N5/N6)
+ * ===================================================================== */
+
+test('N1: the task-evidence attachment carries the scope response header', async () => {
+  const app = await boot()
+  try {
+    const scope = (await app.get(`${API}/scope`)).body.scope
+    const response = await fetch(`${app.base}${API}/task/evidence?taskId=task-e2e`)
+    assert.equal(response.status, 200)
+    assert.equal(response.headers.get('x-dsh-openviking-scope'), scope.identity.fingerprint)
+    const body = await response.json()
+    assert.equal(typeof body, 'object')
+  } finally {
+    await app.shutdown()
+  }
+})
+
+test('N3: the first /scopes read probes and recovers from scope-health-unprobed', async () => {
+  const app = await boot()
+  try {
+    // No /scope has been read yet: the capability snapshot is absent, which used
+    // to disable identity switching with a dead-end "refresh the scope list".
+    const list = await app.get(`${API}/scopes`)
+    assert.equal(list.body.ok, true)
+    assert.equal(
+      list.body.scopes.overrides.allowed.reason,
+      null,
+      'a probed-but-healthy scope allows switching (recovery path)',
+    )
+    assert.equal(list.body.scopes.overrides.allowed.account, true)
+    const key = list.body.scopes.active.scopeKey
+    const switched = await app.mutate(
+      `${API}/scope/identity`,
+      { peer: 'peer-recovered' },
+      { 'x-dsh-openviking-scope': key },
+    )
+    assert.equal(switched.body.ok, true, JSON.stringify(switched.body))
+    assert.equal(switched.body.scope.identity.peer, 'peer-recovered')
+  } finally {
+    await app.shutdown()
+  }
+})
+
+test('N3: an unhealthy server reports profile-unhealthy, and returning home recovers', async () => {
+  const app = await boot({ unreachableProfile: true })
+  try {
+    app.holder.activeProfile = 'delta'
+    await app.emitVolatile()
+    const down = await app.get(`${API}/scopes`)
+    assert.equal(down.body.ok, true)
+    assert.equal(down.body.scopes.active.profileId, 'delta')
+    assert.equal(
+      down.body.scopes.overrides.allowed.reason,
+      'profile-unhealthy',
+      'a probed-but-down server is distinct from "unprobed"',
+    )
+    app.holder.activeProfile = 'alpha'
+    await app.emitVolatile()
+    // Two switches in the same second are refused by the documented cooldown.
+    await new Promise((resolve) => setTimeout(resolve, 1_100))
+    const recovered = await app.get(`${API}/scopes`)
+    assert.equal(recovered.body.scopes.overrides.allowed.reason, null)
+    assert.equal(recovered.body.scopes.overrides.allowed.account, true)
+    const switched = await app.mutate(
+      `${API}/scope/identity`,
+      { peer: 'peer-after-recovery' },
+      { 'x-dsh-openviking-scope': recovered.body.scopes.active.scopeKey },
+    )
+    assert.equal(switched.body.ok, true, JSON.stringify(switched.body))
+  } finally {
+    await app.shutdown()
+  }
+})
+
+test('N5: a legacy-mode endpoint change is detected as a session-scope mismatch', async () => {
+  const app = await boot({ activeProfileId: '' })
+  try {
+    // Point the legacy (no-profile) scope at server A, then observe the session.
+    app.holder.endpoint = app.serverA.base
+    await app.emitVolatile()
+    const keyA = (await app.get(`${API}/scope`)).body.scope.identity.fingerprint
+    const metrics = await app.get(`${API}/metrics?sessionId=s1`, { 'x-dsh-openviking-scope': keyA })
+    assert.equal(metrics.body.ok, true)
+    const before = await app.get(`${API}/session-scope?sessionId=s1`, { 'x-dsh-openviking-scope': keyA })
+    assert.equal(before.body.sessionScope.mismatch, false)
+    assert.equal(before.body.sessionScope.record.endpoint, app.serverA.base)
+    // The same account/user/peer now points at another server: the recorded
+    // endpoint must make this a mismatch (legacy mode has no profile id change).
+    app.holder.endpoint = app.serverB.base
+    await app.emitVolatile()
+    const keyB = (await app.get(`${API}/scope`)).body.scope.identity.fingerprint
+    const after = await app.get(`${API}/session-scope?sessionId=s1`, { 'x-dsh-openviking-scope': keyB })
+    assert.equal(after.body.sessionScope.mismatch, true, JSON.stringify(after.body))
+    assert.equal(after.body.sessionScope.record.endpoint, app.serverA.base)
+  } finally {
+    await app.shutdown()
+  }
+})
+
+test('N6: the host switching mutex refuses a concurrent switch with switch-in-flight', async () => {
+  const app = await boot({ healthDelayMs: 500 })
+  try {
+    const key = (await app.get(`${API}/scope`)).body.scope.identity.fingerprint
+    // First switch runs to the payload-composition awaits (slow /scopes health
+    // probes); a second switch arriving during that window must be refused.
+    const first = app.mutate(`${API}/scope/identity`, { peer: 'peer-first' }, { 'x-dsh-openviking-scope': key })
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    const second = await app.mutate(`${API}/scope/identity`, { peer: 'peer-second' })
+    const firstAnswer = await first
+    assert.equal(firstAnswer.body.ok, true, JSON.stringify(firstAnswer.body))
+    assert.equal(second.body.ok, false)
+    assert.equal(second.body.error.code, 'scope-switch-blocked')
+    assert.match(second.body.error.message, /already in flight/i, 'the mutex reason is named')
+    // The mutex is released again (the cooldown still applies to a same-second
+    // second switch, so let it lapse): a later switch works.
+    await new Promise((resolve) => setTimeout(resolve, 1_100))
+    const later = await app.mutate(
+      `${API}/scope/identity`,
+      { peer: 'peer-later' },
+      { 'x-dsh-openviking-scope': firstAnswer.body.to },
+    )
+    assert.equal(later.body.ok, true, JSON.stringify(later.body))
   } finally {
     await app.shutdown()
   }

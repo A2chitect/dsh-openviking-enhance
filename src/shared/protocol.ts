@@ -2514,6 +2514,15 @@ export interface SessionScopeRecord {
   account: string
   user: string
   peer: string | null
+  /**
+   * v0.9 review round 2 (N5): the endpoint observed with the identity.
+   *
+   * Without it, legacy mode (no profile) cannot tell that the same account/user
+   * now points at **another server** — the mismatch tuple would look equal. Old
+   * files have no endpoint; `null` means "unknown, tolerate" (never a mismatch
+   * driver), while a recorded endpoint participates in the comparison.
+   */
+  endpoint: string | null
   /** ISO timestamp of the last observation. */
   observedAt: string
 }
@@ -2526,6 +2535,12 @@ export interface SessionScopePayload {
   active: ScopeKeyInfo
   /** True when the recorded scope differs from the active one (actions disabled). */
   mismatch: boolean
+  /**
+   * The active identity's switch rules, so the client can build a "switch back"
+   * request that only names fields this auth mode may change (review round 2,
+   * N2: under `api_key` only the peer selector is switchable).
+   */
+  overrides?: ScopeOverridesPayload
   officialPlugin: OfficialPluginFacts | null
   /** Advisory pipeline mismatch: the official plugin is captured elsewhere. */
   pipelineMismatch: boolean

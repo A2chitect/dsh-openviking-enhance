@@ -293,7 +293,11 @@ export function ScopeMenu({ onClose }: ScopeMenuProps) {
     [busy, onClose],
   )
   const refreshHealth = useCallback(() => {
+    // N3: /scopes now awaits the capability probe, but /scope is what publishes
+    // this scope's identity/rules to the banner; refresh both so a
+    // `scope-health-unprobed` disable really recovers.
     void refreshScopes()
+    void refreshScope()
   }, [])
   const testConnection = useCallback(async () => {
     const endpoint = activeScope?.identity.endpoint ?? ''
@@ -432,6 +436,12 @@ export function ScopeBanner(props: { className?: string; showMenu?: boolean }) {
         >
           {t('scope.reload')}
         </button>
+        {props.showMenu !== false && isScopeSwitcherEnabled() && (
+          <button type="button" className="ove-scope-menu-button" onClick={() => setOpen((current) => !current)}>
+            {t('scope.menu.open')}
+          </button>
+        )}
+        {open && <ScopeMenu onClose={() => setOpen(false)} />}
       </div>
     )
   }

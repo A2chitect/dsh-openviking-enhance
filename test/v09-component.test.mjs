@@ -416,3 +416,113 @@ test('B3: the session-scope mismatch gates preview curation and force-commit', (
   assert.equal(client.sessionScopeMismatch('s5'), true)
   assert.equal(client.sessionScopeMismatch('never-known'), false, 'unknown is never a mismatch')
 })
+
+/* ========================================================================
+ * Review round 2 component regressions (N2/N7c)
+ * ===================================================================== */
+
+test('N2: a peer-only mismatch under api_key plans a peer-only switch-back', () => {
+  const client = loadBundle('en')
+  const active = { ...SCOPES.active, authMode: 'api_key', peer: null }
+  const record = {
+    sessionId: 's1',
+    scopeKey: 'sha256:recorded',
+    profileId: 'alpha',
+    label: 'Alpha dev',
+    account: active.account,
+    user: active.user,
+    peer: 'peer-9',
+    endpoint: SCOPES.active.endpoint,
+    observedAt: '2026-11-10T00:00:00.000Z',
+  }
+  const plan = JSON.parse(
+    JSON.stringify(
+      client.planSwitchBack(record, active, {
+        account: false,
+        user: false,
+        peer: true,
+        reason: 'identity-key-bound',
+        authMode: 'api_key',
+      }),
+    ),
+  )
+  assert.deepEqual(plan.request, { peer: 'peer-9' }, 'only the differing, allowed field is sent')
+  assert.deepEqual(plan.blocked, [])
+})
+
+test('N2: a forbidden identity difference is reported, never sent', () => {
+  const client = loadBundle('en')
+  const active = { ...SCOPES.active, authMode: 'api_key' }
+  const record = {
+    sessionId: 's1',
+    scopeKey: 'sha256:recorded',
+    profileId: 'alpha',
+    label: 'Alpha dev',
+    account: 'acme',
+    user: 'bob',
+    peer: null,
+    endpoint: SCOPES.active.endpoint,
+    observedAt: '2026-11-10T00:00:00.000Z',
+  }
+  const plan = JSON.parse(
+    JSON.stringify(
+      client.planSwitchBack(record, active, {
+        account: false,
+        user: false,
+        peer: true,
+        reason: 'identity-key-bound',
+        authMode: 'api_key',
+      }),
+    ),
+  )
+  assert.equal('account' in plan.request, false, 'the host would refuse account under api_key')
+  assert.equal('user' in plan.request, false)
+  assert.deepEqual(plan.blocked, ['account'])
+})
+
+test('N2: the banner offers the switch-back button for a peer-only api_key mismatch', () => {
+  const client = loadBundle('en')
+  client.__setSessionScopeForTests('s-peer', {
+    status: 'ready',
+    payload: {
+      sessionId: 's-peer',
+      record: {
+        sessionId: 's-peer',
+        scopeKey: 'sha256:recorded',
+        profileId: 'alpha',
+        label: 'Alpha dev',
+        account: 'default',
+        user: 'alice',
+        peer: 'peer-9',
+        endpoint: 'http://127.0.0.1:1933',
+        observedAt: '2026-11-10T00:00:00.000Z',
+      },
+      active: { ...SCOPES.active, authMode: 'api_key', peer: null },
+      mismatch: true,
+      overrides: {
+        account: null,
+        user: null,
+        peer: null,
+        allowed: { account: false, user: false, peer: true, reason: 'identity-key-bound', authMode: 'api_key' },
+        overrides: false,
+      },
+      officialPlugin: null,
+      pipelineMismatch: false,
+      warnings: [],
+      observedAt: '2026-11-10T00:00:00.000Z',
+    },
+  })
+  const markup = render(createElement(client.SessionScopeBanner, { sessionId: 's-peer' }))
+  assert.ok(markup.includes('Switch back'))
+  assert.equal(/<button[^>]*disabled/.test(markup), false, 'the peer-only restore is offered, not disabled')
+  assert.equal(markup.includes('cannot restore'), false)
+})
+
+test('N7c: a failed /scope read still offers a way to open the switcher', () => {
+  const client = loadBundle('en')
+  client.__resetScopeForTests()
+  client.__setScopeStateForTests({ status: 'error', scope: null, error: 'scope-changed' })
+  const markup = render(createElement(client.ScopeBanner, {}))
+  assert.ok(markup.includes('Scope unavailable'))
+  assert.ok(markup.includes('Switch'), 'the switcher remains reachable')
+})

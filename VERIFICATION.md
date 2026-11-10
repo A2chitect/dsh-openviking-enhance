@@ -182,6 +182,19 @@ them before merge (the README/CHANGELOG describe both changes):
   `NOT_FOUND`, and the server's own source writes experiences under
   `memories/experiences/`).
 
+### What the v0.9 review round 2 fixed (and how)
+
+- Round 2 (verdict approve) pre-merge items + follow-ups fixed: evidence-attachment
+  scope header (E2E), switch-back plans only allowed differing identity fields with
+  the error surfaced (component tests incl. peer-only under `api_key`), `/scopes`
+  probes before computing rules and "Refresh health" refreshes both scopes (E2E
+  recovery from unprobed and from unhealthy), Activity "Commit now" gated like the
+  commit pill, the session-scope record stores the endpoint (legacy endpoint
+  changes mismatch; old files tolerated — E2E + unit), and the host switch mutex
+  now spans the async switch handler (E2E race test). Small drift (N7) fixed too.
+  No real OpenViking store was written; the fake servers remain the only mutation
+  targets.
+
 ### What the v0.9 review round 1 fixed (and how)
 
 - Five blockers + material suggestions addressed; the full list is in

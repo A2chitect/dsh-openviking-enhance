@@ -602,6 +602,8 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
     // Review S8: switching needs a *known* healthy snapshot; resolution of an
     // already-stored override keeps the permissive flag above.
     knownHealthy: () => capabilityServiceRef?.lastSnapshot()?.health.ok === true,
+    // N3: an existing snapshot separates "unprobed" from "unhealthy".
+    healthKnown: () => capabilityServiceRef?.lastSnapshot() !== null,
     // The scope menu probes each configured server's `/health` only: a cheap
     // liveness read with that profile's own credentials, never `/admin`.
     probe: async (profile) => {
@@ -709,6 +711,7 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
         account: scope.account,
         user: scope.user,
         peer: scope.peer,
+        endpoint: connection.endpoint,
       })
     } catch {
       // Best effort by design: a full/slow disk must not fail a read.
@@ -716,17 +719,20 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
   }
 
   /**
-   * v0.9 review S5: compare the **identity tuple** recorded for a session, not
-   * the raw scope key. The key embeds the lazily probed auth mode, so a record
-   * taken before the first probe could otherwise "mismatch" the same identity
-   * after a successful probe. The tuple (profile id + effective account/user +
-   * peer) is exactly what a person selected.
+   * v0.9 review S5 / round 2 N5: compare the **identity tuple** recorded for a
+   * session, not the raw scope key. The key embeds the lazily probed auth mode,
+   * so a record taken before the first probe could otherwise "mismatch" the same
+   * identity after a successful probe. The tuple (profile id + effective
+   * account/user + peer + endpoint) is exactly what a person selected; the
+   * endpoint is what catches legacy-mode server changes, and a pre-N5 record
+   * without one is tolerated (`null` = unknown).
    */
   const sessionScopeMatches = (record: SessionScopeRecord): boolean =>
     record.profileId === resolvedScope.profileId &&
     record.account === connection.account &&
     record.user === connection.user &&
-    record.peer === resolvedScope.peerId
+    record.peer === resolvedScope.peerId &&
+    (record.endpoint === null || record.endpoint === connection.endpoint)
 
   /** Whether this DSH session was last observed under a different identity. */
   const sessionScopeMismatched = (sessionId: string | undefined): boolean => {
@@ -938,17 +944,19 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
    * resets the identity overrides) and audits the from/to switch. Ordered so no
    * cache can serve the previous scope's data after the client re-reads `/scope`.
    */
-  const applyActiveScope = (): void => {
-    // Review S12: one switch at a time; a nested/interleaved switch is refused
-    // rather than writing `scope-state.json` from two resolutions.
-    if (!scopeService.beginSwitch()) {
+  const applyActiveScope = (options: { alreadyLocked?: boolean } = {}): void => {
+    // Review S12/N6: the caller may already hold the switching mutex for a whole
+    // async switch handler; otherwise claim/release it here. A nested switch is
+    // refused rather than writing `scope-state.json` from two resolutions.
+    const held = options.alreadyLocked === true
+    if (!held && !scopeService.beginSwitch()) {
       logger?.warn?.('[openviking-enhance] ignored a scope change while another switch was in flight')
       return
     }
     try {
       applyActiveScopeLocked()
     } finally {
-      scopeService.endSwitch()
+      if (!held) scopeService.endSwitch()
     }
   }
 
@@ -988,6 +996,10 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
       if (!persisted.ok) {
         scopePersistenceWarning = { code: 'scopeStatePersistFailed' }
         logger?.warn?.(`[openviking-enhance] could not persist the active scope: ${persisted.error ?? 'unknown error'}`)
+      } else {
+        // N7b: a corrupt file was repaired by this deliberate save/switch; the
+        // boot warning must not outlive the evidence it described.
+        scopeStateCorruptAtBoot = false
       }
     } catch (error) {
       scopePersistenceWarning = { code: 'scopeStatePersistFailed' }
@@ -1643,6 +1655,15 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
    * No `/admin` request is ever made: identity choices come from local profiles.
    */
   const scopesPayload = async (fresh: boolean): Promise<ScopesPayload> => {
+    // v0.9 round 2 (N3): /scopes is the documented recovery path for
+    // `scope-health-unprobed`. List health probes do not update the capability
+    // snapshot, so await the (cached-when-fresh) capability probe first; the
+    // overrides rules below then reflect a real, known health state.
+    try {
+      await capabilityServiceRef?.probe(false)
+    } catch {
+      // A failed probe is represented by the snapshot; never throw this route.
+    }
     const rows = await scopeService.listScopes({ fresh })
     const scope = identityScope()
     const official = officialPluginComparison()
@@ -1686,6 +1707,8 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
       record,
       active: scopeService.scopeInfo(resolvedScope),
       mismatch,
+      // N2: the client builds a "switch back" request this auth mode can accept.
+      overrides: scopeService.overridesPayload(resolvedScope),
       officialPlugin: official.facts,
       pipelineMismatch: official.pipelineMismatch,
       warnings,
@@ -2265,6 +2288,9 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
             'content-disposition': `attachment; filename="${exported.fileName}"`,
             'cache-control': 'no-store',
             'content-length': Buffer.byteLength(body),
+            // v0.9 round 2 (N1): the evidence attachment is labelled like every
+            // other plugin response, matching the README/CHANGELOG claim.
+            'x-dsh-openviking-scope': scopeKeyNow(),
           })
           res.end(body)
         } catch (error) {
@@ -2665,6 +2691,14 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
      * ConfigForm mechanism; this route is the in-server identity half.
      * -------------------------------------------------------------------- */
     add(`${API_PREFIX}/scope/identity`, async (body) => {
+      // v0.9 round 2 (N6): hold the switch mutex for the whole async handler,
+      // including the payload composition after the resolution. A concurrent
+      // switch (identity or profile) is refused with `switch-in-flight` instead
+      // of interleaving two resolutions over `scope-state.json`.
+      if (!scopeService.beginSwitch()) {
+        return { ok: false, error: { code: 'scope-switch-blocked', message: 'Another scope switch is already in flight.' } }
+      }
+      try {
       const request: ScopeIdentityRequest = {}
       if (typeof body.account === 'string') request.account = body.account
       if (typeof body.user === 'string') request.user = body.user
@@ -2676,7 +2710,7 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
         )
       }
       const before = identityScope()
-      const outcome = scopeService.switchIdentity(request, resolvedScope)
+      const outcome = scopeService.switchIdentity(request, resolvedScope, { holdingLock: true })
       if (!outcome.ok) {
         // The refusal is audited as denied: an attempted identity move is exactly
         // the kind of event the trail must be able to explain.
@@ -2720,7 +2754,8 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
       }
       // Apply the new scope exactly like a profile switch (caches, API client,
       // persistence, audit from/to), then hand the client the fresh scope list.
-      applyActiveScope()
+      // The handler already holds the mutex, so the nested claim is skipped.
+      applyActiveScope({ alreadyLocked: true })
       const after = identityScope()
       return {
         ok: true,
@@ -2730,6 +2765,9 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
         scope: await scopePayload(false),
         scopes: await scopesPayload(false),
         warnings: outcome.warnings,
+      }
+      } finally {
+        scopeService.endSwitch()
       }
     }, { allowScopeChange: true })
 

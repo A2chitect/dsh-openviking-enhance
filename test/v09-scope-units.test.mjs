@@ -66,6 +66,7 @@ function makeService(dir, options = {}) {
     probedAuthMode: options.probedAuthMode ?? (() => 'dev'),
     healthy: options.healthy ?? (() => true),
     knownHealthy: options.knownHealthy ?? (() => true),
+    healthKnown: options.healthKnown ?? (() => true),
     probe: async (profile) => {
       probeCalls.push(profile.id)
       return options.probe?.(profile) ?? { ok: true, version: '0.5.3', latencyMs: 12, error: null }
@@ -259,6 +260,7 @@ test('unknown health disables switching but still resolves an already-stored ove
   const { service } = makeService(dir, {
     probedAuthMode: () => null,
     knownHealthy: () => false,
+    healthKnown: () => false,
     healthy: () => true,
   })
   const resolved = service.resolveActive()
@@ -271,6 +273,66 @@ test('unknown health disables switching but still resolves an already-stored ove
   assert.equal(refused.code, 'identity-not-switchable')
   const payload = service.overridesPayload(resolved)
   assert.equal(payload.allowed.reason, 'scope-health-unprobed')
+})
+
+test('N3: "unprobed" and "unhealthy" are distinct switch rules and the first recovers by probing', () => {
+  const dir = tempDir('health-split')
+  seedProfiles(dir, [makeProfile({ id: 'alpha' })], 'alpha')
+  // Never probed: recoverable reason.
+  const unprobed = makeService(dir, { healthKnown: () => false, knownHealthy: () => false })
+  assert.equal(unprobed.service.switchRules().reason, 'scope-health-unprobed')
+  // Probed and down: the server answered; not the same condition.
+  const unhealthy = makeService(dir, { healthKnown: () => true, knownHealthy: () => false })
+  assert.equal(unhealthy.service.switchRules().reason, 'profile-unhealthy')
+  // Healthy: switching allowed.
+  const healthy = makeService(dir)
+  assert.equal(healthy.service.switchRules().reason, null)
+})
+
+test('N6: the host switch mutex refuses a nested switch until released', () => {
+  const dir = tempDir('mutex')
+  seedProfiles(dir, [makeProfile({ id: 'alpha' })], 'alpha')
+  const { service } = makeService(dir)
+  assert.equal(service.beginSwitch(), true)
+  assert.equal(service.beginSwitch(), false, 'a second claim is refused')
+  assert.equal(service.guardState().reason, 'switch-in-flight')
+  const resolved = service.resolveActive()
+  const refused = service.switchIdentity({ peer: 'p' }, resolved, { holdingLock: true })
+  assert.equal(refused.ok, true, 'the lock holder may switch with holdingLock')
+  service.endSwitch()
+  assert.equal(service.guardState().blocked, false)
+})
+
+test('N5: the session-scope map records the endpoint and tolerates pre-N5 files', () => {
+  const dir = tempDir('session-endpoint')
+  const map = new SessionScopeMap({ dir })
+  assert.equal(
+    map.record({
+      sessionId: 's1',
+      scopeKey: 'sha256:aa',
+      profileId: null,
+      label: 'Legacy',
+      account: 'a',
+      user: 'u',
+      peer: null,
+      endpoint: 'http://127.0.0.1:1933',
+    }),
+    true,
+  )
+  const record = map.get('s1')
+  assert.equal(record.endpoint, 'http://127.0.0.1:1933')
+  // A pre-N5 record (no endpoint) parses with endpoint null, i.e. tolerated.
+  writeFileSync(
+    join(dir, 'session-scopes.json'),
+    JSON.stringify({
+      version: 1,
+      entries: {
+        s2: { sessionId: 's2', scopeKey: 'sha256:bb', profileId: null, label: 'Old', account: 'a', user: 'u', peer: null, observedAt: '2026-11-10T00:00:00.000Z' },
+      },
+    }),
+    { mode: 0o600 },
+  )
+  assert.equal(map.get('s2').endpoint, null)
 })
 
 test('switchIdentity writes the state file, validates rules and refuses while a mutation is pending', () => {
@@ -497,7 +559,7 @@ test('the session-scope map persists one record per session and is bounded', () 
   const dir = tempDir('sessions')
   const map = new SessionScopeMap({ dir, maxEntries: 3 })
   assert.equal(map.get('s1'), null)
-  assert.equal(map.record({ sessionId: 's1', scopeKey: 'sha256:aa', profileId: 'alpha', label: 'Alpha', account: 'a', user: 'u', peer: null }), true)
+  assert.equal(map.record({ sessionId: 's1', scopeKey: 'sha256:aa', profileId: 'alpha', label: 'Alpha', account: 'a', user: 'u', peer: null, endpoint: null }), true)
   assert.equal(map.get('s1')?.scopeKey, 'sha256:aa')
   assert.equal(statSync(map.path).mode & 0o777, 0o600)
   // Same scope again: no rewrite, no error.

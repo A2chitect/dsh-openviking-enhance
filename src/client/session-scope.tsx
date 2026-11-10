@@ -15,8 +15,8 @@
  *    actions use: a mismatched session's recall explanation and write actions are
  *    disabled until the user switches back (no cross-scope writes).
  */
-import { useSyncExternalStore } from 'react'
-import type { SessionScopePayload } from '../shared/protocol.ts'
+import { useSyncExternalStore, useState } from 'react'
+import type { ScopeIdentityRequest, ScopeIdentityRules, SessionScopePayload } from '../shared/protocol.ts'
 import { fetchSessionScope } from './host-api.ts'
 import { t } from './locale.ts'
 import { switchIdentity, switchProfile } from './scope-store.ts'
@@ -109,15 +109,53 @@ export function sessionScopeMismatch(sessionId: string): boolean {
  * scope dependency changes; this reset also wakes them immediately.
  */
 export function resetSessionScopes(): void {
-  for (const [sessionId, current] of [...states]) {
-    emit(sessionId, { ...EMPTY, status: current.status === 'idle' ? 'idle' : 'idle' })
-  }
+  // Re-emit an idle snapshot to every listener (surfaces refetch when their
+  // scope dependency changes), then forget the sessions entirely.
+  for (const sessionId of [...states.keys()]) emit(sessionId, { ...EMPTY, status: 'idle' })
   states.clear()
 }
 
 /** Test seam: install a known session-scope answer (component tests, no host). */
 export function __setSessionScopeForTests(sessionId: string, next: Partial<SessionScopeState>): void {
   emit(sessionId, { ...(states.get(sessionId) ?? EMPTY), ...next })
+}
+
+export interface SwitchBackPlan {
+  request: ScopeIdentityRequest
+  /** Fields that differ but this auth mode forbids changing (review N2). */
+  blocked: string[]
+}
+
+/**
+ * v0.9 round 2 (N2): build a "switch back" request this auth mode can accept.
+ *
+ * Only fields that actually differ are named, and a field the auth-mode rules
+ * forbid is reported instead of sent — under `api_key` the account/user are
+ * key-bound, so a peer-only mismatch restores with `{peer}` alone instead of a
+ * request the host would refuse.
+ */
+export function planSwitchBack(
+  record: NonNullable<SessionScopePayload['record']>,
+  active: SessionScopePayload['active'],
+  allowed: ScopeIdentityRules,
+): SwitchBackPlan {
+  const request: ScopeIdentityRequest = {}
+  const blocked: string[] = []
+  const accountDiffers = record.account !== active.account
+  const userDiffers = record.user !== active.user
+  if (accountDiffers || userDiffers) {
+    if (allowed.account && allowed.user) {
+      request.account = record.account
+      request.user = record.user
+    } else {
+      blocked.push('account')
+    }
+  }
+  if (record.peer !== active.peer) {
+    if (allowed.peer) request.peer = record.peer ?? ''
+    else blocked.push('peer')
+  }
+  return { request, blocked }
 }
 
 export interface SessionScopeBannerProps {
@@ -135,24 +173,28 @@ export function SessionScopeBanner({ sessionId, className }: SessionScopeBannerP
   const classes = className === undefined ? 'ove-scope-session-banner' : `ove-scope-session-banner ${className}`
   if (payload === null) return null
   const record = payload.record
-  // Review S4: show the recorded identity tuple so a manual fix is possible, and
-  // restore it in one click when the profile already matches (the full tuple is
-  // an identity override); a profile switch itself resets overrides, so that path
-  // stays a switch-then-adjust with the tuple visible.
+  // Review S4/N2: show the recorded identity tuple so a manual fix is possible,
+  // and restore it in one click when the profile already matches. The request
+  // names only the fields that differ and the rules allow (N2), and a refusal is
+  // shown in the banner instead of being swallowed.
   const recordedIdentity =
     record === null ? null : `${record.account}/${record.user}${record.peer === null ? '' : ` · ${record.peer}`}`
   const sameProfile = record !== null && record.profileId === payload.active.profileId
-  const switchBack = (): void => {
-    if (record === null || record.profileId === null) return
-    if (sameProfile) {
-      void switchIdentity({
-        account: record.account,
-        user: record.user,
-        peer: record.peer ?? '',
-      })
+  const allowed = payload.overrides?.allowed ?? { account: true, user: true, peer: true, reason: null, authMode: null }
+  const plan = record !== null && sameProfile ? planSwitchBack(record, payload.active, allowed) : null
+  const [note, setNote] = useState<string | null>(null)
+  const switchBack = async (): Promise<void> => {
+    if (record === null) return
+    setNote(null)
+    if (!sameProfile) {
+      if (record.profileId === null) return
+      const result = await switchProfile(record.profileId)
+      if (!result.ok) setNote(result.error ?? t('scope.switchRefused'))
       return
     }
-    void switchProfile(record.profileId)
+    if (plan === null) return
+    const result = await switchIdentity(plan.request)
+    if (!result.ok) setNote(result.error ?? t('scope.session.restoreFailed'))
   }
   if (payload.mismatch) {
     return (
@@ -169,13 +211,24 @@ export function SessionScopeBanner({ sessionId, className }: SessionScopeBannerP
           </span>
         )}
         {record !== null && record.profileId !== null && (
-          <button type="button" className="ove-preview-button" onClick={switchBack}>
+          <button
+            type="button"
+            className="ove-preview-button"
+            disabled={sameProfile && (plan === null || plan.blocked.length > 0)}
+            onClick={() => void switchBack()}
+          >
             {t('scope.session.switchBack')}
           </button>
+        )}
+        {sameProfile && plan !== null && plan.blocked.length > 0 && (
+          <span className="ove-scope-hint">
+            {t('scope.session.restoreBlocked', { fields: plan.blocked.join(', ') })}
+          </span>
         )}
         {record !== null && record.profileId !== null && !sameProfile && (
           <span className="ove-scope-hint">{t('scope.session.switchBackHint')}</span>
         )}
+        {note !== null && <span className="ove-scope-warn">{note}</span>}
         <span className="ove-scope-hint">{t('scope.session.actionsDisabled')}</span>
       </div>
     )

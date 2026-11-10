@@ -126,6 +126,12 @@ export interface ScopeServiceOptions {
    * override can still be resolved.
    */
   knownHealthy: () => boolean
+  /**
+   * v0.9 review round 2 (N3): whether a capability snapshot exists at all, so
+   * "unprobed" (recoverable by a probe/refresh) is distinct from "unhealthy"
+   * (the server answered and is down).
+   */
+  healthKnown: () => boolean
   /** Cheap `/health` probe for one profile (the scope menu's rows). */
   probe: (profile: Profile) => Promise<ScopeHealthInfo>
   /** The active scope's capability matrix (only the active scope is probed live). */
@@ -343,9 +349,11 @@ export class ScopeService {
    */
   switchRules(): ScopeIdentityRules {
     const authMode = this.options.probedAuthMode()
-    if (!this.options.knownHealthy()) {
+    // N3: split "never probed" (recoverable) from "probed and unhealthy".
+    if (!this.options.healthKnown()) {
       return { account: false, user: false, peer: false, reason: 'scope-health-unprobed', authMode }
     }
+    if (!this.options.knownHealthy()) return identityRules(authMode, false)
     return identityRules(authMode, true)
   }
 
@@ -380,8 +388,8 @@ export class ScopeService {
    * while anything mutation-shaped is pending, and during the documented
    * double-click cooldown (`SCOPE_SWITCH_COOLDOWN_MS`, wired in review S10).
    */
-  guardState(): ScopeSwitchGuard {
-    if (this.switching) return { blocked: true, reason: 'switch-in-flight', pending: 0 }
+  guardState(options: { ignoreSwitching?: boolean } = {}): ScopeSwitchGuard {
+    if (!options.ignoreSwitching && this.switching) return { blocked: true, reason: 'switch-in-flight', pending: 0 }
     const guard = this.options.guard()
     if (guard.busy) return { blocked: true, reason: 'mutation-in-flight', pending: guard.pending }
     if (guard.pending > 0) return { blocked: true, reason: 'confirmation-pending', pending: guard.pending }
@@ -429,25 +437,41 @@ export class ScopeService {
   switchIdentity(
     request: ScopeIdentityRequest,
     resolved: ResolvedScope,
+    options: { holdingLock?: boolean } = {},
   ):
     | { ok: true; changed: boolean; identity: ScopeIdentityOverride | null; warnings: PluginNotice[] }
     | { ok: false; code: string; message: string } {
-    const guard = this.guardState()
+    const guard = this.guardState({ ignoreSwitching: options.holdingLock === true })
     if (guard.blocked) {
-      return { ok: false, code: 'scope-switch-blocked', message: 'A write or operational action is pending; finish it before switching.' }
+      // Name the real reason (review round 2, smaller items): a cooldown or a
+      // nested switch is not "a write is pending", and the UI copies the message.
+      const message =
+        guard.reason === 'switch-in-flight'
+          ? 'Another scope switch is already in flight.'
+          : guard.reason === 'cooldown'
+            ? 'A scope switch just happened; try again in a moment.'
+            : 'A write or operational action is pending; finish it before switching.'
+      return { ok: false, code: 'scope-switch-blocked', message }
     }
     const profile = resolved.profile
     if (profile === null) {
       return { ok: false, code: 'profile-missing', message: 'Create a named profile before switching the in-server identity.' }
     }
-    // v0.9 review S8: switching requires a *known-healthy* probe; a stored
-    // override may still resolve under unknown health, but a new identity may not
-    // be applied then.
+    // v0.9 review S8/N3: switching requires a *known-healthy* probe. The two
+    // disabled cases stay distinct: "unprobed" is recoverable by a probe (the
+    // /scopes route now probes), "unhealthy" means the server answered and is down.
+    if (!this.options.healthKnown()) {
+      return {
+        ok: false,
+        code: 'identity-not-switchable',
+        message: 'The active server has not been probed yet; refresh the scope list (or /scope) and try again.',
+      }
+    }
     if (!this.options.knownHealthy()) {
       return {
         ok: false,
         code: 'identity-not-switchable',
-        message: 'The active server health is not known yet; refresh /scopes before switching the identity.',
+        message: 'The active server is unhealthy; identity switching is disabled until it recovers.',
       }
     }
     const rules = identityRules(resolved.connection.authMode ?? null, true)
@@ -565,7 +589,8 @@ export class ScopeService {
     if (!loopback) warnings.push('remote-endpoint')
     if (!loopback && profile.endpoint.toLowerCase().startsWith('http:')) warnings.push('cleartext-http')
     if (profile.authMode === 'api_key' || (isActive && resolved.connection.authMode === 'api_key')) warnings.push('key-bound-identity')
-    if (!health.ok) warnings.push('unreachable')
+    if (health.error === 'probe-timeout') warnings.push('probe-timeout')
+    else if (!health.ok) warnings.push('unreachable')
     if (isActive) for (const warning of resolved.warnings) warnings.push(warning.code)
     return [...new Set(warnings)]
   }

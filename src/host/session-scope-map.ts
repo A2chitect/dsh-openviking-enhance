@@ -48,6 +48,10 @@ function sanitizeRecord(raw: unknown): SessionScopeRecord | null {
   if (!SESSION_ID_PATTERN.test(sessionId) || scopeKey.length === 0 || scopeKey.length > 200) return null
   const text = (value: unknown, max = 160): string | null =>
     typeof value === 'string' && value.trim().length > 0 && value.trim().length <= max ? value.trim() : null
+  // v0.9 round 2 (N5): the endpoint is stored so legacy-mode endpoint changes
+  // mismatch. Old files (pre-N5) have no endpoint → null = unknown, tolerated.
+  const endpointRaw = text(record.endpoint, 400)
+  const endpoint = endpointRaw === null ? null : /^https?:\/\//i.test(endpointRaw) ? endpointRaw.replace(/\/+$/, '') : null
   return {
     sessionId,
     scopeKey,
@@ -56,6 +60,7 @@ function sanitizeRecord(raw: unknown): SessionScopeRecord | null {
     account: text(record.account) ?? 'default',
     user: text(record.user) ?? 'default',
     peer: text(record.peer),
+    endpoint,
     observedAt:
       typeof record.observedAt === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(record.observedAt)
         ? record.observedAt

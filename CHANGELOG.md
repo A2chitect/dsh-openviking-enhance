@@ -111,9 +111,10 @@ every claim the docs made is now either implemented or downgraded.
   **discovery routes**: they accept a request that still carries the previous
   scope key (the host may already have moved) and answer with the current scope,
   labelled; every other route keeps refusing stale keys with `scope-changed`.
-  Scope-changing mutations (`POST /scope/identity`, profile CRUD) reply with the
-  full new scope payload, and the client adopts it instead of rejecting the
-  response as stale. The banner shows "scope unavailable / reload" on a failed
+  Scope-changing mutations reply with the new scope payload and the client adopts
+  it instead of rejecting the response as stale: `POST /scope/identity` returns the
+  full scope; profile CRUD returns the redacted profile list and the client
+  re-reads `/scope` (there is no scope payload in the profile CRUD response). The banner shows "scope unavailable / reload" on a failed
   re-read instead of keeping the previous label. New `test/v09-client-scope`
   integration suite drives the real `scopedFetch` + store (the route tests bypass
   it): identity round-trip, host-side switch discovery, ConfigForm profile
@@ -194,6 +195,53 @@ every claim the docs made is now either implemented or downgraded.
   clears itself; the session-map comment/sort matches the code and its write
   result is checked; the boot chain is state → profiles header → legacy (a
   deleted state pointer continues to the header instead of skipping to legacy).
+
+### v0.9 — review round 2 fixes (PR #7)
+
+Verdict was approve; these are the three pre-merge items and the cheap follow-ups.
+
+- **N1 evidence label.** The `/task/evidence` attachment now carries
+  `x-dsh-openviking-scope` like `/task/export` and `/ops/download`, so the README
+  claim holds; an E2E test asserts the header on the attachment response.
+- **N2 switch-back under key-bound auth.** The banner's "switch back" now sends
+  only the identity fields that actually differ and that the auth-mode rules
+  allow (`planSwitchBack`): under `api_key` a peer-only mismatch restores with the
+  peer selector alone instead of a request the host refuses; a forbidden field is
+  reported as unavailable rather than sent; and a refusal's `error` is shown in
+  the banner instead of being swallowed. Component tests cover the peer-only
+  `api_key` plan, the forbidden-field case and the offered button.
+- **N3 health-probe recovery.** `/scopes` awaits the (cached) capability probe
+  before computing the override rules, and the scope menu's "Refresh health"
+  refreshes both `/scopes` and `/scope`, so the documented
+  `scope-health-unprobed` recovery actually works. "Unprobed" and "unhealthy" are
+  now distinct states (`scope-health-unprobed` vs `profile-unhealthy` — the
+  latter is a server that answered and is down). E2E covers the first-`/scopes`
+  recovery and the down→home recovery.
+- **N4 Activity commit gating.** The Activity page's "Commit now" reuses
+  `forceCommitEnabled({writesEnabled, transport, scopeMismatch})` like the commit
+  pill, so a session observed under another scope shows the action disabled
+  instead of relying on the host refusal.
+- **N5 endpoint in the mismatch tuple.** The session-scope record now stores the
+  observed endpoint (0600 file, no bodies/keys; pre-fix files without it are
+  tolerated as unknown), so a legacy-mode (no profile) endpoint change is
+  detected as a mismatch — the previous `scopeKey` comparison covered it, the
+  S5 tuple did not. E2E: record on server A, switch the legacy endpoint to B,
+  mismatch true; unit: endpoint persist + old-file tolerance.
+- **N6 host switch mutex made real.** The identity-switch route now holds the
+  switching mutex for the whole async handler (resolution + payload composition),
+  so a concurrent switch is refused with `scope-switch-blocked` /
+  "already in flight", and the claim is released in a `finally`. E2E race test
+  (slow `/scopes` probe window) plus unit tests for the mutex primitives.
+- **N7 small drift fixed.** Profile CRUD wording corrected (it returns the
+  profile list; only the identity route returns a scope payload); the
+  `scopeStateCorrupt` warning clears once a deliberate save/switch repairs the
+  file; the scope banner keeps its menu button (and an openable menu) in the
+  failed-`/scope` state; the dead identity ternary in `resetSessionScopes` is
+  removed; and a `/scopes` probe timeout now reports as `probe-timeout`
+  ("state unknown") instead of `unreachable`.
+- **Also:** the blocked-switch message names the real reason (pending write vs
+  switch in flight vs cooldown) instead of always saying a write is pending; the
+  host behaviour is unchanged for v0.7/v0.8 surfaces.
 
 ### v0.8 — Operate: controlled actions on the native cockpit (PR #6)
 

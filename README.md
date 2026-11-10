@@ -210,7 +210,8 @@ search, so there is no toggle.
 `enableWrites` must be turned on explicitly, and with it off the plugin remains
 exactly the read-only viewer described above. When it is on, curatable memory
 files gain an action bar in the Preview tab — **Edit**, **Tags**, **Delete** —
-and the commit pill and Activity tab gain **Commit now**.
+and the commit pill and Activity tab gain **Commit now** (both disabled while the
+session was last observed under another scope).
 
 - **Only memory bodies are curatable**, and only under
   `viking://user/<u>/memories/{entities,events,preferences}/…` (plus the visible
@@ -485,8 +486,10 @@ Discovery routes: `/scope` and `/scopes` intentionally accept a request that
 still names the previous scope key (the host may already have moved) and answer
 with the current scope, labelled. This is how the client completes a switch
 chain; every other read refuses a stale key with `scope-changed`. The
-scope-changing mutations (identity override, profile CRUD) reply with the new
-scope payload, which the client adopts directly.
+scope-changing mutations reply with the new scope payload, which the client adopts
+directly: `POST /scope/identity` (identity override) returns the full scope; the
+profile CRUD routes return the redacted profile list and the client re-reads
+`/scope` afterwards (there is no scope payload in the profile CRUD response).
 
 Isolation contract: every plugin request carries
 `x-dsh-openviking-scope: <scope key>` (the secret-free `sha256:` identity
@@ -508,17 +511,28 @@ re-resolves a stale state pointer.
 Session-scope write boundary: a DSH session observed under another identity shows
 the mismatch banner; the host **also refuses** `/write/prepare` (and execute/undo)
 for that session with the stable `session-scope-mismatch` code, so no cross-scope
-write can happen even if a stale button were clicked. The recorded identity is
-shown in the banner and a same-profile "switch back" restores the full
-account/user/peer override in one action.
+write can happen even if a stale button were clicked. The mismatch tuple is the
+profile id, the effective account/user/peer **and the endpoint** (so a legacy-mode
+server change is detected too); the recorded identity is shown in the banner and a
+same-profile "switch back" restores it in one action. That action sends only the
+fields that actually differ and that the auth-mode rules allow — under `api_key`
+(identity key-bound) a peer-only mismatch restores with the peer selector alone
+instead of a request the host would refuse — and a refusal is shown in the banner
+rather than swallowed. The Activity tab's "Commit now" follows the same
+session-scope gate as the commit pill (a mismatched session shows the action as
+disabled instead of relying on the host to refuse it).
 
 Identity switching rules (F12 completion): `dev`/`trusted` profiles allow
 account/user header overrides (trusted needs both; **the plugin never sets a role
 header**); `api_key` is key-bound, so account/user are disabled with that reason
 while the peer selector stays a read lens; `oidc`/`ldap` are out; an unreachable
 server disables switching, and a switch additionally requires a **known-healthy**
-probe (before the first probe the overwrite fields stay disabled with the
-`scope-health-unprobed` reason, while an already-stored override still resolves).
+probe. The two disabled states are distinct and recoverable: before the first probe
+the overwrite fields are disabled with `scope-health-unprobed`, while a probed but
+down server reports `profile-unhealthy`; reading `/scopes` awaits the (cheap,
+cached) capability probe before computing the rules and the menu's "Refresh health"
+refreshes both `/scopes` and `/scope`, so the documented refresh actually recovers.
+An already-stored override still resolves before the probe.
 The peer is **read-only**: it is sent as `X-OpenViking-Actor-Peer` only for
 sessionless reads (browse, preview, ACL, sessions browser), while write
 preparation reads and all mutations never send it (they use only the official
@@ -708,8 +722,11 @@ rules and 20 scenarios, and an L2 preview page returns at most 1 000 lines.
   in the local audit trail. `scope-state.json` holds the active
   profile id and the optional account/user/peer read overrides — **no endpoint and
   no key**. `session-scopes.json` maps a DSH session id to the label/hash of the
-  scope that last observed it — no endpoint, no bodies, no keys; it is best-effort
-  local state and a missing record means "unknown", never "matches". The scope key
+  scope that last observed it plus the endpoint it was observed at (needed so a
+  legacy-mode server change is detected) — no bodies, no keys; pre-v0.9-review
+  files without an endpoint are tolerated (`null` = unknown, never a mismatch
+  driver), it is best-effort local state and a missing record means "unknown",
+  never "matches". The scope key
   is a hash and safe to display/audit; credentials never appear in any scope
   payload, audit entry or evidence document.
 - **The official plugin's connection is advisory only.** v0.9 reads an
