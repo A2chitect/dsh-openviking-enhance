@@ -86,5 +86,21 @@
   "assets/v07-before-main-panel.png",
   "assets/v07-before-onboarding.png",
   "assets/v07-before-right-tabs.png",
-  "assets/v07-before-settings.png"
+  "assets/v07-before-settings.png",
+  "assets/v08-after-compile-confirm.png",
+  "assets/v08-after-compile-running.png",
+  "assets/v08-after-compile.png",
+  "assets/v08-after-observability.png",
+  "assets/v08-after-operate-overview.png",
+  "assets/v08-after-ops-disabled.png",
+  "assets/v08-after-pack-export.png",
+  "assets/v08-after-restore-result.png",
+  "assets/v08-after-settings.png",
+  "assets/v08-after-snapshot-restore-plan.png",
+  "assets/v08-after-snapshots.png",
+  "assets/v08-after-tasks-evidence.png",
+  "assets/v08-after-undo-plan.png",
+  "assets/v08-after-version-restore.png",
+  "assets/v08-before-cockpit.png",
+  "assets/v08-before-settings.png"
 ]

@@ -115,6 +115,7 @@ if (sessionId) {
 
 await checkV05(base, sessionId)
 await checkV07(base)
+await checkV08(base)
 await checkFence(base)
 
 server.close()
@@ -213,6 +214,23 @@ async function checkDegraded(base) {
     ['sessions', `${prefix}/sessions?limit=2`],
     ['recent commits', `${prefix}/recent-commits?limit=2`],
     ['studio status', `${prefix}/studio-status`],
+    // v0.8 reads: snapshot history/show/diff/diff-paths/versions/ignore, the
+    // compile inspection routes, observability, pack history and task evidence.
+    ['snapshot log', `${prefix}/snapshot-log?limit=2`],
+    ['snapshot show', `${prefix}/snapshot-show?ref=probe`],
+    ['snapshot diff', `${prefix}/snapshot-diff?path=${encodeURIComponent('viking://user/default/memories')}&to=probe`],
+    ['diff paths', `${prefix}/snapshot-diff-paths?paths=${encodeURIComponent('viking://user/default/memories')}&to=probe`],
+    ['versions', `${prefix}/snapshot-versions?uri=${encodeURIComponent('viking://user/default/memories')}`],
+    ['ignore', `${prefix}/snapshot-ignore`],
+    ['compile', `${prefix}/compile`],
+    ['compile target', `${prefix}/compile-target?to=${encodeURIComponent('viking://user/default/resources')}`],
+    ['operations', `${prefix}/compile-operations?to=${encodeURIComponent('viking://user/default/resources')}`],
+    ['operation', `${prefix}/compile-operation?to=${encodeURIComponent('viking://user/default/resources')}&operationId=probe`],
+    ['outputs', `${prefix}/compile-outputs?to=${encodeURIComponent('viking://user/default/resources')}&operationId=probe`],
+    ['submission', `${prefix}/compile-submission?key=dsh-0123456789abcdef01234567`],
+    ['observability', `${prefix}/observability?days=1`],
+    ['pack history', `${prefix}/pack/history`],
+    ['evidence', `${prefix}/task/evidence?taskId=probe`],
   ]
   for (const [label, path] of routes) {
     const body = await get(`${base}${path}`)
@@ -815,4 +833,65 @@ async function get(url) {
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) }
   }
+}
+
+/**
+ * v0.8 "Operate": the read surfaces answer envelopes and no ops mutation exists
+ * on the loopback fence.
+ *
+ * With no OpenViking behind it every read degrades to `{ok:true, …available:false}`
+ * (the shape is what matters); the action routes are typed-transport-only, so the
+ * raw fence must answer 404 for a POST and never render a GET read surface. The
+ * smoke script never calls prepare/execute/export/restore — those are covered by
+ * the fake-server E2E tests only.
+ */
+async function checkV08(base) {
+  const prefix = '/api/openviking-enhance'
+  const check = (ok, message) => {
+    console.log(`[v08] ${ok ? 'ok  ' : 'FAIL'} ${message}`)
+    if (!ok) process.exitCode = 1
+  }
+
+  const log = await get(`${base}${prefix}/snapshot-log?limit=2`)
+  check(log?.ok === true && Array.isArray(log.commits), 'the snapshot-log route answers a bounded commit list')
+  check(log?.branch === 'main', 'the snapshot log is scoped to branch main (documented v0.8 limit)')
+
+  const show = await get(`${base}${prefix}/snapshot-show?ref=main`)
+  check(show?.ok === true && 'available' in show, 'the snapshot-show route answers the commit/blob envelope')
+
+  const compile = await get(`${base}${prefix}/compile`)
+  check(compile?.ok === true && typeof compile.capabilities?.available === 'boolean', 'the compile route reports a runtime capability')
+  check(
+    compile?.targets !== undefined &&
+      (compile.targets.available === true || typeof compile.targets.note === 'string'),
+    'the compile target registry reports its availability (registry present, or a stated reason)',
+  )
+
+  const observability = await get(`${base}${prefix}/observability?days=7`)
+  check(
+    observability?.ok === true && Array.isArray(observability.cards) && observability.cards.length === 7,
+    'the observability route answers all seven independently degradable cards',
+  )
+  check(
+    observability?.tokens !== undefined && observability?.contextCommits !== undefined,
+    'the observability route carries the token and context-commit series',
+  )
+
+  const history = await get(`${base}${prefix}/pack/history`)
+  check(history?.ok === true && Array.isArray(history.history?.exports), 'the pack history route answers metadata only')
+  check(history?.history?.maxBytes === 67108864, 'the pack cap is the documented 64 MiB')
+
+  const evidence = await get(`${base}${prefix}/task/evidence?taskId=probe`)
+  check(evidence !== null && typeof evidence === 'object' && 'ok' in evidence, 'the task-evidence route answers a JSON envelope')
+
+  for (const path of ['/ops/prepare', '/ops/execute', '/ops/plan', '/ops/undo', '/ops/cancel']) {
+    const posted = await rawStatus(base, `${prefix}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: new URL(base).origin },
+      body: JSON.stringify({}),
+    })
+    check(posted === 404, `no loopback ops mutation route at ${path} (POST -> ${posted}, expected 404)`)
+  }
+  const download = await rawStatus(base, `${prefix}/ops/download?token=${'f'.repeat(64)}`)
+  check(download === 404, `the one-time download route refuses an unknown token (GET -> ${download}, expected 404)`)
 }

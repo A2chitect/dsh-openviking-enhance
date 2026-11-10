@@ -10,6 +10,101 @@ promotes to a dated section — see [RELEASING.md](RELEASING.md).
 
 ## Unreleased
 
+### v0.8 — Operate: controlled actions on the native cockpit (PR #6)
+
+The first release that can *change* OpenViking state from DSH — behind one new
+`enableOps` switch (default **false**) and the same prepare → confirm → execute →
+verify → audit → undo protocol v0.5 established for curation writes. The native
+cockpit gains an additive **Operate** group (Snapshots / Compile / Packs / Tasks)
+and the Stats view gains an **Observability** segment; no new sidebar/main seat,
+no new dependency, no AGPL code. One shared `OpsService` and the extracted
+`confirmation-store` (token/TTL/quota + the single mutation gate shared with
+`WriteService`) mean curated writes and operational actions can never overlap.
+
+#### Fixed (PR #6 review round 1)
+
+- Restore/commit scope checks are no longer fail-open for an **ancestor of the
+  pipeline-owned sessions tree** (`viking://user/<me>` is refused; the sessions
+  directory, its descendants and its ancestors all are).
+- The restore dialog shows the **real dry-run write/delete counts** even when the
+  path rows are display-capped, and the "truncated" line states `shown of total`.
+- Pack export has a real **body deadline** (30 s of inactivity, overall export
+  deadline): a stalled download no longer holds the shared mutation gate, and the
+  partial temp file is deleted. Pack export now requires the **active user**
+  (bare `viking://user`/other identities refused) and both READMEs state that a
+  pack contains the full session text.
+- Every gate (including the action capability/role probe) is re-checked at
+  execute; snapshot read-back verification has a bounded retry and passes the
+  branch; undo compares **normalized full URIs** instead of basenames and re-runs
+  the dry run immediately before applying; a partial writeback now writes a real
+  audit row (non-empty `auditId`), and the typed-confirmation button stays
+  disabled until the word matches.
+- Smaller hardening: undo remains available when `enableOps` is switched off
+  after an action, the task-evidence server-log fan-out has an overall deadline,
+  the commit-message cap lives in `limits.ts`, read-route `paths` filters are
+  capped, transport-error pack probes are no longer cached, download tokens are
+  identity-checked on consume, and leftover `downloads/` files are swept at
+  startup plus on history reads/client aborts.
+
+#### Fixed (PR #6 review round 2)
+
+- Restore/commit scope classification compares the **canonical** `viking://` form
+  in every safety check and returns it downstream, so `viking://user//alice`,
+  `viking:///user/alice` and `viking://user///alice` are refused for the
+  sessions-ancestor rule and a valid scope comes back canonicalised
+  (`viking://user/alice//memories` → `viking://user/alice/memories`).
+- Restore/undo plan truncation is now a **per-array** decision, so 40 writes +
+  40 deletes is "80 of 80" (not truncated) instead of a contradictory
+  "first 80 of 80".
+- Snapshot-log verification retries only a successful-but-stale read; a failed
+  request returns false immediately, so a read timeout can no longer hold the
+  shared mutation gate for up to 24 s.
+- One undo dry run now both builds the plan and is the read immediately before
+  Apply (one round trip instead of two).
+- Pack probe uses the 5 s status budget (not the 120 s stream default); the
+  startup sweep is pid-aware so a second plugin instance sharing `DSH_HOME/state`
+  never deletes another instance's live/mid-write download; a rejected body read
+  rejects the outer promise cleanly.
+- Residual cleanups: removed the dead duplicate error branch, the unused import,
+  the unconsumed message-cap re-export, and the `void startedAt` workaround;
+  pack export copy now states the active-user rule correctly (EN+ZH).
+
+#### Added
+
+- **Snapshots.** Read: bounded commit history, file-at-commit preview (text only),
+  one-file diff, changed-path list and per-file versions on 0.5.3+, ignore file.
+  Actions: create a snapshot (message + explicit paths, append-only, not undoable)
+  and restore a **directory** with a dry-run plan, typed confirmation,
+  extra-changes handling, a reindex-task follow-up and an undo that is itself a
+  forward restore to the pre-restore parent. Partial writeback is reported
+  honestly (`failed-partial`, no automatic retry).
+- **Compile.** Read: runtime capability (`configured/can_create/reason`), 0.5.3
+  target registry/config, operations/detail/outputs, submissions, per-file
+  versions. Action: a confirmed trigger from a configured target or explicit
+  manual `to`/`from`/`skill`/`instruction` (excluding `skill:"memory"` and
+  arbitrary `args`) with a host-generated non-secret Idempotency-Key and a
+  submission-check recovery on timeout; cooperative cancel; "re-run as new
+  compile"; compile-output file-version restore (0.5.3, CAS, typed, undoable).
+- **OVPack export only.** 64 MiB bounded host temp file (0600 under the plugin
+  state dir), one-time-token GET download, metadata-only audit, `include_vectors`
+  default off. Backup/import/restore are **deliberately deferred** with their
+  reasons visible in the Packs tab and the README N/A matrix.
+- **Task centre.** Global Tasks view (all types), events, cooperative cancel,
+  `GET /task/evidence` (≤512 KiB attachment with build/identity, ≤20 local audit
+  rows and ≤20 on-demand server request-log rows written as correlation), and
+  explicit "no task-retry API" honesty — no Retry button anywhere; compile tasks
+  offer "re-run as a new compile".
+- **Observability.** Read-only on-demand route + Stats segment composing the
+  observer cards and the console token/context-commit series, cached 30 s,
+  per-card degradation; `/metrics` is never requested.
+- **Safety.** One `enableOps` switch; every endpoint runtime capability-probed
+  (never a version comparison); identity-bound single-use tokens (120 s, 8
+  pending, 2 successful ops/6 prepares per minute); all mutations audited with
+  task/operation/idempotency correlation (no bodies, secrets or tokens); typed
+  confirmation for restores; EN+ZH parity; limits centralized in
+  `src/shared/limits.ts`; fake-server/fake-transport tests only (no real store
+  was written).
+
 ### v0.7 — Native I: no iframe for reading (PR #5)
 
 The first native read cockpit. The OpenViking sidebar row now opens an internal

@@ -1414,6 +1414,50 @@ button.ove-pill-errored:hover, button.ove-pill-errored[aria-expanded="true"] {
 .ove-onb-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .ove-onb-list-compact { margin-top: 2px; }
 
+
+/* ---- v0.8 "Operate" ---------------------------------------------------- */
+.ove-ops { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.ove-ops-tabs { display: flex; gap: 4px; border-bottom: .5px solid var(--dsw-alias-border-l3); padding-bottom: 4px; flex: none; }
+.ove-ops-tab {
+  border: .5px solid transparent; background: transparent; color: var(--dsw-alias-label-secondary);
+  font: inherit; font-size: 11px; padding: 2px 10px; border-radius: var(--dsw-radius-sm); cursor: pointer;
+}
+.ove-ops-tab:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
+.ove-ops-tab-active { border-color: var(--dsw-alias-border-l3); color: var(--dsw-alias-label-primary); background: var(--dsw-alias-interactive-bg-hover); }
+.ove-ops-view { display: flex; flex-direction: column; gap: 10px; min-height: 0; overflow: auto; padding-bottom: 12px; }
+.ove-ops-section { border: .5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-sm); padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.ove-ops-section-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ove-ops-section-title { font-weight: 600; color: var(--dsw-alias-label-primary); }
+.ove-ops-body { display: flex; flex-direction: column; gap: 8px; max-height: 60vh; overflow: auto; }
+.ove-ops-toolbar { display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap; }
+.ove-ops-inline-field { flex-direction: row; align-items: center; gap: 6px; }
+.ove-ops-inline-field .ove-write-input { min-width: 260px; }
+.ove-ops-list { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--dsw-alias-label-secondary); }
+.ove-ops-mono { font-family: var(--dsw-font-mono, monospace); font-size: 11px; }
+.ove-ops-extra { color: var(--dsw-alias-state-warn-primary, #d29922); }
+.ove-ops-table { border-collapse: collapse; width: 100%; font-size: 11px; }
+.ove-ops-table th { text-align: left; font-weight: 600; color: var(--dsw-alias-label-tertiary); padding: 3px 6px; vertical-align: top; width: 120px; }
+.ove-ops-table td { padding: 3px 6px; color: var(--dsw-alias-label-secondary); vertical-align: top; word-break: break-word; }
+.ove-ops-table-rows th { border-bottom: .5px solid var(--dsw-alias-border-l3); }
+.ove-ops-table-rows td { border-bottom: .5px solid var(--dsw-alias-border-l3); }
+.ove-ops-row { cursor: pointer; }
+.ove-ops-row:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.ove-ops-row-active { background: var(--dsw-alias-interactive-bg-hover); }
+.ove-ops-pre {
+  margin: 0; max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+  font-family: var(--dsw-font-mono, monospace); font-size: 11px; color: var(--dsw-alias-label-secondary);
+  background: var(--dsw-alias-interactive-bg-hover); padding: 6px; border-radius: var(--dsw-radius-sm);
+}
+.ove-ops-preview { display: flex; flex-direction: column; gap: 4px; }
+.ove-ops-banner { display: flex; flex-direction: column; gap: 2px; border-radius: var(--dsw-radius-sm); padding: 6px 8px; font-size: 11px; border: .5px solid var(--dsw-alias-border-l3); }
+.ove-ops-banner-ok { border-color: var(--dsw-alias-state-success-primary, #3fb950); }
+.ove-ops-banner-warn { border-color: var(--dsw-alias-state-warn-primary, #d29922); }
+.ove-ops-done { color: var(--dsw-alias-state-success-primary, #3fb950); font-size: 12px; margin: 0; }
+.ove-ops-partial { border: .5px solid var(--dsw-alias-state-warn-primary, #d29922); border-radius: var(--dsw-radius-sm); padding: 6px; }
+.ove-ops-disabled-note { border: .5px dashed var(--dsw-alias-border-l3); padding: 6px; border-radius: var(--dsw-radius-sm); }
+.ove-ops-inline-link { margin-left: 8px; }
+.ove-stats-segments { display: flex; flex-direction: column; gap: 8px; }
+
 `
 
 /** Install the stylesheet once per document. */

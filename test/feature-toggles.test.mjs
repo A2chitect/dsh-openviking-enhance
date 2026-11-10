@@ -41,8 +41,9 @@ const ALL_ON = {
   scopeBanner: true,
   nativeViews: true,
   onboarding: true,
-  // Writes are the one v0.5 switch whose absence means OFF (opt-in).
+  // Writes (v0.5) and ops (v0.8) are the opt-in switches: absence means OFF.
   writes: false,
+  ops: false,
 }
 const ALL_OFF = {
   sidebarEntry: false,
@@ -58,6 +59,7 @@ const ALL_OFF = {
   nativeViews: false,
   onboarding: false,
   writes: false,
+  ops: false,
 }
 
 /** The same states as the settings form carries them: Config field names. */
@@ -75,6 +77,7 @@ const FORM_ALL_ON = {
   showNativeViews: true,
   showOnboarding: true,
   enableWrites: true,
+  enableOps: true,
 }
 const FORM_ALL_OFF = {
   showSidebarEntry: false,
@@ -90,9 +93,10 @@ const FORM_ALL_OFF = {
   showNativeViews: false,
   showOnboarding: false,
   enableWrites: false,
+  enableOps: false,
 }
 
-test('the defaults are all on except the opt-in writes switch', () => {
+test('the defaults are all on except the opt-in writes and ops switches', () => {
   assert.deepEqual(DEFAULT_FEATURE_FLAGS, ALL_ON)
 })
 
@@ -113,6 +117,7 @@ test('each surface names the Config field that carries it', () => {
     writes: 'enableWrites',
     nativeViews: 'showNativeViews',
     onboarding: 'showOnboarding',
+    ops: 'enableOps',
   })
   // Mount order: the two v0.4 tabs follow the v0.3 surfaces. `commands` is the
   // host-owned switch and deliberately has no browser mount, so it is absent.
@@ -131,6 +136,7 @@ test('each surface names the Config field that carries it', () => {
   assert.equal(FEATURE_ORDER.includes('commands'), false, 'the command switch has no client mount')
   assert.equal(FEATURE_ORDER.includes('writes'), false, 'writes gate buttons, not a mount')
   assert.equal(FEATURE_ORDER.includes('nativeViews'), false, 'the native/Studio choice switches the panel body, not a mount')
+  assert.equal(FEATURE_ORDER.includes('ops'), false, 'ops gates buttons, not a mount')
 })
 
 test('only a literal boolean false hides a surface', () => {
@@ -159,6 +165,7 @@ test('only a literal boolean false hides a surface', () => {
       nativeViews: true,
       onboarding: true,
       writes: false,
+      ops: false,
     },
   )
   // Truthy values are not `false`: a stale string, 0, null or an object must all
@@ -179,6 +186,7 @@ test('only a literal boolean false hides a surface', () => {
   // `writes` is opt-in: only a literal `true` enables it, everything else off.
   assert.deepEqual(malformed, ALL_ON)
   assert.deepEqual(featureFlagsFrom({ enableWrites: true }), { ...ALL_ON, writes: true })
+  assert.deepEqual(featureFlagsFrom({ enableOps: true }), { ...ALL_ON, ops: true })
 })
 
 test('a missing value, missing fields or a malformed container mean on', () => {
@@ -200,6 +208,7 @@ test('a missing value, missing fields or a malformed container mean on', () => {
     nativeViews: true,
     onboarding: true,
     writes: false,
+    ops: false,
   })
 })
 
@@ -224,6 +233,7 @@ test('sameFeatureFlags compares surface by surface', () => {
   assert.equal(sameFeatureFlags(ALL_ON, { ...ALL_ON, nativeViews: false }), false)
   assert.equal(sameFeatureFlags(ALL_ON, { ...ALL_ON, onboarding: false }), false)
   assert.equal(sameFeatureFlags(ALL_ON, { ...ALL_ON, writes: true }), false)
+  assert.equal(sameFeatureFlags(ALL_ON, { ...ALL_ON, ops: true }), false)
   assert.equal(sameFeatureFlags(ALL_OFF, ALL_OFF), true)
 })
 
@@ -293,6 +303,7 @@ test('the watcher emits immediately from a ready snapshot and then on changes', 
       showNativeViews: true,
       showOnboarding: true,
       enableWrites: true,
+      enableOps: true,
     },
   })
   const calls = []
@@ -300,13 +311,13 @@ test('the watcher emits immediately from a ready snapshot and then on changes', 
 
   assert.equal(shell.state.entryIds.length, 1, 'the form is read once at subscribe')
   assert.equal(shell.state.entryIds[0], 'openviking-enhance', 'under the namespace it was given')
-  assert.deepEqual(calls, [{ ...ALL_ON, sidebarEntry: false, writes: true }])
+  assert.deepEqual(calls, [{ ...ALL_ON, sidebarEntry: false, writes: true, ops: true }])
 
   shell.controller.setSnapshot({
     status: 'ready',
     value: { ...FORM_ALL_ON, showCommitStatus: false },
   })
-  assert.deepEqual(calls.at(-1), { ...ALL_ON, commitStatus: false, writes: true })
+  assert.deepEqual(calls.at(-1), { ...ALL_ON, commitStatus: false, writes: true, ops: true })
   assert.equal(calls.length, 2)
 
   dispose()
@@ -333,7 +344,7 @@ test('a not-ready snapshot is not an answer, and unchanged flags are not re-emit
   // A v0.4-only switch change is still a distinct answer.
   shell.controller.setSnapshot({ status: 'ready', value: { ...FORM_ALL_ON, showPreview: false } })
   assert.equal(calls.length, 2)
-  assert.deepEqual(calls.at(-1), { ...ALL_ON, previewPanel: false, writes: true })
+  assert.deepEqual(calls.at(-1), { ...ALL_ON, previewPanel: false, writes: true, ops: true })
 
   shell.controller.setSnapshot({ status: 'ready', value: { ...FORM_ALL_OFF } })
   assert.equal(calls.length, 3)

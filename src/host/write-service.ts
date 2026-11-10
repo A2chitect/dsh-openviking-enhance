@@ -69,6 +69,12 @@ import type { CapabilityService } from './capability.ts'
 import type { OpenVikingApi } from './openviking-api.ts'
 import type { SessionControlService } from './session-control.ts'
 import { mapTask } from './activity-service.ts'
+import {
+  ConfirmationStore,
+  MutationGate,
+  SlidingWindowRate,
+  type ConfirmationRecord,
+} from './confirmation-store.ts'
 
 /** What one prepare asks for. */
 export interface PrepareRequest {
@@ -116,9 +122,8 @@ export interface UndoRequest {
   confirmExtra?: boolean
 }
 
-/** One pending confirmation. */
-interface PendingWrite {
-  token: string
+/** One pending confirmation (v0.8: shares the confirmation-store record shape). */
+interface PendingWrite extends ConfirmationRecord {
   action: WriteAction
   target: string
   curatable: CuratableTarget | null
@@ -178,6 +183,11 @@ export interface WriteServiceOptions {
   actorPeer?: (sessionId: string | undefined) => string | undefined
   /** Status sink for the client's "write in flight" guard. */
   onStateChange?: () => void
+  /**
+   * v0.8: the shared mutation gate. When supplied, a curation write and an
+   * operational action cannot run concurrently (one lock spans both services).
+   */
+  gate?: MutationGate
   tokenTtlMs?: number
   maxPending?: number
   rateLimit?: number
@@ -191,46 +201,50 @@ export interface WriteServiceOptions {
 
 export class WriteService {
   private readonly options: WriteServiceOptions
-  private readonly tokens = new Map<string, PendingWrite>()
+  /**
+   * v0.8: the token/TTL/pending logic is shared with `OpsService` through
+   * `confirmation-store.ts`; a write token is the same kind of record, so the
+   * two services cannot drift and one bounded store spans both.
+   */
+  private readonly tokens: ConfirmationStore<PendingWrite>
   private readonly undos = new Map<string, UndoRecord>()
   /**
-   * One write path at a time (review S5): set synchronously before an execute or
-   * undo starts mutating and cleared when it settles, so two undos — or an undo
-   * racing a write — cannot run concurrently.
+   * One mutation path at a time (review S5): the gate is set synchronously before
+   * an execute or undo starts mutating and cleared when it settles. v0.8 shares
+   * this gate with `OpsService`, so a curation write and an operational action
+   * can never overlap.
    */
-  private settling = false
+  private readonly mutationGate: MutationGate
   /**
    * Successful executions in the current rate window. Only writes that actually
    * happened spend this budget (review S2); the limit is enforced when a token
    * is executed, not when it is prepared (review round 2, N1).
    */
-  private readonly executionsAt: number[] = []
+  private readonly executions: SlidingWindowRate
   /**
    * Snapshot-creating prepares in the current window. A prepare is **not** a
    * cheap read: it commits a snapshot before the user can approve it, so a
    * prepare→cancel loop would pollute the server's snapshot history. Cancels do
    * not reclaim this quota; only the window does (review round 2, N2).
    */
-  private readonly preparesAt: number[] = []
+  private readonly prepares: SlidingWindowRate
   private readonly now: () => number
   private readonly randomToken: () => string
   private readonly tokenTtlMs: number
-  private readonly maxPending: number
-  private readonly rateLimit: number
-  private readonly rateWindowMs: number
-  private readonly prepareRateLimit: number
-  private readonly prepareRateWindowMs: number
 
   constructor(options: WriteServiceOptions) {
     this.options = options
     this.now = options.now ?? Date.now
     this.randomToken = options.randomToken ?? (() => randomBytes(32).toString('hex'))
     this.tokenTtlMs = options.tokenTtlMs ?? WRITE_TOKEN_TTL_MS
-    this.maxPending = options.maxPending ?? WRITE_MAX_PENDING
-    this.rateLimit = options.rateLimit ?? WRITE_RATE_LIMIT
-    this.rateWindowMs = options.rateWindowMs ?? WRITE_RATE_WINDOW_MS
-    this.prepareRateLimit = options.prepareRateLimit ?? WRITE_PREPARE_RATE_LIMIT
-    this.prepareRateWindowMs = options.prepareRateWindowMs ?? WRITE_PREPARE_RATE_WINDOW_MS
+    this.mutationGate = options.gate ?? new MutationGate()
+    this.executions = new SlidingWindowRate(options.rateLimit ?? WRITE_RATE_LIMIT, options.rateWindowMs ?? WRITE_RATE_WINDOW_MS, this.now)
+    this.prepares = new SlidingWindowRate(
+      options.prepareRateLimit ?? WRITE_PREPARE_RATE_LIMIT,
+      options.prepareRateWindowMs ?? WRITE_PREPARE_RATE_WINDOW_MS,
+      this.now,
+    )
+    this.tokens = new ConfirmationStore<PendingWrite>({ maxPending: options.maxPending ?? WRITE_MAX_PENDING, now: this.now })
   }
 
   /**
@@ -287,7 +301,7 @@ export class WriteService {
   async prepare(request: PrepareRequest): Promise<OveResult<WritePreparePayload>> {
     // A write path that is already mutating rejects new preparations rather than
     // taking a snapshot against a state that is about to change (review S5).
-    if (this.settling) {
+    if (this.mutationGate.busy) {
       return { ok: false, error: err('write-in-flight', 'A write or undo is already executing; wait for it to settle.') }
     }
     // Every snapshot-backed action needs the capability before the token exists;
@@ -308,13 +322,12 @@ export class WriteService {
       this.auditDenied(request.action, request.target, request.sessionId ?? null, prepareQuota)
       return { ok: false, error: prepareQuota }
     }
-    const pending = [...this.tokens.values()].filter((token) => token.status === 'pending')
-    if (pending.length >= this.maxPending) {
-      const error = err('too-many-pending', `At most ${this.maxPending} confirmations may be pending at once.`)
+    if (this.tokens.atPendingCap()) {
+      const error = err('too-many-pending', `At most ${this.options.maxPending ?? WRITE_MAX_PENDING} confirmations may be pending at once.`)
       this.auditDenied(request.action, request.target, request.sessionId ?? null, error)
       return { ok: false, error }
     }
-    if ([...this.tokens.values()].some((token) => token.status === 'executing')) {
+    if (this.tokens.hasExecuting()) {
       const error = err('write-in-flight', 'Another write is already executing.')
       this.auditDenied(request.action, request.target, request.sessionId ?? null, error)
       return { ok: false, error }
@@ -347,7 +360,7 @@ export class WriteService {
         return { ok: false, error: err('invalid-request', 'A force commit needs the DSH session id.') }
       }
       const facts = await this.options.sessions.facts(sessionId)
-      this.tokens.set(token, {
+      this.tokens.set({
         ...base,
         revision: null,
         contentHash: null,
@@ -430,7 +443,7 @@ export class WriteService {
         this.auditDenied('edit-memory', target.uri, request.sessionId ?? null, snapshot.error)
         return { ok: false, error: snapshot.error }
       }
-      this.tokens.set(token, {
+      this.tokens.set({
         ...base,
         curatable: target,
         revision: current.revision,
@@ -482,7 +495,7 @@ export class WriteService {
         this.auditDenied('delete-memory', target.uri, request.sessionId ?? null, snapshot.error)
         return { ok: false, error: snapshot.error }
       }
-      this.tokens.set(token, {
+      this.tokens.set({
         ...base,
         curatable: target,
         revision: current.revision,
@@ -544,7 +557,7 @@ export class WriteService {
       this.auditDenied('set-tags', target.uri, request.sessionId ?? null, snapshot.error)
       return { ok: false, error: snapshot.error }
     }
-    this.tokens.set(token, {
+    this.tokens.set({
       ...base,
       curatable: target,
       revision: null,
@@ -587,7 +600,7 @@ export class WriteService {
 
   /** Step 2: consume the token, perform the write, verify, post-commit, audit. */
   async execute(request: ExecuteRequest): Promise<OveResult<WriteExecutePayload>> {
-    if (this.settling) {
+    if (this.mutationGate.busy) {
       return { ok: false, error: err('write-in-flight', 'Another write or undo is already executing.') }
     }
     // Cheap token checks first: a rejected/cancelled/expired token — and above all
@@ -655,10 +668,11 @@ export class WriteService {
     }
     // Re-check after the awaits above: a concurrent execute/undo may have claimed
     // the write path while this one was probing.
-    if (this.settling) {
+    if (this.mutationGate.busy) {
       return { ok: false, error: err('write-in-flight', 'Another write or undo started while preparing this one.') }
     }
-    this.settling = true
+    // The shared v0.8 gate spans WriteService and OpsService.
+    this.mutationGate.enter('write')
     token.status = 'executing'
     this.notify()
     try {
@@ -672,7 +686,7 @@ export class WriteService {
               : await this.executeTags(token, request)
       // Only an execution that reached the server spends the rate budget
       // (review S2); a prepare, a cancel or a validation refusal does not.
-      if (result.ok) this.executionsAt.push(this.now())
+      if (result.ok) this.executions.record()
       return result
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -681,7 +695,7 @@ export class WriteService {
       this.auditFailed(token, 'rejected-by-server', message)
       return { ok: false, error: err('rejected-by-server', message) }
     } finally {
-      this.settling = false
+      this.mutationGate.leave()
       this.notify()
     }
   }
@@ -744,7 +758,7 @@ export class WriteService {
     // refusals, a double-click or a stale toast is not a security event and
     // auditing each one would flood the local trail. Identity/authorization
     // refusals are audited.
-    if (this.settling) {
+    if (this.mutationGate.busy) {
       return { ok: false, error: err('write-in-flight', 'A write or undo is already executing; wait for it to settle.') }
     }
     const record = this.undos.get(request.undoId)
@@ -758,10 +772,11 @@ export class WriteService {
       this.auditDenied('undo', record.target, record.sessionId, error)
       return { ok: false, error }
     }
-    if (this.settling) {
+    if (this.mutationGate.busy) {
       return { ok: false, error: err('write-in-flight', 'Another write or undo started while this undo was prepared.') }
     }
-    this.settling = true
+    this.mutationGate.enter('write')
+
     const actorPeerId = this.options.actorPeer?.(record.sessionId ?? undefined)
     try {
       if (record.action === 'set-tags') {
@@ -861,7 +876,7 @@ export class WriteService {
         warnings: [],
       }
     } finally {
-      this.settling = false
+      this.mutationGate.leave()
       this.notify()
     }
   }
@@ -1444,52 +1459,31 @@ export class WriteService {
 
   /** Record one successful snapshot-creating prepare (N2 quota). */
   private recordPrepare(): void {
-    this.preparesAt.push(this.now())
+    this.prepares.record()
   }
 
   private checkExecutionRate(): OveError | null {
-    const cutoff = this.now() - this.rateWindowMs
-    while (this.executionsAt.length > 0 && (this.executionsAt[0] as number) < cutoff) this.executionsAt.shift()
-    if (this.executionsAt.length < this.rateLimit) return null
-    const oldest = this.executionsAt[0] as number
-    return err('rate-limited', `At most ${this.rateLimit} writes per minute; try again in ${Math.ceil((oldest + this.rateWindowMs - this.now()) / 1000)}s.`, {
-      kind: 'execute',
-      retryAfterMs: Math.max(0, oldest + this.rateWindowMs - this.now()),
-      limit: this.rateLimit,
-    })
+    const decision = this.executions.check()
+    if (decision.ok) return null
+    return err(
+      'rate-limited',
+      `At most ${decision.limit} writes per minute; try again in ${Math.ceil(decision.retryAfterMs / 1000)}s.`,
+      { kind: 'execute', retryAfterMs: decision.retryAfterMs, limit: decision.limit },
+    )
   }
 
   private checkPrepareQuota(): OveError | null {
-    const cutoff = this.now() - this.prepareRateWindowMs
-    while (this.preparesAt.length > 0 && (this.preparesAt[0] as number) < cutoff) this.preparesAt.shift()
-    if (this.preparesAt.length < this.prepareRateLimit) return null
-    const oldest = this.preparesAt[0] as number
+    const decision = this.prepares.check()
+    if (decision.ok) return null
     return err(
       'rate-limited',
-      `At most ${this.prepareRateLimit} confirmations per minute (each one takes a snapshot); try again in ${Math.ceil((oldest + this.prepareRateWindowMs - this.now()) / 1000)}s.`,
-      {
-        kind: 'prepare',
-        retryAfterMs: Math.max(0, oldest + this.prepareRateWindowMs - this.now()),
-        limit: this.prepareRateLimit,
-      },
+      `At most ${decision.limit} confirmations per minute (each one takes a snapshot); try again in ${Math.ceil(decision.retryAfterMs / 1000)}s.`,
+      { kind: 'prepare', retryAfterMs: decision.retryAfterMs, limit: decision.limit },
     )
   }
 
   private purge(): void {
-    const now = this.now()
-    for (const [key, token] of this.tokens) {
-      if (token.status === 'pending' && token.expiresAt < now) {
-        this.tokens.delete(key)
-        continue
-      }
-      if (
-        (token.status === 'done' || token.status === 'undone' || token.status === 'failed' || token.status === 'cancelled') &&
-        token.settledAt !== null &&
-        now - token.settledAt > 10 * 60_000
-      ) {
-        this.tokens.delete(key)
-      }
-    }
+    this.tokens.purge()
   }
 
   /**

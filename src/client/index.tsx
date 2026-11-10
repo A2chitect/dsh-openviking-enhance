@@ -71,6 +71,9 @@ export { NativeBrowse } from './native-browse.tsx'
 export { NativeSessions } from './native-sessions.tsx'
 export { NativeCommits } from './native-commits.tsx'
 export { NativeStats } from './native-stats.tsx'
+export { NativeOperate } from './native-operate.tsx'
+export { NativeObservability } from './native-observability.tsx'
+export { ConfirmShell, OpsDialog } from './ops-dialog.tsx'
 export { PreviewBody } from './preview-body.tsx'
 export { OnboardingCard, OnboardingSetupSection } from './onboarding-card.tsx'
 export { NativeWarnings } from './native-warnings.tsx'
@@ -901,7 +904,7 @@ export function apply(context: ClientContext): void {
     // v0.7: the main panel's body (native cockpit vs the v0.6 Studio page) and
     // the onboarding card are presentation state, not mounts: the already-mounted
     // page re-renders in place through the native store.
-    setNativeSwitches({ nativeViews: flags.nativeViews, onboarding: flags.onboarding })
+    setNativeSwitches({ nativeViews: flags.nativeViews, onboarding: flags.onboarding, ops: flags.ops })
     // The banner switch hides the chip everywhere; the dialogs repeat the scope.
     setScopeBannerEnabled(flags.scopeBanner)
     const profile = typeof value.activeProfile === 'string' ? value.activeProfile : ''

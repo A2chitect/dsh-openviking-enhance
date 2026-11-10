@@ -23,7 +23,7 @@
 import type { ScopeCapability } from '../shared/protocol.ts'
 import type { OpenVikingApi } from './openviking-api.ts'
 import { classifyRuleProbe, type RuleSearchCapability } from './catalog-service.ts'
-import { RULES_CAPABILITY_TTL_MS } from '../shared/limits.ts'
+import { PACK_CAPABILITY_TTL_MS, RULES_CAPABILITY_TTL_MS, STATUS_TIMEOUT_MS } from '../shared/limits.ts'
 
 /** The health facts the scope banner shows, secret-free. */
 export interface HealthFacts {
@@ -42,6 +42,21 @@ export interface SnapshotCapability extends ScopeCapability {
   kind: 'history' | 'no-history' | 'route-absent' | 'denied' | 'unknown'
 }
 
+/**
+ * v0.8: the compile capability answer.
+ *
+ * The runtime answer decides, never the version: `configured && can_create`
+ * gates the trigger, and the server's own reason code (`NOT_CONFIGURED`,
+ * `API_KEY_REQUIRED`, …) is surfaced verbatim instead of a generic failure.
+ */
+export interface CompileCapability extends ScopeCapability {
+  configured: boolean
+  canCreate: boolean
+  reason: string | null
+  /** `capabilities` | `route-absent` | `denied` | `profile-unhealthy` | `unknown`. */
+  kind: 'capabilities' | 'route-absent' | 'denied' | 'profile-unhealthy' | 'unknown'
+}
+
 export interface CapabilitySnapshot {
   /** Epoch milliseconds when this snapshot was taken. */
   observedAt: number
@@ -54,6 +69,12 @@ export interface CapabilitySnapshot {
    * server build changes, not between panel opens.
    */
   rules: RuleSearchCapability
+  /* ---- v0.8 runtime-probed F13 gates (never version comparisons) ---------- */
+  compile: CompileCapability
+  /** 0.5.3-only per-file version history (`/snapshot/versions`). */
+  versions: ScopeCapability
+  /** 0.5.3-only changed-path list (`/snapshot/diff-paths`). */
+  diffPaths: ScopeCapability
 }
 
 export interface CapabilityOptions {
@@ -80,6 +101,13 @@ export class CapabilityService {
   private readonly now: () => number
   private cached: CapabilitySnapshot | null = null
   private inflight: Promise<CapabilitySnapshot> | null = null
+  /**
+   * v0.8: pack export is probed lazily (validation-only POST) because the
+   * prepare path is the first thing that needs it; never at startup.
+   */
+  private packCached: ScopeCapability & { kind?: string } | null = null
+  private packObservedAt = 0
+  private packInflight: Promise<ScopeCapability & { kind?: string }> | null = null
   private rulesCached: RuleSearchCapability | null = null
   private rulesObservedAt = 0
   private rulesInflight: Promise<RuleSearchCapability> | null = null
@@ -108,6 +136,46 @@ export class CapabilityService {
     this.rulesCached = null
     this.rulesObservedAt = 0
     this.rulesInflight = null
+    this.packCached = null
+    this.packObservedAt = 0
+  }
+
+  /**
+   * v0.8: the pack-export capability, probed lazily and cached briefly.
+   *
+   * The probe is a validation-only `POST /pack/export {}` (the required `uri`
+   * fails before any export): 400/422 = route present, 404 = absent, 401/403 =
+   * present but this identity/deployment cannot export. Cancelled by nothing —
+   * it is one cheap request, only issued when the Packs tab or a pack prepare
+   * asks for it.
+   */
+  async pack(fresh = false): Promise<ScopeCapability & { kind?: string }> {
+    if (!fresh && this.packCached !== null && this.now() - this.packObservedAt < PACK_CAPABILITY_TTL_MS) {
+      return this.packCached
+    }
+    if (this.packInflight !== null) return this.packInflight
+    this.packInflight = this.options.api
+      // The probe is a cheap validation request: give it the 5 s status budget,
+      // not the 120 s export-stream default, so an offline/hung network cannot
+      // stall every prepare/execute/Packs open behind it.
+      .streamPackExport('', false, { timeoutMs: STATUS_TIMEOUT_MS })
+      .then((reply) => {
+        // A streaming method cannot be used for a validation probe without
+        // consuming its body; the service classifies status codes only.
+        const answer = classifyPackProbe(reply.status, reply.error ?? null)
+        // A transport error (status 0) is not an answer: caching it would keep
+        // the Packs tab disabled for 10 minutes after a transient outage. Retry
+        // fresh on the next caller; only definitive answers are cached.
+        if (reply.status !== 0) {
+          this.packCached = answer
+          this.packObservedAt = this.now()
+        }
+        return answer
+      })
+      .finally(() => {
+        this.packInflight = null
+      })
+    return this.packInflight
   }
 
   /**
@@ -194,6 +262,16 @@ export class CapabilityService {
         snapshot: unavailable('profile-unhealthy'),
         tasks: { available: false, detail: 'profile-unhealthy' },
         rules: { available: true, detail: 'profile-unhealthy', kind: 'unknown' },
+        compile: {
+          available: false,
+          detail: 'profile-unhealthy',
+          configured: false,
+          canCreate: false,
+          reason: null,
+          kind: 'profile-unhealthy',
+        },
+        versions: { available: false, detail: 'profile-unhealthy' },
+        diffPaths: { available: false, detail: 'profile-unhealthy' },
       }
       if (this.generation === generation) this.cached = result
       return result
@@ -201,10 +279,15 @@ export class CapabilityService {
     // The two capability probes are independent reads; run them together so the
     // current scope prompt pays one round trip, not two.
     const staleness = this.rulesCached !== null && this.now() - this.rulesObservedAt < this.rulesCacheTtlMs
-    const [snapshotResult, tasksResult, rules] = await Promise.all([
+    const [snapshotResult, tasksResult, rules, compileResult, versionsResult, diffPathsResult] = await Promise.all([
       this.options.api.snapshotLog({ limit: 1 }),
       this.options.api.listTasks({ limit: 1 }),
       staleness ? Promise.resolve(this.rulesCached as RuleSearchCapability) : this.rules(),
+      this.options.api.compileCapabilities(),
+      // 0.5.3-only routes: the missing-required-parameter answer is the probe
+      // (400 = present, 404 = absent). Both are cheap GETs.
+      this.options.api.snapshotVersionsProbe(),
+      this.options.api.snapshotDiffPathsProbe(),
     ])
     const snapshot = this.classifySnapshot(snapshotResult)
     const tasks: ScopeCapability = tasksResult.ok
@@ -227,6 +310,9 @@ export class CapabilityService {
       snapshot,
       tasks,
       rules,
+      compile: classifyCompileProbe(compileResult),
+      versions: classifyRouteProbe(versionsResult),
+      diffPaths: classifyRouteProbe(diffPathsResult),
     }
     if (this.generation === generation) this.cached = result
     return result
@@ -257,6 +343,57 @@ export class CapabilityService {
   }
 }
 
+/** Classify `GET /compile/capabilities`; the runtime answer decides the gate. */
+function classifyCompileProbe(result: Awaited<ReturnType<OpenVikingApi['compileCapabilities']>>): CompileCapability {
+  if (result.ok) {
+    const configured = result.result?.configured === true
+    const canCreate = result.result?.can_create === true
+    const reason = typeof result.result?.reason_code === 'string' ? result.result.reason_code : null
+    return {
+      available: configured && canCreate,
+      detail: configured && canCreate ? null : (reason ?? 'compile-unavailable'),
+      configured,
+      canCreate,
+      reason,
+      kind: 'capabilities',
+    }
+  }
+  if (result.status === 404) return { available: false, detail: 'compile-unavailable', configured: false, canCreate: false, reason: null, kind: 'route-absent' }
+  if (result.status === 401 || result.status === 403) {
+    return { available: false, detail: 'compile-role-required', configured: false, canCreate: false, reason: null, kind: 'denied' }
+  }
+  return {
+    available: false,
+    detail: result.error ?? 'compile-unavailable',
+    configured: false,
+    canCreate: false,
+    reason: null,
+    kind: 'unknown',
+  }
+}
+
+/**
+ * Classify a missing-parameter route probe: 400/422 means the route exists (it
+ * validated the missing argument), 404 means the route is absent on this build.
+ */
+function classifyRouteProbe(result: Awaited<ReturnType<OpenVikingApi['snapshotVersionsProbe']>>): ScopeCapability {
+  if (result.ok) return { available: true, detail: null }
+  if (result.status === 400 || result.status === 422) return { available: true, detail: null }
+  if (result.status === 404) return { available: false, detail: 'not-supported' }
+  if (result.status === 401 || result.status === 403) return { available: false, detail: 'forbidden' }
+  return { available: false, detail: result.error ?? 'unknown' }
+}
+
+/** Classify the validation-only pack-export probe by status code. */
+function classifyPackProbe(status: number, error: string | null): ScopeCapability & { kind?: string } {
+  if (status === 400 || status === 422) return { available: true, detail: null, kind: 'route-present' }
+  if (status === 404) return { available: false, detail: 'not-supported', kind: 'route-absent' }
+  if (status === 401 || status === 403) return { available: false, detail: 'pack-role-required', kind: 'denied' }
+  // 0 = transport error; a 200 for an empty URI is unexpected but present.
+  if (status === 200) return { available: true, detail: null, kind: 'route-present' }
+  return { available: false, detail: error ?? 'pack-export-unavailable', kind: 'unknown' }
+}
+
 /**
  * Build the `/scope` capability map.
  *
@@ -267,6 +404,7 @@ export function scopeCapabilities(
   snapshot: CapabilitySnapshot,
   transport: boolean,
   writesEnabled: boolean,
+  opsEnabled = false,
 ): Record<string, ScopeCapability> {
   return {
     health: { available: snapshot.health.ok, detail: snapshot.health.ok ? null : snapshot.health.error },
@@ -280,5 +418,10 @@ export function scopeCapabilities(
     acl: { available: false, detail: 'not-enabled' },
     'mutation-transport': { available: transport, detail: transport ? null : 'transport-unavailable' },
     'writes-master': { available: writesEnabled, detail: writesEnabled ? null : 'writes-disabled' },
+    /* ---- v0.8 Operate gates -------------------------------------------- */
+    compile: { available: snapshot.compile.available, detail: snapshot.compile.detail },
+    'snapshot-versions': snapshot.versions,
+    'snapshot-diff-paths': snapshot.diffPaths,
+    'ops-master': { available: opsEnabled, detail: opsEnabled ? null : 'ops-disabled' },
   }
 }

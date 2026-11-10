@@ -47,6 +47,12 @@ export interface AuditInput {
   result: AuditEntry['result']
   error?: string | null
   undo?: AuditEntry['undo']
+  /** v0.8 additive correlation fields; all optional so v0.5 callers are unchanged. */
+  taskId?: string | null
+  operationId?: string | null
+  idempotencyKey?: string | null
+  snapshot?: AuditEntry['snapshot']
+  bytes?: number | null
 }
 
 export interface AuditLogOptions {
@@ -81,6 +87,11 @@ export function auditEntryFrom(input: AuditInput, now: number = Date.now()): Aud
     result: input.result,
     error: input.error === null || input.error === undefined ? null : redactError(input.error),
     undo: input.undo ?? null,
+    ...(input.taskId === undefined ? {} : { taskId: input.taskId }),
+    ...(input.operationId === undefined ? {} : { operationId: input.operationId }),
+    ...(input.idempotencyKey === undefined ? {} : { idempotencyKey: input.idempotencyKey }),
+    ...(input.snapshot === undefined ? {} : { snapshot: input.snapshot }),
+    ...(input.bytes === undefined ? {} : { bytes: input.bytes }),
   }
 }
 
@@ -137,10 +148,12 @@ export class AuditLog {
   }
 
   /** The newest `limit` records, newest first, for the route and `/viking audit`. */
-  recent(limit: number): AuditPayload {
-    const entries = readJsonlTail(this.path, Math.max(1, limit))
+  recent(limit: number, filters: AuditFilters = {}): AuditPayload {
+    const entries = readJsonlTail(this.path, Math.max(1, limit * (hasFilters(filters) ? 20 : 1)))
       .filter((value): value is AuditEntry => isAuditEntry(value))
+      .filter((entry) => matchesFilters(entry, filters))
       .reverse()
+      .slice(0, Math.max(1, limit))
     return {
       entries,
       path: this.path,
@@ -158,6 +171,34 @@ export class AuditLog {
       return `${entry.ts} ${entry.kind}/${entry.action}${target} → ${entry.result}${error}`
     })
   }
+}
+
+/** Optional audit filters (v0.8: evidence assembly and per-action history rows). */
+export interface AuditFilters {
+  kind?: string
+  action?: string
+  taskId?: string
+  operationId?: string
+  requestId?: string
+}
+
+function hasFilters(filters: AuditFilters): boolean {
+  return (
+    filters.kind !== undefined ||
+    filters.action !== undefined ||
+    filters.taskId !== undefined ||
+    filters.operationId !== undefined ||
+    filters.requestId !== undefined
+  )
+}
+
+function matchesFilters(entry: AuditEntry, filters: AuditFilters): boolean {
+  if (filters.kind !== undefined && entry.kind !== filters.kind) return false
+  if (filters.action !== undefined && entry.action !== filters.action) return false
+  if (filters.taskId !== undefined && entry.taskId !== filters.taskId) return false
+  if (filters.operationId !== undefined && entry.operationId !== filters.operationId) return false
+  if (filters.requestId !== undefined && entry.requestId !== filters.requestId) return false
+  return true
 }
 
 /** Minimally validate a parsed JSONL line so a hand-edited file degrades cleanly. */

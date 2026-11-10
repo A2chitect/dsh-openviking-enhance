@@ -30,10 +30,55 @@ link **before tagging**.
 | 0.4.0 (PR #2) | 2026-11 | 0.2.2-rc.1 (web, scratch profile) | 22 | macOS 15 | 0.5.3 read-only | tarball into a scratch DSH home + mock-fixture browser capture | **pending release** — browser render evidence only; 0.4.0 is not tagged/published yet, so no clean-profile install record exists | PR #2 screenshots + review evidence; row becomes `pass` when the release ships |
 | 0.5.0 (PR #3) | 2026-11 | 0.2.2-rc.1 (web, scratch profile) | 22 | macOS 15 | 0.5.3 contract via stand-in fixture (no real writes) | tarball into a scratch DSH home + stateful mock-fixture browser capture | **pending release** — browser render evidence only; 0.5.0 is not tagged/published yet | PR #3 BEFORE/AFTER capture set; write paths covered by fake-transport unit tests |
 | 0.6.0 (PR #4) | 2026-11-10 | 0.2.1-rc.3 local + 0.2.2-rc.1 pinned in CI | 22.22.3 | macOS (Darwin 24); Linux CI | 0.5.3 reachable, read-only; mock fixture for the UI deltas | `pnpm pack` tarball → scratch `DSH_HOME` web profile | pass | `node scripts/verify-install.mjs …` → 27/27 steps, `tarballVersion === installedVersion` (0.3.0); CI `install-verify` job on the PR; browser BEFORE/AFTER set in the PR |
+| 0.8.0 (PR #6) | 2026-11 | 0.2.2-rc.1 (web, scratch profile) | 22 | macOS 15 | 0.5.3 read-only + deterministic fake fixture for the action layer | tarball into a scratch DSH home; browser capture of the v0.7 cockpit + v0.8 fixture-labelled dialogs/plans/downloads | pending release — no live-store write: every action is exercised against the fake server/fake transport; live reads only) | `pnpm test` (v08 route/unit/component suites + smoke); fixture-labelled action screenshots; live read-only Snapshots/Compile/Tasks/Observability rows |
 
 These not-yet-released versions are rows in an append-only table, not release
 evidence: the stack merges in order `#2 → release 0.4.0 → #3 → release 0.5.0 →
 #4 → release 0.6.0`, and each row becomes `pass` when its tagged version ships.
+
+## PR #6 review round 1 (v0.8) — fixed evidence
+
+| Review item | Fix | Evidence |
+| --- | --- | --- |
+| B1 ancestor-of-sessions restore/commit | `classifySnapshotScope` now refuses the sessions tree, its descendants **and every ancestor of it** (`viking://user/<me>` included); classifier unit tests assert all three | `test/v08-units.test.mjs` |
+| S3 clamped-50 plan counts | `SnapshotRestorePlan.writeTotal/deleteTotal` carry the real dry-run counts; the dialog shows them even when the row list is capped and states "showing X of Y" | unit test + dialog copy |
+| S1 pack body deadline | per-chunk inactivity (30 s) and overall body deadline; aborted streams delete the partial file and release the shared mutation gate | `test/v08-units.test.mjs` stalled-body test |
+| S2 pack user scope | pack export requires the active user (bare `viking://user` and other identities refused); both READMEs state a pack contains full session text | classifier unit tests + README |
+| S4 execute re-runs action gate | `OpsService.execute` re-runs `gateFor(token.action)` after the token checks and before the identity check | route unit tests (capability flip) |
+| S6 verifyCommit comment | bounded 3-attempt read-back retry implemented; the service takes a branch (unit-tested with `release`) and the v0.8 action call sites pass the documented fixed `main` | route test with a lagging snapshot log |
+| S5 undo expected paths | normalized full-URI comparison (not basenames) and the undo dry run is re-run immediately before Apply | unit test (same basename, other directory) |
+| S7 destructive tests | revision-mismatch (`restoreMode:'conflict'`), pack-too-large, non-zip signature, expired download token, gate contention, undo-after-identity-switch | `test/v08-*` |
+| Smaller items | partial-writeback branch now writes a real audit row and returns its id; typed-word confirm disabled until it matches; empty `publishOperationId` removed; file-version audit no longer fills `snapshot.sourceCommit`; downloads swept on history read/startup/client abort; undo stays available if `enableOps` is switched off after the action; evidence fan-out has a 15 s overall deadline; message cap unified in `limits.ts`; read-route `paths` capped; pack transport errors are not cached; download tokens are identity-checked on consume | unit/route tests |
+
+### Known limits (not covered by round 1)
+
+- Ops tokens are in-memory: a host restart invalidates pending confirmations and
+  undo handles (documented; the audit file is the durable record).
+- A pack export that finishes after the client vanished can leave a temp file
+  until the next sweep (startup/history/export) — deleted at most one sweep later.
+- The undo dry run is re-checked immediately before Apply, but a write that
+  lands between that check and the server applying the restore is the server's
+  forward-commit semantics (audit + reindex still record it).
+- Compile re-run is a NEW operation; there is no idempotent retry across
+  different keys by design.
+- Live destructive-action screenshots against a real store remain out of scope
+  (tests use the deterministic fake server); fixture evidence is labelled.
+
+## PR #6 review round 2 (v0.8) — fixed evidence
+
+| Review item | Fix | Evidence |
+| --- | --- | --- |
+| B2 non-canonical URIs bypass the sessions ancestor rule | `classifySnapshotScope` builds the canonical `viking://` form once, uses it for every sessions comparison and returns it downstream (plan/audit/undo); `classifySnapshotPaths` inherits it | unit tests: `viking://user//alice` and `viking:///user/alice` refused; `viking://user/alice//memories` → `viking://user/alice/memories` |
+| N1 the S5 test could not fail on the old implementation | the case now runs a real `applyRestore` (`writtenPaths:['report.md']`) and asserts the same-basename/other-directory plan is `extraChanges`; the old basename implementation fails it | `test/v08-units.test.mjs` S5 case |
+| N2 truncation flag contradicted the copy | per-array clamp flag (both prepare and undo plans); 40+40 rows is not truncated | unit test (60/55 and 40+40) |
+| N3 `verifyCommit` retried failed requests | `!ok` returns false immediately; only a successful stale head gets the bounded ~0.2 s retry | unit test for both paths |
+| N4 pack copy | both locale dictionaries and the README state the active-user rule, not the old "user/**" wording | locale parity + README |
+| N5 cross-instance temp-file sweep | filenames carry the owning pid; startup sweep keeps live owners and our own files, deletes dead owners and legacy files older than one TTL | unit test (orphan matrix) |
+| N6 pack probe timeout | probe passes the 5 s status budget instead of the 120 s stream default | capability probe code |
+| N7 double undo dry run | the undo apply path runs one dry run (plan + pre-apply read in one) | S5 test asserts the dry-run call count |
+| N8 residuals | dead duplicate error branch, unused import, unconsumed re-export and `void startedAt` removed | typecheck + review of diff |
+| N9 over-claiming evidence | the **stalled-body** test proves the inactivity deadline; a separate **total-deadline** test proves the `totalMs` branch; `verifyCommit` supports/passes a branch and v0.8's call sites use the documented fixed `main` | `test/v08-units.test.mjs` deadlines |
+| N10 rejected-promise handling | the inactivity helper rejects the outer promise directly | unit tests |
 
 What the v0.6 local run actually proved:
 

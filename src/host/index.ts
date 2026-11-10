@@ -16,6 +16,7 @@
  * per-session peer/config, installed version) plus the read-only pending-queue
  * and capability-memo files under the OpenViking home.
  */
+import { createReadStream, statSync, unlinkSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -43,7 +44,19 @@ import {
   type TaskListPayload,
   type WriteAction,
   type OverviewPluginFact,
+  OPS_ACTIONS,
+  type OpsAction,
 } from '../shared/protocol.ts'
+import {
+  FILE_VERSIONS_PAGE,
+  OBSERVABILITY_MAX_DAYS,
+  SNAPSHOT_DIFF_PATHS_PAGE,
+  SNAPSHOT_LOG_MAX,
+  SNAPSHOT_LOG_PAGE,
+  SNAPSHOT_PATHS_MAX,
+  SNAPSHOT_SHOW_MAX_BYTES,
+  TASK_EVIDENCE_MAX_BYTES,
+} from '../shared/limits.ts'
 import {
   configSourceHealth,
   describeConnection,
@@ -55,6 +68,14 @@ import {
 import { ActivityService, isCancellableTask } from './activity-service.ts'
 import { AuditLog } from './audit.ts'
 import { CapabilityService, scopeCapabilities } from './capability.ts'
+import { MutationGate } from './confirmation-store.ts'
+import { SnapshotService } from './snapshot-service.ts'
+import { CompileService } from './compile-service.ts'
+import { PackDownloadBroker, packHistory } from './pack-service.ts'
+import { OpsService, type OpsPrepareRequest } from './ops-service.ts'
+import { ObservabilityService } from './observability-service.ts'
+import { EvidenceService } from './evidence-service.ts'
+import { PLUGIN_VERSION } from '../shared/build-info.ts'
 import { ProfileStore, isHttpEndpoint, isProbeableEndpoint } from './profiles.ts'
 import { SessionControlService } from './session-control.ts'
 import { WriteService } from './write-service.ts'
@@ -176,6 +197,16 @@ export const Config = z.object({
    * The host reads the live value at each call; the client reads it for buttons.
    */
   enableWrites: z.boolean().default(false).volatile(),
+  /**
+   * v0.8 master opt-in for operational actions (snapshot create/restore, compile
+   * trigger, OVPack export, file-version restore).
+   *
+   * Defaults to **false**. `enableWrites` stays curation-only (Lead sign-off
+   * §2): one switch, one mental model, and reads are always available. The host
+   * reads the live value at each prepare/execute; the client reads it for
+   * buttons. Every gate fails closed when it is off.
+   */
+  enableOps: z.boolean().default(false).volatile(),
   /** v0.5 interface switch: the Activity tab (task centre + metrics). */
   enableActivity: z.boolean().default(true).volatile(),
   /** v0.5 interface switch: the scope chip on the composer/panel headers. */
@@ -232,6 +263,7 @@ export interface EnhanceConfigInput {
   showExplore?: ConfigField<boolean>
   enableCommands?: ConfigField<boolean>
   enableWrites?: ConfigField<boolean>
+  enableOps?: ConfigField<boolean>
   enableActivity?: ConfigField<boolean>
   showScopeBanner?: ConfigField<boolean>
   showNativeViews?: ConfigField<boolean>
@@ -501,6 +533,11 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
     recentCommits.resetCaches()
     studioStatus.resetCaches()
     overview.resetCaches()
+    observability.resetCaches()
+    // A profile switch invalidates every outstanding one-time pack download: the
+    // capability token is bound to an identity fingerprint, and a temp file must
+    // never be served after the identity it was exported under changed.
+    packBroker.close()
     recordIdentitySwitch?.()
   }
 
@@ -599,6 +636,12 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
   const recentCommits = new RecentCommitsService({ commit: service, sessions })
   const studioStatus = new StudioStatusService({ studioUrl: () => `${connection.endpoint}${studioPath}` })
   const onboardingStore = new OnboardingStore({})
+  /**
+   * v0.8: the shared mutation gate. One curation write **or** one operational
+   * action may be in flight per profile — the WriteService and OpsService share
+   * this single controller, so the one-lock rule spans both (design §2).
+   */
+  const mutationGate = new MutationGate()
   const writeService = new WriteService({
     api,
     capabilities: capability,
@@ -607,8 +650,40 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
     identity: identityScope,
     writesEnabled: () => configField(config.enableWrites) === true,
     transport: () => transportAvailable,
+    gate: mutationGate,
     actorPeer: (sessionId) =>
       sessionId === undefined || sessionId.length === 0 ? undefined : service.actorPeer(sessionId),
+  })
+
+  /* ---- v0.8 Operate services -------------------------------------------- */
+
+  const snapshotService = new SnapshotService({ api, user: () => connection.user })
+  const compileService = new CompileService({ api })
+  const packBroker = new PackDownloadBroker({ api, audit, identity: identityScope })
+  const opsService = new OpsService({
+    capabilities: capability,
+    snapshot: snapshotService,
+    compile: compileService,
+    packs: packBroker,
+    audit,
+    identity: identityScope,
+    opsEnabled: () => configField(config.enableOps) === true,
+    transport: () => transportAvailable,
+    gate: mutationGate,
+    activeUser: () => connection.user,
+  })
+  const observability = new ObservabilityService({ api })
+  const evidence = new EvidenceService({
+    api,
+    audit,
+    activity,
+    identity: identityScope,
+    build: () => ({
+      pluginVersion: PLUGIN_VERSION,
+      dshVersion: dshVersion(),
+      node: typeof process !== 'undefined' ? process.version : 'unknown',
+      platform: typeof process !== 'undefined' ? process.platform : 'unknown',
+    }),
   })
 
   /**
@@ -1138,6 +1213,17 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
           : scope.authMode === null
             ? 'identity-unknown'
             : null
+    // v0.8: the Operate switch is separate from enableWrites (curation-only).
+    const opsEnabled = configField(config.enableOps) === true
+    const opsReason = !opsEnabled
+      ? 'ops-disabled'
+      : !transport
+        ? 'transport-unavailable'
+        : !snapshot.health.ok
+          ? 'profile-unhealthy'
+          : scope.authMode === null
+            ? 'identity-unknown'
+            : null
     return {
       identity: scope,
       activeProfileId: resolvedIdentity.profileId,
@@ -1145,7 +1231,8 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
       version: snapshot.health.version,
       healthy: snapshot.health.ok,
       writes: { enabled: writesEnabled, transport, reason },
-      capabilities: scopeCapabilities(snapshot, transport, writesEnabled),
+      ops: { enabled: opsEnabled, transport, reason: opsReason },
+      capabilities: scopeCapabilities(snapshot, transport, writesEnabled, opsEnabled),
       warnings,
       observedAt: new Date(snapshot.observedAt).toISOString(),
     }
@@ -1277,8 +1364,22 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
       handler: async (req, res) => {
         if (!guard(req, res)) return
         try {
-          const limit = limitParam(query(req), 'limit', AUDIT_DEFAULT_LIMIT, AUDIT_MAX_LIMIT)
-          const payload: AuditPayload = audit.recent(limit)
+          const params = query(req)
+          const limit = limitParam(params, 'limit', AUDIT_DEFAULT_LIMIT, AUDIT_MAX_LIMIT)
+          const filter = (name: string): string | undefined => {
+            const value = params.get(name)
+            return value === null || value.trim().length === 0 ? undefined : value.trim()
+          }
+          const kind = filter('kind')
+          const action = filter('action')
+          const taskId = filter('taskId')
+          const operationId = filter('operationId')
+          const payload: AuditPayload = audit.recent(limit, {
+            ...(kind === undefined ? {} : { kind }),
+            ...(action === undefined ? {} : { action }),
+            ...(taskId === undefined ? {} : { taskId }),
+            ...(operationId === undefined ? {} : { operationId }),
+          })
           writeJson(res, 200, { ok: true, ...payload })
         } catch (error) {
           failFrom(res, error)
@@ -1528,6 +1629,249 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
   ]
   routes.push(...v07Routes)
 
+  /* ======================================================================
+   * v0.8 "Operate" read routes + evidence/download GETs
+   *
+   * All read-only against OpenViking except the two GETs that serve the
+   * plugin's own artifacts: the one-time pack download (a capability URL for a
+   * temp file this host created) and the task-evidence attachment (an in-memory
+   * JSON document). Both are on the loopback+same-origin fence like every read;
+   * neither mutates the server.
+   * ==================================================================== */
+
+  const v08Routes: WebRoute[] = [
+    readRoute(`${API_PREFIX}/snapshot-log`, async (params) => {
+      // A read route's `paths` filter is a repeated query parameter: cap it at
+      // the documented SNAPSHOT_PATHS_MAX so one request cannot fan out (or be
+      // logged) unbounded.
+      const paths = params.getAll('paths')
+      if (paths.length > SNAPSHOT_PATHS_MAX) {
+        return { ok: false, error: { code: 'invalid-scope', message: `At most ${SNAPSHOT_PATHS_MAX} paths may be filtered.` } }
+      }
+      const payload = await snapshotService.log({
+        branch: params.get('branch') ?? 'main',
+        paths,
+        limit: limitParam(params, 'limit', SNAPSHOT_LOG_PAGE, SNAPSHOT_LOG_MAX),
+      })
+      return { ok: true, ...payload }
+    }),
+    readRoute(`${API_PREFIX}/snapshot-show`, async (params) => {
+      const ref = (params.get('ref') ?? '').trim()
+      if (ref.length === 0) return { ok: false, error: { code: 'invalid-request', message: 'ref is required' } }
+      const path = params.get('path')
+      const payload = await snapshotService.show({ ref, path: path === null || path.length === 0 ? null : path })
+      return { ok: true, ...payload }
+    }),
+    readRoute(`${API_PREFIX}/snapshot-diff`, async (params) => {
+      const path = (params.get('path') ?? '').trim()
+      const to = (params.get('to') ?? '').trim()
+      if (path.length === 0 || to.length === 0) {
+        return { ok: false, error: { code: 'invalid-request', message: 'path and to are required' } }
+      }
+      const from = params.get('from')
+      return { ok: true, ...(await snapshotService.diff({ path, from: from === null ? null : from, to })) }
+    }),
+    readRoute(`${API_PREFIX}/snapshot-diff-paths`, async (params) => {
+      const to = (params.get('to') ?? '').trim()
+      const paths = params.getAll('paths')
+      if (to.length === 0 || paths.length === 0) {
+        return { ok: false, error: { code: 'invalid-request', message: 'paths and to are required' } }
+      }
+      if (paths.length > SNAPSHOT_PATHS_MAX) {
+        return { ok: false, error: { code: 'invalid-scope', message: `At most ${SNAPSHOT_PATHS_MAX} paths may be listed.` } }
+      }
+      const from = params.get('from')
+      return {
+        ok: true,
+        ...(await snapshotService.diffPaths({
+          paths,
+          from: from === null ? null : from,
+          to,
+          offset: offsetParam(params),
+          limit: limitParam(params, 'limit', SNAPSHOT_DIFF_PATHS_PAGE, 1000),
+        })),
+      }
+    }),
+    readRoute(`${API_PREFIX}/snapshot-versions`, async (params) => {
+      const uri = (params.get('uri') ?? '').trim()
+      if (uri.length === 0) return { ok: false, error: { code: 'invalid-request', message: 'uri is required' } }
+      const beforeVersion = params.get('beforeVersion')
+      return {
+        ok: true,
+        ...(await snapshotService.versions({
+          uri,
+          limit: limitParam(params, 'limit', FILE_VERSIONS_PAGE, 100),
+          beforeVersion: beforeVersion === null || beforeVersion.length === 0 ? null : beforeVersion,
+        })),
+      }
+    }),
+    readRoute(`${API_PREFIX}/snapshot-ignore`, async () => ({ ok: true, ...(await snapshotService.ignore()) })),
+    readRoute(`${API_PREFIX}/compile`, async (params) => {
+      const [capabilities, targets] = await Promise.all([
+        compileService.capabilities(),
+        compileService.targets({}),
+      ])
+      // A 0.5.1.1 server has no target registry: the capability still decides the
+      // trigger, and the target list says why it is empty.
+      void params
+      return { ok: true, capabilities, targets }
+    }),
+    readRoute(`${API_PREFIX}/compile-target`, async (params) => {
+      const to = (params.get('to') ?? '').trim()
+      if (to.length === 0) return { ok: false, error: { code: 'invalid-request', message: 'to is required' } }
+      return { ok: true, ...(await compileService.targetConfig(to)) }
+    }),
+    readRoute(`${API_PREFIX}/compile-operations`, async (params) => {
+      const to = (params.get('to') ?? '').trim()
+      if (to.length === 0) return { ok: false, error: { code: 'invalid-request', message: 'to is required' } }
+      const cursor = params.get('cursor')
+      return {
+        ok: true,
+        ...(await compileService.operations({
+          to,
+          cursor: cursor === null || cursor.length === 0 ? null : cursor,
+          limit: limitParam(params, 'limit', 20, 100),
+        })),
+      }
+    }),
+    readRoute(`${API_PREFIX}/compile-operation`, async (params) => {
+      const to = (params.get('to') ?? '').trim()
+      const operationId = (params.get('operationId') ?? '').trim()
+      if (to.length === 0 || operationId.length === 0) {
+        return { ok: false, error: { code: 'invalid-request', message: 'to and operationId are required' } }
+      }
+      return { ok: true, ...(await compileService.operation(to, operationId)) }
+    }),
+    readRoute(`${API_PREFIX}/compile-outputs`, async (params) => {
+      const to = (params.get('to') ?? '').trim()
+      const operationId = (params.get('operationId') ?? '').trim()
+      if (to.length === 0 || operationId.length === 0) {
+        return { ok: false, error: { code: 'invalid-request', message: 'to and operationId are required' } }
+      }
+      const cursor = params.get('cursor')
+      return {
+        ok: true,
+        ...(await compileService.outputs({
+          to,
+          operationId,
+          cursor: cursor === null || cursor.length === 0 ? null : cursor,
+          limit: limitParam(params, 'limit', 50, 100),
+        })),
+      }
+    }),
+    readRoute(`${API_PREFIX}/compile-submission`, async (params) => {
+      const key = (params.get('key') ?? '').trim()
+      if (key.length === 0) return { ok: false, error: { code: 'invalid-request', message: 'key is required' } }
+      return { ok: true, ...(await compileService.submission(key)) }
+    }),
+    readRoute(`${API_PREFIX}/observability`, async (params) => {
+      const days = limitParam(params, 'days', OBSERVABILITY_MAX_DAYS, OBSERVABILITY_MAX_DAYS)
+      const payload = await observability.read(days, params.get('fresh') === '1')
+      return { ok: true, ...payload }
+    }),
+    readRoute(`${API_PREFIX}/pack/history`, async () => {
+      // Reading the history is also a natural sweep point: expiry must not wait
+      // for the next export/consume to delete an abandoned temp file.
+      packBroker.sweep()
+      return { ok: true, history: packHistory(audit) }
+    }),
+    {
+      kind: 'exact',
+      path: `${API_PREFIX}/task/evidence`,
+      handler: async (req, res) => {
+        if (!guard(req, res)) return
+        const taskId = (query(req).get('taskId') ?? '').trim()
+        if (taskId.length === 0) {
+          fail(res, 400, 'invalid-request', 'taskId is required')
+          return
+        }
+        try {
+          const exported = await evidence.evidence(taskId)
+          if (!exported.ok) {
+            writeJson(res, exported.error.code === 'not-found' ? 404 : 200, exported)
+            return
+          }
+          const body = JSON.stringify(exported.evidence, null, 2)
+          if (Buffer.byteLength(body, 'utf8') > TASK_EVIDENCE_MAX_BYTES) {
+            // The service shrinks to fit; this is a defensive final bound.
+            fail(res, 500, 'rejected-by-server', 'The evidence document exceeded its documented cap.')
+            return
+          }
+          res.writeHead(200, {
+            'content-type': 'application/json; charset=utf-8',
+            'content-disposition': `attachment; filename="${exported.fileName}"`,
+            'cache-control': 'no-store',
+            'content-length': Buffer.byteLength(body),
+          })
+          res.end(body)
+        } catch (error) {
+          failFrom(res, error)
+        }
+      },
+    },
+    {
+      kind: 'exact',
+      path: `${API_PREFIX}/ops/download`,
+      handler: async (req, res) => {
+        if (!guard(req, res)) return
+        const token = (query(req).get('token') ?? '').trim()
+        if (token.length === 0) {
+          fail(res, 400, 'invalid-request', 'token is required')
+          return
+        }
+        const download = packBroker.consume(token)
+        if (download === null) {
+          fail(res, 404, 'download-unavailable', 'This download link expired or was already used; export the pack again.')
+          return
+        }
+        try {
+          const file = statSync(download.filePath)
+          res.writeHead(200, {
+            'content-type': 'application/zip',
+            'content-length': file.size,
+            'content-disposition': `attachment; filename="${download.fileName}"`,
+            'cache-control': 'no-store',
+          })
+          const stream = createReadStream(download.filePath)
+          // Delete the one-time temp file exactly once, and only once the
+          // response is finished (all bytes handed to the OS) or the client
+          // aborted. Deleting on the read stream's own 'end'/'close' raced the
+          // response flush; `finish` is the deterministic point where the file
+          // is no longer needed and unlinking cannot truncate the download.
+          let cleaned = false
+          const cleanup = (): void => {
+            if (cleaned) return
+            cleaned = true
+            try {
+              unlinkSync(download.filePath)
+            } catch {
+              // Already gone (sweep/route race) is fine.
+            }
+          }
+          stream.once('error', () => {
+            cleanup()
+            try {
+              res.destroy()
+            } catch {
+              // The socket may already be gone.
+            }
+          })
+          res.once('finish', cleanup)
+          res.once('close', () => {
+            // A completed response emits 'finish' first; this branch is the
+            // client-abort path (never leave the temp file behind).
+            if (!res.writableFinished) cleanup()
+          })
+          stream.pipe(res)
+        } catch (error) {
+          packBroker.remove(token)
+          failFrom(res, error)
+        }
+      },
+    },
+  ]
+  routes.push(...v08Routes)
+
   /* ---- authenticated mutation routes (decision B) ----------------------- */
 
   const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }
@@ -1695,6 +2039,82 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
       })
       return result
     })
+
+    /* ---- v0.8 ops mutation family: ONE route family, discriminated action --- */
+    add(`${API_PREFIX}/ops/prepare`, async (body) => {
+      const action = stringField(body, 'action')
+      if (action === undefined || !(OPS_ACTIONS as readonly string[]).includes(action)) {
+        return { ok: false, error: { code: 'invalid-request', message: 'Unknown or missing action.' } }
+      }
+      const list = (name: string): string[] =>
+        Array.isArray(body[name]) ? (body[name] as unknown[]).filter((entry): entry is string => typeof entry === 'string') : []
+      const text = (name: string): string => stringField(body, name) ?? ''
+      let request: OpsPrepareRequest
+      switch (action as OpsAction) {
+        case 'snapshot-create':
+          request = { action: 'snapshot-create', message: text('message'), paths: list('paths') }
+          break
+        case 'snapshot-restore':
+          request = { action: 'snapshot-restore', projectDir: text('projectDir'), sourceCommit: text('sourceCommit') }
+          break
+        case 'compile-run': {
+          const instruction = stringField(body, 'instruction')
+          const configuredTarget = stringField(body, 'configuredTarget')
+          request = {
+            action: 'compile-run',
+            to: text('to'),
+            from: list('from'),
+            skill: text('skill'),
+            ...(instruction === undefined || instruction.length === 0 ? {} : { instruction }),
+            ...(configuredTarget === undefined || configuredTarget.length === 0 ? {} : { configuredTarget }),
+          }
+          break
+        }
+        case 'pack-export':
+          request = { action: 'pack-export', uri: text('uri'), includeVectors: body.includeVectors === true }
+          break
+        case 'file-version-restore': {
+          const currentVersion = stringField(body, 'currentVersion')
+          request = {
+            action: 'file-version-restore',
+            uri: text('uri'),
+            restoreVersion: text('restoreVersion'),
+            ...(currentVersion === undefined || currentVersion.length === 0 ? {} : { currentVersion }),
+          }
+          break
+        }
+      }
+      return opsService.prepare(request)
+    })
+    add(`${API_PREFIX}/ops/execute`, async (body) => {
+      const token = stringField(body, 'token')
+      if (token === undefined || token.length === 0) {
+        return { ok: false, error: { code: 'invalid-request', message: 'token is required.' } }
+      }
+      const typed = stringField(body, 'typed')
+      return opsService.execute({ token, ...(typed === undefined ? {} : { typed }) })
+    })
+    add(`${API_PREFIX}/ops/plan`, async (body) => {
+      const undoId = stringField(body, 'undoId')
+      if (undoId === undefined || undoId.length === 0) {
+        return { ok: false, error: { code: 'invalid-request', message: 'undoId is required.' } }
+      }
+      return opsService.plan({ undoId })
+    })
+    add(`${API_PREFIX}/ops/undo`, async (body) => {
+      const undoId = stringField(body, 'undoId')
+      if (undoId === undefined || undoId.length === 0) {
+        return { ok: false, error: { code: 'invalid-request', message: 'undoId is required.' } }
+      }
+      return opsService.undo({ undoId, confirmExtra: body.confirmExtra === true })
+    })
+    add(`${API_PREFIX}/ops/cancel`, async (body) => {
+      const token = stringField(body, 'token')
+      if (token === undefined || token.length === 0) {
+        return { ok: false, error: { code: 'invalid-request', message: 'token is required.' } }
+      }
+      return opsService.cancel(token)
+    })
     add(`${API_PREFIX}/profiles/save`, async (body) => {
       const input = {
         id: stringField(body, 'id') ?? '',
@@ -1786,6 +2206,11 @@ function start(ctx: Context, config: EnhanceConfigInput): void {
   } catch (error) {
     logger?.warn?.('[openviking-enhance] authenticated connection service unavailable', error)
   }
+
+  host.effect(() => () => {
+    // Plugin unload: delete every leftover 0600 pack temp file.
+    packBroker.close()
+  }, 'openviking-enhance: pack downloads')
 
   host.effect(() => {
     const disposers = routes.map((route) => host.webServer.register(route))

@@ -26,10 +26,11 @@ import { NativeBrowse } from './native-browse.tsx'
 import { NativeSessions } from './native-sessions.tsx'
 import { NativeCommits } from './native-commits.tsx'
 import { NativeStats } from './native-stats.tsx'
+import { NativeOperate } from './native-operate.tsx'
 import type { NativeViewId } from '../shared/protocol.ts'
 
 /** The view switcher's order; Studio is deliberately last (the fallback). */
-const VIEW_ORDER: readonly NativeViewId[] = ['overview', 'browse', 'sessions', 'commits', 'stats', 'studio']
+const VIEW_ORDER: readonly NativeViewId[] = ['overview', 'browse', 'sessions', 'commits', 'operate', 'stats', 'studio']
 
 function viewLabel(view: NativeViewId): string {
   return t(`native.view.${view}`)
@@ -191,6 +192,7 @@ export function NativeCockpit() {
         {native.view === 'sessions' && <NativeSessions refreshKey={refreshKey} studioUrl={studioUrl} />}
         {native.view === 'commits' && <NativeCommits refreshKey={refreshKey} />}
         {native.view === 'stats' && <NativeStats refreshKey={refreshKey} />}
+        {native.view === 'operate' && <NativeOperate refreshKey={refreshKey} />}
         {native.view === 'studio' && <StudioView refreshKey={refreshKey} config={config} />}
       </div>
 

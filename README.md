@@ -392,6 +392,55 @@ onboarding-state POST:
 | `GET /api/openviking-enhance/studio-status?fresh=0` | credential-free header probe: `frameable` yes/no/unknown + reason, cached 60 s |
 | `POST /api/openviking-enhance/onboarding/state` | `{action:'dismiss'|'reset'|'forget'|'complete-step'|'full-check', …}` → writes/deletes only the 0600 local `onboarding.json`, records the action in the local audit trail, zero OpenViking calls |
 
+### Operational routes (v0.8 "Operate")
+
+Read routes are loopback + same-origin GETs; the five actions ride the **same
+authenticated `ctx.connection.fetch` transport** as v0.5 writes (POST only, JSON
+≤64 KiB) and reuse the prepare → confirm → execute → verify → audit → undo
+protocol. Loopback GETs for actions never exist.
+
+| Route | Contract |
+| --- | --- |
+| `GET /api/openviking-enhance/snapshot-log?branch=main&limit=&paths=` | bounded commit history (20/page, cap 100); a fresh account's `git_ref` 404 is "no history yet", an absent route is "unavailable" |
+| `GET /api/openviking-enhance/snapshot-show?ref=&path=` | commit metadata, or one bounded text preview (64 KiB cap; binary = metadata only) |
+| `GET /api/openviking-enhance/snapshot-diff?path=&from=&to=` | one unified diff, display cap 200 000 chars; server size limits surface as "too large" |
+| `GET /api/openviking-enhance/snapshot-diff-paths?paths=&from=&to=&offset=&limit=` | changed-path page (OpenViking 0.5.3+; absent route degrades to "not supported") |
+| `GET /api/openviking-enhance/snapshot-versions?uri=&limit=&beforeVersion=` | compile-output file versions (0.5.3+, page 20); `NOT_COMPILE_MANAGED` is an explicit empty state |
+| `GET /api/openviking-enhance/snapshot-ignore` | read-only `.ovgitignore` display |
+| `GET /api/openviking-enhance/compile` | runtime capability + the 0.5.3 target registry (each degrades on its own 404) |
+| `GET /api/openviking-enhance/compile-target` / `compile-operations` / `compile-operation` / `compile-outputs` / `compile-submission` | bounded operation/output/submission inspection; submission lookup is the idempotency-recovery read (never a retry) |
+| `GET /api/openviking-enhance/observability?days=1..7&fresh=0` | observer cards + console token/context-commit series, cached 30 s, on demand; **`/metrics` is never requested** |
+| `GET /api/openviking-enhance/pack/history` | metadata-only export rows from the local audit trail |
+| `GET /api/openviking-enhance/task/evidence?taskId=` | bounded (512 KiB) JSON attachment: safe task fields/events + ≤20 local audit rows + ≤20 on-demand `/console/audit` request rows + build/identity |
+| `GET /api/openviking-enhance/ops/download?token=` | one-time-token download of a host temp file (0600 under the plugin state dir, 64 MiB cap, deleted after download/expiry; the token is never audited) |
+| `POST /api/openviking-enhance/ops/{prepare,execute,plan,undo,cancel}` | authenticated transport only; one discriminated `action`: `snapshot-create`, `snapshot-restore`, `compile-run`, `pack-export`, `file-version-restore` |
+
+| Action | What it changes | Confirmation | Undo | Audit |
+| --- | --- | --- | --- | --- |
+| snapshot-create | one append-only commit | scope + message + paths, explicit confirm | **no** (commits cannot be deleted through the API) | `snapshot` (oid) |
+| snapshot-restore | files under one directory, a new commit + reindex task | dry-run plan + real counts (also when the row list is capped) + typed directory leaf; extra-changes second confirm for undo. The scope may not be — or contain — the pipeline-owned `sessions` tree | forward restore to the pre-restore parent | `snapshot` (pre/post commit, task id) |
+| compile-run | derived output files + reindex | explicit to/from/skill/instruction + host `Idempotency-Key`; no typed word (no user file is overwritten) | **no** (no rollback API); cancellation is cooperative | `compile` (task id + idempotency key) |
+| pack-export | a local `.ovpack` download only | the active user's own tree (or `viking://resources`); include-vectors (default off), 64 MiB cap, one-time download. **The pack contains the full session transcripts of the active user** — treat it as sensitive | **no** | `pack` (bytes; no content) + `download` |
+| file-version-restore | one compile-output file, a new version (CAS) | current/target version + typed file name | CAS restore of the pre-restore version (refused after a change) | `snapshot` (version ids) |
+
+Undo is a safety action: it stays available if `enableOps` is switched off
+after an action (the transport, identity and capability gates still apply), so
+turning the switch off can never trap a user with a restored tree and no way
+back.
+
+Every action is additionally gated by the new **`enableOps`** switch (default
+**false**; `enableWrites` stays curation-only), the authenticated transport, a
+healthy probed identity, a runtime capability/role probe (never a version
+comparison) and the **shared single-mutation gate** with curated writes. Tokens
+are single-use, 120 s, identity-fingerprint-bound; ops are limited to 2 successful
+executions and 6 preparations per minute. There is **no Retry button anywhere**:
+the tested servers expose no task-retry API, and a compile can only be "re-run as
+a new compile" (a new operation with a new Idempotency-Key). OVPack
+**backup/import/restore are deliberately deferred** to a later release (they are
+ROOT/ADMIN, account-wide, non-atomic and/or need a server temp-upload flow), as
+are rules compile, compile config updates/embeddings/reindex, watches and session
+snapshot restore.
+
 ### Timeouts and limits
 
 Every value below is exported from `src/shared/limits.ts`; `test/v06-docs.test.mjs`
@@ -443,6 +492,38 @@ from the code. Times are milliseconds; sizes are bytes unless marked.
 | STUDIO_STATUS_TIMEOUT_MS | 4000 |
 | STUDIO_STATUS_TTL_MS | 60000 |
 | NATIVE_HISTORY_MAX | 20 |
+| OPS_TOKEN_TTL_MS | 120000 |
+| OPS_MAX_PENDING | 8 |
+| OPS_RATE_LIMIT | 2 |
+| OPS_RATE_WINDOW_MS | 60000 |
+| OPS_PREPARE_RATE_LIMIT | 6 |
+| OPS_PREPARE_RATE_WINDOW_MS | 60000 |
+| PACK_MAX_BYTES | 67108864 |
+| PACK_CAPABILITY_TTL_MS | 600000 |
+| PACK_DOWNLOAD_TTL_MS | 120000 |
+| PACK_DOWNLOAD_MAX_ACTIVE | 2 |
+| OPS_EXPORT_TIMEOUT_MS | 120000 |
+| SNAPSHOT_LOG_PAGE | 20 |
+| SNAPSHOT_LOG_MAX | 100 |
+| SNAPSHOT_SHOW_MAX_BYTES | 65536 |
+| SNAPSHOT_DIFF_MAX_CHARS | 200000 |
+| SNAPSHOT_PATHS_MAX | 16 |
+| SNAPSHOT_RESTORE_PLAN_PATHS | 50 |
+| SNAPSHOT_DIFF_PATHS_PAGE | 100 |
+| FILE_VERSIONS_PAGE | 20 |
+| COMPILE_CONFIGS_MAX | 50 |
+| COMPILE_FROM_MAX | 8 |
+| COMPILE_SKILL_MAX_CHARS | 128 |
+| COMPILE_INSTRUCTION_MAX_CHARS | 500 |
+| COMPILE_OPERATIONS_PAGE | 20 |
+| COMPILE_OUTPUTS_PAGE | 50 |
+| OBSERVABILITY_CACHE_TTL_MS | 30000 |
+| OBSERVABILITY_MAX_DAYS | 7 |
+| TASK_EVIDENCE_MAX_BYTES | 524288 |
+| SNAPSHOT_MESSAGE_MAX_CHARS | 200 |
+| PACK_BODY_INACTIVITY_TIMEOUT_MS | 30000 |
+| EVIDENCE_LOOKUP_DEADLINE_MS | 15000 |
+| TASK_EVIDENCE_CORRELATION_MAX | 20 |
 <!-- /contract:limits -->
 
 The Rules-listing deadline is a **scheduling** deadline: requests already in
@@ -464,6 +545,8 @@ rules and 20 scenarios, and an L2 preview page returns at most 1 000 lines.
 | Experience | `fs/ls` + `agent-evolution` endpoints | verified on 0.5.3 | empty state or "not available on this server" |
 | Snapshot undo | `GET /snapshot/log` classification | route present (fresh accounts report "no history") | edit/delete disabled with the reason |
 | Writes | `enableWrites` **and** authenticated transport **and** healthy probed identity | DSH 0.2.2-rc.1+ | read-only with a stated reason; every mutation fails closed |
+| Operate actions (v0.8) | `enableOps` **and** authenticated transport **and** healthy probed identity **and** runtime capability/role probe **and** the shared single-mutation gate | DSH 0.2.2-rc.1+; capability answer decides (snapshot route, compile `configured && can_create`, pack export probe) | reads stay available; every action fails closed with `ops-disabled`/`compile-not-configured`/`pack-export-unavailable`/…; no Retry exists |
+| Task evidence / Observability | per-request read, on demand | OpenViking 0.5.1.1+ (server request log only when `/console/audit` is reachable) | evidence warns `server-request-log-unavailable`; each observability card degrades alone; `/metrics` never probed |
 | Activity tasks/metrics | `GET /tasks` and per-card probes | route present | per-card "not available"; `/metrics` is never probed |
 | ACL | not probed | never | explicit "not enabled" row |
 | Native views | DSH `main`/`sidebar.panellist` slots (since v0.3) | always; `showNativeViews` (default true) | off = the exact v0.6 Studio page |
@@ -480,6 +563,9 @@ rules and 20 scenarios, and an L2 preview page returns at most 1 000 lines.
 | Lifecycle hooks, MCP proxy/tools, URI guard, skill distribution | official plugin / server | not present; no tools are exposed to the model |
 | Pending-queue writes, retries, recovery | official plugin | read-only diagnosis (file names/ages only) |
 | Capture pause/resume, archive retry | upstream API absent in the tested builds | explicitly not shipped, and said so where the state is shown |
+| OVPack backup/import/restore | server (ROOT/ADMIN, account-wide) | v0.8 ships **export only**; backup/import/restore are deliberately deferred with their reasons shown in the Packs tab |
+| Task retry | no API exists in the tested builds | "re-run as new compile" only (a new operation); the Tasks tab says so |
+| Compile config update, embeddings, content reindex, rules compile, watches, session snapshot restore | server/CLI or later releases | not exposed; reads may still inspect compile configs/operations/outputs |
 
 ### Data, privacy and the security boundary
 
@@ -546,6 +632,23 @@ before any recall/judge work) and the list itself is bounded file reads (15 s
 total deadline, concurrency 4, 100-rule/20-scenario caps, partial results kept
 with a "showing N of up to M" line).
 
+### OVPack download handling (v0.8)
+
+An exported `.ovpack` is written to a **0600 temp file** under the plugin state
+directory (the directory is 0700), streamed to the browser through a
+**single-use token** that lives 120 s, and deleted after the one download, on
+expiry, on the next history/export sweep, or on plugin unload (startup sweeps orphans too). Temp filenames carry the owning pid, so a
+second plugin instance sharing the same `DSH_HOME/state` tree keeps its own
+live downloads; only dead-owner and aged legacy files are swept. The audit records the URI, byte count and request id only — never
+the content or the token. The export is capped at 64 MiB and a body that stalls
+for 30 s (or exceeds the overall export deadline) is aborted so a slow server
+cannot hold the shared mutation gate.
+
+**A pack exported from `viking://user/<me>` contains the full session text**
+(`messages.jsonl` and archived sessions) in addition to memories, so it is
+sensitive user data by definition: the plugin refuses the bare `viking://user`
+root and another identity's tree, and the UI says to delete the file when done.
+
 ### Known gaps
 
 - The official plugin's in-process config/state object is **not a published
@@ -603,6 +706,7 @@ The same settings can still be written by hand in your profile's patch file
 | `showExplore` | `true` | Interface switch: the Explore tab (search, rules, skills, Experience) |
 | `enableCommands` | `true` | Host switch: the `/viking` command (read and write verbs) |
 | `enableWrites` | `false` | Opt-in: curation (edit/delete/tags), forced commits and the write commands |
+| `enableOps` | `false` | v0.8 opt-in: snapshot create/restore, compile trigger, OVPack export, file-version restore (all confirmation-gated; `enableWrites` stays curation-only) |
 | `enableActivity` | `true` | Interface switch: the Activity tab (tasks, metrics, recent actions) |
 | `showScopeBanner` | `true` | Interface switch: the persistent scope chip; write dialogs repeat the scope regardless |
 | `showNativeViews` | `true` | Interface switch: the native read cockpit (Overview/Browse/Sessions/Commits/Stats). Off = the v0.6 Studio iframe page |

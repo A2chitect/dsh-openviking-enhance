@@ -60,6 +60,27 @@ import {
   type StudioStatus,
   type OnboardingState,
   type OnboardingAction,
+  type CompileCapabilities,
+  type CompileOperationPayload,
+  type CompileOperationsPayload,
+  type CompileOutputsPayload,
+  type CompileSubmissionPayload,
+  type CompileTargetPayload,
+  type CompileTargetsPayload,
+  type DiffPathsPayload,
+  type FileVersionsPayload,
+  type ObservabilityPayload,
+  type OpsAction,
+  type OpsCancelPayload,
+  type OpsExecutePayload,
+  type OpsPreparePayload,
+  type OpsUndoPayload,
+  type OpsUndoPlan,
+  type PackHistoryPayload,
+  type SnapshotDiffPayload,
+  type SnapshotIgnorePayload,
+  type SnapshotLogPayload,
+  type SnapshotShowPayload,
 } from '../shared/protocol.ts'
 
 /** Relative base: no leading slash, so `<base href>` keeps working. */
@@ -473,9 +494,24 @@ export interface AuditResponse {
   observedAt: string
 }
 
-export function fetchAudit(limit = 20, signal?: AbortSignal): Promise<OveResult<AuditResponse>> {
+export interface AuditFilters {
+  kind?: string
+  action?: string
+  taskId?: string
+  operationId?: string
+}
+
+export function fetchAudit(
+  limit = 20,
+  signal?: AbortSignal,
+  filters: AuditFilters = {},
+): Promise<OveResult<AuditResponse>> {
+  const params = new URLSearchParams({ limit: String(limit) })
+  for (const [key, value] of Object.entries(filters)) {
+    if (typeof value === 'string' && value.length > 0) params.set(key, value)
+  }
   return readOve<AuditResponse>(
-    `${BASE}/audit?limit=${encodeURIComponent(String(limit))}`,
+    `${BASE}/audit?${params.toString()}`,
     signal === undefined ? undefined : { signal },
   )
 }
@@ -716,4 +752,236 @@ export interface OnboardingStateResponse {
 /** Persist one onboarding checklist action (dismiss/reset/complete-step/full-check). */
 export function postOnboardingState(request: OnboardingStateRequest): Promise<OveResult<OnboardingStateResponse>> {
   return postOve<OnboardingStateResponse>(`${BASE}/onboarding/state`, request)
+}
+
+
+/* ========================================================================
+ * v0.8 "Operate" — read routes, the ops mutation family and the download
+ *
+ * The read helpers keep the v0.5/v0.7 shape: document-relative URL, abortable,
+ * every failure an envelope. The mutation helpers ride the SAME authenticated
+ * transport routes as v0.5 writes (`ctx.connection.fetch`), never a loopback
+ * POST. The one binary surface is the pack download: a normal fetch of the
+ * one-time GET, turned into a client-side anchor download so the browser never
+ * persists a capability URL.
+ * ===================================================================== */
+
+export type SnapshotLogResponse = SnapshotLogPayload
+export type SnapshotShowResponse = SnapshotShowPayload
+export type SnapshotDiffResponse = SnapshotDiffPayload
+export type SnapshotDiffPathsResponse = DiffPathsPayload
+export type SnapshotVersionsResponse = FileVersionsPayload
+export type SnapshotIgnoreResponse = SnapshotIgnorePayload
+
+export function fetchSnapshotLog(
+  input: { branch?: string; paths?: string[]; limit?: number } = {},
+  signal?: AbortSignal,
+): Promise<OveResult<SnapshotLogResponse>> {
+  const params = new URLSearchParams()
+  if (input.branch !== undefined && input.branch.length > 0) params.set('branch', input.branch)
+  if (input.limit !== undefined) params.set('limit', String(input.limit))
+  for (const path of input.paths ?? []) params.append('paths', path)
+  return readOve<SnapshotLogResponse>(`${BASE}/snapshot-log?${params.toString()}`, signal === undefined ? undefined : { signal })
+}
+
+export function fetchSnapshotShow(
+  ref: string,
+  path: string | null,
+  signal?: AbortSignal,
+): Promise<OveResult<SnapshotShowResponse>> {
+  const params = new URLSearchParams({ ref })
+  if (path !== null && path.length > 0) params.set('path', path)
+  return readOve<SnapshotShowResponse>(`${BASE}/snapshot-show?${params.toString()}`, signal === undefined ? undefined : { signal })
+}
+
+export function fetchSnapshotDiff(
+  input: { path: string; from: string | null; to: string },
+  signal?: AbortSignal,
+): Promise<OveResult<SnapshotDiffResponse>> {
+  const params = new URLSearchParams({ path: input.path, to: input.to })
+  if (input.from !== null && input.from.length > 0) params.set('from', input.from)
+  return readOve<SnapshotDiffResponse>(`${BASE}/snapshot-diff?${params.toString()}`, signal === undefined ? undefined : { signal })
+}
+
+export function fetchSnapshotDiffPaths(
+  input: { paths: string[]; from: string | null; to: string; offset?: number; limit?: number },
+  signal?: AbortSignal,
+): Promise<OveResult<SnapshotDiffPathsResponse>> {
+  const params = new URLSearchParams({ to: input.to })
+  for (const path of input.paths) params.append('paths', path)
+  if (input.from !== null && input.from.length > 0) params.set('from', input.from)
+  if (input.offset !== undefined) params.set('offset', String(input.offset))
+  if (input.limit !== undefined) params.set('limit', String(input.limit))
+  return readOve<SnapshotDiffPathsResponse>(`${BASE}/snapshot-diff-paths?${params.toString()}`, signal === undefined ? undefined : { signal })
+}
+
+export function fetchSnapshotVersions(
+  input: { uri: string; limit?: number; beforeVersion?: string | null },
+  signal?: AbortSignal,
+): Promise<OveResult<SnapshotVersionsResponse>> {
+  const params = new URLSearchParams({ uri: input.uri })
+  if (input.limit !== undefined) params.set('limit', String(input.limit))
+  if (input.beforeVersion !== undefined && input.beforeVersion !== null && input.beforeVersion.length > 0) {
+    params.set('beforeVersion', input.beforeVersion)
+  }
+  return readOve<SnapshotVersionsResponse>(`${BASE}/snapshot-versions?${params.toString()}`, signal === undefined ? undefined : { signal })
+}
+
+export function fetchSnapshotIgnore(signal?: AbortSignal): Promise<OveResult<SnapshotIgnoreResponse>> {
+  return readOve<SnapshotIgnoreResponse>(`${BASE}/snapshot-ignore`, signal === undefined ? undefined : { signal })
+}
+
+export interface CompileResponse {
+  capabilities: CompileCapabilities
+  targets: CompileTargetsPayload
+}
+
+export function fetchCompile(signal?: AbortSignal): Promise<OveResult<CompileResponse>> {
+  return readOve<CompileResponse>(`${BASE}/compile`, signal === undefined ? undefined : { signal })
+}
+
+export function fetchCompileTarget(to: string, signal?: AbortSignal): Promise<OveResult<CompileTargetPayload>> {
+  return readOve<CompileTargetPayload>(`${BASE}/compile-target?to=${encodeURIComponent(to)}`, signal === undefined ? undefined : { signal })
+}
+
+export function fetchCompileOperations(
+  input: { to: string; cursor?: string | null; limit?: number },
+  signal?: AbortSignal,
+): Promise<OveResult<CompileOperationsPayload>> {
+  const params = new URLSearchParams({ to: input.to })
+  if (input.cursor !== undefined && input.cursor !== null && input.cursor.length > 0) params.set('cursor', input.cursor)
+  if (input.limit !== undefined) params.set('limit', String(input.limit))
+  return readOve<CompileOperationsPayload>(`${BASE}/compile-operations?${params.toString()}`, signal === undefined ? undefined : { signal })
+}
+
+export function fetchCompileOperation(
+  input: { to: string; operationId: string },
+  signal?: AbortSignal,
+): Promise<OveResult<CompileOperationPayload>> {
+  const params = new URLSearchParams({ to: input.to, operationId: input.operationId })
+  return readOve<CompileOperationPayload>(`${BASE}/compile-operation?${params.toString()}`, signal === undefined ? undefined : { signal })
+}
+
+export function fetchCompileOutputs(
+  input: { to: string; operationId: string; cursor?: string | null; limit?: number },
+  signal?: AbortSignal,
+): Promise<OveResult<CompileOutputsPayload>> {
+  const params = new URLSearchParams({ to: input.to, operationId: input.operationId })
+  if (input.cursor !== undefined && input.cursor !== null && input.cursor.length > 0) params.set('cursor', input.cursor)
+  if (input.limit !== undefined) params.set('limit', String(input.limit))
+  return readOve<CompileOutputsPayload>(`${BASE}/compile-outputs?${params.toString()}`, signal === undefined ? undefined : { signal })
+}
+
+export function fetchCompileSubmission(key: string, signal?: AbortSignal): Promise<OveResult<CompileSubmissionPayload>> {
+  return readOve<CompileSubmissionPayload>(`${BASE}/compile-submission?key=${encodeURIComponent(key)}`, signal === undefined ? undefined : { signal })
+}
+
+export function fetchObservability(
+  input: { days?: number; fresh?: boolean } = {},
+  signal?: AbortSignal,
+): Promise<OveResult<ObservabilityPayload>> {
+  const params = new URLSearchParams()
+  if (input.days !== undefined) params.set('days', String(input.days))
+  if (input.fresh === true) params.set('fresh', '1')
+  const suffix = params.toString().length === 0 ? '' : `?${params.toString()}`
+  return readOve<ObservabilityPayload>(`${BASE}/observability${suffix}`, signal === undefined ? undefined : { signal })
+}
+
+export interface PackHistoryResponse {
+  history: PackHistoryPayload
+}
+
+export function fetchPackHistory(signal?: AbortSignal): Promise<OveResult<PackHistoryResponse>> {
+  return readOve<PackHistoryResponse>(`${BASE}/pack/history`, signal === undefined ? undefined : { signal })
+}
+
+/** The evidence attachment URL; opened as an anchor (a download, not a JSON read). */
+export function taskEvidenceUrl(taskId: string): string {
+  return `${BASE}/task/evidence?taskId=${encodeURIComponent(taskId)}`
+}
+
+/* ---- ops mutations (authenticated `ctx.connection.fetch` routes) --------- */
+
+export interface OpsPrepareRequest {
+  action: OpsAction
+  message?: string
+  paths?: string[]
+  projectDir?: string
+  sourceCommit?: string
+  to?: string
+  from?: string[]
+  skill?: string
+  instruction?: string
+  configuredTarget?: string
+  uri?: string
+  includeVectors?: boolean
+  restoreVersion?: string
+  currentVersion?: string
+}
+
+/** Step 1: gates + dry-run/read + a single-use token and the human plan. */
+export function prepareOps(request: OpsPrepareRequest): Promise<OveResult<OpsPreparePayload>> {
+  return postOve<OpsPreparePayload>(`${BASE}/ops/prepare`, request)
+}
+
+/** Step 2: perform the confirmed operation (typed word for destructive). */
+export function executeOps(token: string, typed?: string): Promise<OveResult<OpsExecutePayload>> {
+  return postOve<OpsExecutePayload>(`${BASE}/ops/execute`, { token, ...(typed === undefined ? {} : { typed }) })
+}
+
+/** Release a dismissed confirmation (idempotent for settled tokens). */
+export function cancelOps(token: string): Promise<OveResult<OpsCancelPayload>> {
+  return postOve<OpsCancelPayload>(`${BASE}/ops/cancel`, { token })
+}
+
+/** The undo dry-run plan (no mutation). */
+export function planOpsUndo(undoId: string): Promise<OveResult<{ plan: OpsUndoPlan }>> {
+  return postOve<{ plan: OpsUndoPlan }>(`${BASE}/ops/plan`, { undoId })
+}
+
+/** Apply the undo; `confirmExtra` after the user approves an extra-changes plan. */
+export function applyOpsUndo(undoId: string, confirmExtra = false): Promise<OveResult<OpsUndoPayload>> {
+  return postOve<OpsUndoPayload>(`${BASE}/ops/undo`, { undoId, confirmExtra })
+}
+
+/**
+ * Fetch the one-time pack download and save it through a synthetic anchor.
+ *
+ * The token is a capability: it is consumed by this request and never placed in
+ * browser history or the audit. A replayed/expired token is an explicit error
+ * ("export the pack again"), never a silent reuse.
+ */
+export async function downloadPack(
+  downloadId: string,
+  fileName: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    const response = await fetch(`${BASE}/ops/download?token=${encodeURIComponent(downloadId)}`)
+    if (!response.ok) {
+      let detail = `HTTP ${response.status}`
+      try {
+        const body = (await response.json()) as { error?: { code?: string; message?: string } | string }
+        if (typeof body.error === 'object' && body.error !== null && typeof body.error.message === 'string') {
+          detail = body.error.message
+        }
+      } catch {
+        // Non-JSON refusal: the status line is the diagnostic.
+      }
+      return { ok: false, error: detail }
+    }
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = fileName
+    anchor.rel = 'noopener'
+    anchor.style.display = 'none'
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 10_000)
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  }
 }

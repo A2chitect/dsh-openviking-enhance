@@ -294,6 +294,38 @@ dsh plugin --profile web remove dsh-openviking-enhance
 | `GET /api/openviking-enhance/studio-status?fresh=0` | 无凭据响应头探测：`frameable` yes/no/unknown + 原因，缓存 60 s |
 | `POST /api/openviking-enhance/onboarding/state` | `{action:'dismiss'|'reset'|'forget'|'complete-step'|'full-check', …}` → 只写/删除 0600 本地 `onboarding.json`，动作记入本地审计，零 OpenViking 调用 |
 
+### 操作路由（v0.8「Operate」）
+
+读路由是 loopback + 同源 GET；五个动作走与 v0.5 写入**相同的认证 `ctx.connection.fetch` 通道**（仅 POST、JSON ≤64 KiB），并复用 prepare → 确认 → 执行 → 回读 → 审计 → 撤销 协议。不存在任何 loopback GET 动作路径。
+
+| 路由 | 约定 |
+| --- | --- |
+| `GET /api/openviking-enhance/snapshot-log?branch=main&limit=&paths=` | 有界提交历史（每页 20，最多 100）；新账户的 `git_ref` 404 表示"还没有历史"，路由缺失才表示"不可用" |
+| `GET /api/openviking-enhance/snapshot-show?ref=&path=` | 提交元数据，或一份有界文本预览（64 KiB 上限；二进制仅元数据） |
+| `GET /api/openviking-enhance/snapshot-diff?path=&from=&to=` | 单文件统一差异，显示上限 200 000 字符；服务端体积限制显示为"过大" |
+| `GET /api/openviking-enhance/snapshot-diff-paths?paths=&from=&to=&offset=&limit=` | 变更路径页（OpenViking 0.5.3+；路由缺失降级为"不支持"） |
+| `GET /api/openviking-enhance/snapshot-versions?uri=&limit=&beforeVersion=` | 编译输出文件版本（0.5.3+，每页 20）；`NOT_COMPILE_MANAGED` 是明确的空状态 |
+| `GET /api/openviking-enhance/snapshot-ignore` | 只读展示 `.ovgitignore` |
+| `GET /api/openviking-enhance/compile` | 运行时能力 + 0.5.3 目标注册表（各自按 404 降级） |
+| `GET /api/openviking-enhance/compile-target` / `compile-operations` / `compile-operation` / `compile-outputs` / `compile-submission` | 有界的操作/输出/提交检查；submission 是幂等恢复读取（绝不是重试） |
+| `GET /api/openviking-enhance/observability?days=1..7&fresh=0` | 观察器卡片 + 控制台 token/上下文提交序列，按需缓存 30 秒；**从不请求 `/metrics`** |
+| `GET /api/openviking-enhance/pack/history` | 来自本地审计的仅元数据导出记录 |
+| `GET /api/openviking-enhance/task/evidence?taskId=` | 有界（512 KiB）JSON 附件：安全任务字段/事件 + ≤20 条本地审计 + ≤20 条按需 `/console/audit` 请求行 + 构建/身份 |
+| `GET /api/openviking-enhance/ops/download?token=` | 宿主临时文件的一次性令牌下载（插件状态目录下 0600、64 MiB 上限、下载/过期后删除；令牌不写入审计） |
+| `POST /api/openviking-enhance/ops/{prepare,execute,plan,undo,cancel}` | 仅认证通道；单一 discriminated `action`：`snapshot-create`、`snapshot-restore`、`compile-run`、`pack-export`、`file-version-restore` |
+
+| 动作 | 改动什么 | 确认 | 撤销 | 审计 |
+| --- | --- | --- | --- | --- |
+| snapshot-create | 一个只追加的提交 | 范围 + 说明 + 路径，显式确认 | **不可**（提交无法通过 API 删除） | `snapshot`（oid） |
+| snapshot-restore | 一个目录下的文件、新提交 + 重建索引任务 | dry-run 计划 + 真实计数（行列表被截断时同样准确）+ 输入目录名；撤销时额外改动需二次确认。范围不得是、也不得包含流水线所有的 `sessions` 树 | 正向恢复到恢复前的父提交 | `snapshot`（前后提交、任务 id） |
+| compile-run | 派生的输出文件 + 重建索引 | 明确的 to/from/skill/instruction + 宿主 `Idempotency-Key`；无需输入（不覆盖用户文件） | **不可**（没有回滚 API）；取消是协作式的 | `compile`（任务 id + 幂等键） |
+| pack-export | 仅本机 `.ovpack` 下载 | 仅当前用户自己的树（或 `viking://resources`）、include-vectors（默认关）、64 MiB 上限、一次性下载。**包内包含当前用户的完整会话文本**——请按敏感数据处理 | **不可** | `pack`（字节数；无内容）+ `download` |
+| file-version-restore | 一个编译输出文件的新版本（CAS） | 当前/目标版本 + 输入文件名 | CAS 恢复恢复前版本（文件变化后拒绝） | `snapshot`（版本 id） |
+
+撤销属于安全动作：动作完成后即使关闭 `enableOps`，撤销仍然可用（传输、身份与能力闸门照常生效），避免用户被已恢复的树困住而无法回退。
+
+每个动作还受新的 **`enableOps`** 开关（默认 **false**；`enableWrites` 仍只负责策展）、认证通道、健康探测身份、运行时能力/角色探测（绝不比较版本号）以及和策展写入共享的**单一变更闸门**约束。令牌一次性、120 秒、绑定身份指纹；操作限 2 次成功执行与 6 次准备/分钟。**任何地方都没有"重试"按钮**：被测服务端没有任务重试 API，编译只能"作为新编译重跑"（新操作、新 Idempotency-Key）。OVPack **备份/导入/恢复被有意推迟**到后续版本（它们属于 ROOT/ADMIN、账户级、非原子且/或需要服务端临时上传流程），rules compile、编译配置更新/embeddings/reindex、watches 与会话快照恢复同样不提供。
+
 ### 时限与上限
 
 下表的数值都来自 `src/shared/limits.ts`；`test/v06-docs.test.mjs` 会从两份 README 中
@@ -344,6 +376,38 @@ dsh plugin --profile web remove dsh-openviking-enhance
 | STUDIO_STATUS_TIMEOUT_MS | 4000 |
 | STUDIO_STATUS_TTL_MS | 60000 |
 | NATIVE_HISTORY_MAX | 20 |
+| OPS_TOKEN_TTL_MS | 120000 |
+| OPS_MAX_PENDING | 8 |
+| OPS_RATE_LIMIT | 2 |
+| OPS_RATE_WINDOW_MS | 60000 |
+| OPS_PREPARE_RATE_LIMIT | 6 |
+| OPS_PREPARE_RATE_WINDOW_MS | 60000 |
+| PACK_MAX_BYTES | 67108864 |
+| PACK_CAPABILITY_TTL_MS | 600000 |
+| PACK_DOWNLOAD_TTL_MS | 120000 |
+| PACK_DOWNLOAD_MAX_ACTIVE | 2 |
+| OPS_EXPORT_TIMEOUT_MS | 120000 |
+| SNAPSHOT_LOG_PAGE | 20 |
+| SNAPSHOT_LOG_MAX | 100 |
+| SNAPSHOT_SHOW_MAX_BYTES | 65536 |
+| SNAPSHOT_DIFF_MAX_CHARS | 200000 |
+| SNAPSHOT_PATHS_MAX | 16 |
+| SNAPSHOT_RESTORE_PLAN_PATHS | 50 |
+| SNAPSHOT_DIFF_PATHS_PAGE | 100 |
+| FILE_VERSIONS_PAGE | 20 |
+| COMPILE_CONFIGS_MAX | 50 |
+| COMPILE_FROM_MAX | 8 |
+| COMPILE_SKILL_MAX_CHARS | 128 |
+| COMPILE_INSTRUCTION_MAX_CHARS | 500 |
+| COMPILE_OPERATIONS_PAGE | 20 |
+| COMPILE_OUTPUTS_PAGE | 50 |
+| OBSERVABILITY_CACHE_TTL_MS | 30000 |
+| OBSERVABILITY_MAX_DAYS | 7 |
+| TASK_EVIDENCE_MAX_BYTES | 524288 |
+| SNAPSHOT_MESSAGE_MAX_CHARS | 200 |
+| PACK_BODY_INACTIVITY_TIMEOUT_MS | 30000 |
+| EVIDENCE_LOOKUP_DEADLINE_MS | 15000 |
+| TASK_EVIDENCE_CORRELATION_MAX | 20 |
 <!-- /contract:limits -->
 
 规则列表的截止时间是**调度**截止：已经发出的请求仍按各自的单请求超时跑完，所以慢服务端最多会让实际耗时再多一个在途请求的时间；每次部分结果都会在 `progress` 里给出实际耗时。
@@ -361,6 +425,8 @@ dsh plugin --profile web remove dsh-openviking-enhance
 | Experience | `fs/ls` + `agent-evolution` 接口 | 在 0.5.3 验证 | 空状态或「该服务端不可用」 |
 | 快照撤销 | `GET /snapshot/log` 分类 | 路由存在（新账号报「无历史」） | 编辑/删除带原因禁用 |
 | 写入 | `enableWrites` **且** 认证传输 **且** 探测到健康身份 | DSH 0.2.2-rc.1+ | 只读并说明原因；所有变更 fail closed |
+| 操作动作（v0.8） | `enableOps` **且** 认证传输 **且** 健康探测身份 **且** 运行时能力/角色探测 **且** 共享单一变更闸门 | DSH 0.2.2-rc.1+；由能力探测决定（快照路由、compile `configured && can_create`、pack 导出探针） | 只读仍可用；所有动作以 `ops-disabled`/`compile-not-configured`/`pack-export-unavailable`/… fail closed；不存在重试 |
+| 任务证据 / 可观测性 | 按请求的只读、按需 | OpenViking 0.5.1.1+（仅当 `/console/audit` 可达时读取服务端请求日志） | 证据会警告 `server-request-log-unavailable`；每张可观测性卡片独立降级；从不探测 `/metrics` |
 | Activity 任务/指标 | `GET /tasks` 与逐卡片探测 | 路由存在 | 逐卡片「不可用」；`/metrics` 从不探测 |
 | ACL | 不探测 | 从不 | 明确的「未启用」行 |
 | Studio | `endpoint + studioPath` 的 iframe | 服务端提供 `/studio/` | 新标签页/浏览器兜底；X-Frame-Options/CSP 拒绝会如实显示 |
@@ -373,6 +439,9 @@ dsh plugin --profile web remove dsh-openviking-enhance
 | 生命周期 hook、MCP proxy/工具、URI guard、Skill 下发 | 官方插件 / 服务端 | 不存在；不向模型暴露任何工具 |
 | pending queue 写入、重试、恢复 | 官方插件 | 只读诊断（只看文件名/时间） |
 | 捕获暂停/恢复、归档重试 | 实测的构建里没有上游 API | 明确不提供，并在展示状态处说明 |
+| OVPack 备份/导入/恢复 | 服务端（ROOT/ADMIN、账户级） | v0.8 仅提供**导出**；备份/导入/恢复被有意推迟，原因显示在 Packs 页 |
+| 任务重试 | 被测版本没有任何 API | 只有"作为新编译重跑"（新操作）；Tasks 页明确说明 |
+| 编译配置更新、embeddings、内容重建索引、rules compile、watches、会话快照恢复 | 服务端/CLI 或后续版本 | 不提供；只读仍可查看编译配置/操作/输出 |
 
 ### 数据、隐私与安全边界
 
@@ -426,6 +495,12 @@ dsh plugin --profile web remove dsh-openviking-enhance
 （15 s 总截止、并发 4、100 条规则/20 个场景上限，部分结果保留并显示
 「显示 N 条（上限 M）」）。
 
+### OVPack 下载处理（v0.8）
+
+导出的 `.ovpack` 写入插件状态目录下的 **0600 临时文件**（目录 0700），通过**一次性令牌**（120 秒有效）流式下载给浏览器，并在一次下载后、过期后、下次历史/导出清理时或插件卸载时删除（启动时也会清理孤儿文件；临时文件名带所属进程 pid，因此共享同一 `DSH_HOME/state` 的第二个插件实例不会误删对方的有效下载，只清理属主已退出或过期的旧文件）。审计只记录 URI、字节数与 request id——绝不记录内容或令牌。导出上限 64 MiB；正文若 30 秒无进展（或超过整体导出时限）会被中止，避免慢服务端长期占用共享变更闸门。
+
+**从 `viking://user/<me>` 导出的包会包含完整会话文本**（`messages.jsonl` 与归档会话），不仅是记忆，因此本质上属于敏感用户数据：插件拒绝裸 `viking://user` 根与其他身份的树，界面也会提示用完删除。
+
 ### 已知缺口
 
 - 官方插件进程内的配置/状态对象**不是上游发布的稳定契约**；它的大版本升级可能改变形状。
@@ -476,6 +551,7 @@ dsh plugin --profile web remove dsh-openviking-enhance
 | `showExplore` | `true` | 界面开关：探索 tab（搜索、规则、技能、Experience） |
 | `enableCommands` | `true` | 宿主开关：`/viking` 命令（读取与写入动词） |
 | `enableWrites` | `false` | 手动开启：策展（编辑/删除/标签）、强制提交与写入命令 |
+| `enableOps` | `false` | v0.8 手动开启：快照创建/恢复、编译触发、OVPack 导出、文件版本恢复（全部需要确认；`enableWrites` 仍只负责策展） |
 | `enableActivity` | `true` | 界面开关：「活动」tab（任务、指标、最近操作） |
 | `showScopeBanner` | `true` | 界面开关：常驻作用域 chip；写入弹窗无论是否隐藏都会重复完整作用域 |
 | `showNativeViews` | `true` | 界面开关：原生阅读面板（概览/浏览/会话/提交/统计）。关闭 = v0.6 的 Studio iframe 页面 |

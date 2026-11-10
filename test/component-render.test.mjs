@@ -118,6 +118,7 @@ const FORM = {
       showScopeBanner: true,
       showNativeViews: true,
       showOnboarding: true,
+      enableOps: true,
       activeProfile: '',
     },
     base: { endpoint: '', studioPath: '/studio/', cacheTtlMs: 2500, recallCacheTtlMs: 15000 },
@@ -200,6 +201,7 @@ test('the bundle registers every seat, and all of them render', () => {
     '/viking command',
     // v0.5: the write master switch, the Activity tab and the scope banner.
     'Enable writes (curation / force commit)',
+    'Enable operational actions',
     'Activity tab',
     'Show the scope banner',
     // v0.7: the native cockpit and the onboarding checklist.
@@ -389,27 +391,27 @@ test('the same components render in Chinese when the app is set to it', () => {
   assert.ok(!markup.includes('Save'), 'nothing falls back to English')
 })
 
-test('the form renders the thirteen interface switches as checkboxes that follow the saved values', () => {
+test('the form renders the fourteen interface switches as checkboxes that follow the saved values', () => {
   const { find } = loadBundle('en')
   const markup = renderPage(find, FORM)
 
   const boxes = checkboxes(markup)
-  assert.equal(boxes.length, 13, 'exactly thirteen checkbox inputs, one per switch')
+  assert.equal(boxes.length, 14, 'exactly fourteen checkbox inputs, one per switch')
   assert.deepEqual(
     boxes.map((tag) => hasAttribute(tag, 'checked')),
-    Array(13).fill(true),
-    'all thirteen are checked when the saved values are on',
+    Array(14).fill(true),
+    'all fourteen are checked when the saved values are on',
   )
   assert.deepEqual(
     boxes.map((tag) => hasAttribute(tag, 'disabled')),
-    Array(13).fill(false),
+    Array(14).fill(false),
     'a writable form leaves them enabled',
   )
 
   // The eight switches have their own rows, in the order the sidebar, the
   // composer and the conversation, then the right sidebar, appear.
   const blocks = toggleBlocks(markup)
-  assert.equal(blocks.length, 13, 'each switch is its own labelled row')
+  assert.equal(blocks.length, 14, 'each switch is its own labelled row')
   for (const [index, label] of [
     'Sidebar entry',
     'Commit status pill',
@@ -420,6 +422,7 @@ test('the form renders the thirteen interface switches as checkboxes that follow
     'Explore tab',
     '/viking command',
     'Enable writes (curation / force commit)',
+    'Enable operational actions',
     'Activity tab',
     'Show the scope banner',
     'Native reading panel',
@@ -441,7 +444,7 @@ test('the form renders the thirteen interface switches as checkboxes that follow
     },
   })
   const offBlocks = toggleBlocks(off)
-  assert.equal(checkboxes(off).length, 13)
+  assert.equal(checkboxes(off).length, 14)
   assert.equal(
     hasAttribute(checkboxes(offBlocks[0])[0], 'checked'),
     true,
@@ -478,22 +481,22 @@ test('the form renders the thirteen interface switches as checkboxes that follow
   const previewBlocks = toggleBlocks(previewOff)
   assert.deepEqual(
     previewBlocks.map((block) => hasAttribute(checkboxes(block)[0], 'checked')),
-    [true, true, true, true, true, false, false, false, true, true, true, true, true],
+    [true, true, true, true, true, false, false, false, true, true, true, true, true, true],
     'the three v0.4 switches turn off independently',
   )
   // An override is marked where it is edited, the same as every other field.
   assert.ok(offBlocks[1].includes('overridden'), 'the overridden switch carries the override badge')
 })
 
-test('a read-only form disables the thirteen switches instead of pretending they can be edited', () => {
+test('a read-only form disables the fourteen switches instead of pretending they can be edited', () => {
   const { find } = loadBundle('en')
   const readOnly = { ...FORM, state: { ...FORM.state, writable: false } }
   const markup = renderPage(find, readOnly)
   const boxes = checkboxes(markup)
-  assert.equal(boxes.length, 13)
+  assert.equal(boxes.length, 14)
   assert.deepEqual(
     boxes.map((tag) => hasAttribute(tag, 'disabled')),
-    Array(13).fill(true),
+    Array(14).fill(true),
     'every switch is disabled when the profile cannot be written',
   )
   assert.ok(markup.includes('read-only'), 'the form also explains why it cannot be edited')

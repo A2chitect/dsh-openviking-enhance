@@ -117,3 +117,80 @@ export const STUDIO_STATUS_TTL_MS = 60_000
 
 /** In-panel navigation history is bounded to this many targets. */
 export const NATIVE_HISTORY_MAX = 20
+
+/* ========================================================================
+ * v0.8 "Operate" — controlled-action and operational-read budgets
+ *
+ * The confirmation-store constants (token TTL, pending cap, prepare/execute
+ * quotas) live in `protocol.ts` because they are part of the operation wire
+ * contract; they are re-exported here so this module stays the one import a
+ * reader or the README-contract test needs. Everything below is host-side.
+ * ===================================================================== */
+
+export {
+  OPS_MAX_PENDING,
+  OPS_PREPARE_RATE_LIMIT,
+  OPS_PREPARE_RATE_WINDOW_MS,
+  OPS_RATE_LIMIT,
+  OPS_RATE_WINDOW_MS,
+  OPS_TOKEN_TTL_MS,
+} from './protocol.ts'
+
+/** Largest `.ovpack` the host will stream into its private temp file (64 MiB). */
+export const PACK_MAX_BYTES = 64 * 1024 * 1024
+/** One-time download token lifetime; the temp file lives at most this long. */
+export const PACK_DOWNLOAD_TTL_MS = 120_000
+/** At most this many exported temp files may exist at once (all 0600). */
+export const PACK_DOWNLOAD_MAX_ACTIVE = 2
+/** A pack export can run long; the host request is bounded by this deadline. */
+export const OPS_EXPORT_TIMEOUT_MS = 120_000
+/** How long one pack-export capability probe answer is trusted. */
+export const PACK_CAPABILITY_TTL_MS = 10 * 60_000
+
+/** Snapshot history page size and the server-side cap the route enforces. */
+export const SNAPSHOT_LOG_PAGE = 20
+export const SNAPSHOT_LOG_MAX = 100
+/** Cap on the file-at-commit text preview (bytes before truncation). */
+export const SNAPSHOT_SHOW_MAX_BYTES = 65_536
+/** Cap on one displayed diff (characters), independent of the server's limits. */
+export const SNAPSHOT_DIFF_MAX_CHARS = 200_000
+/** Most paths one commit/log filter may name. */
+export const SNAPSHOT_PATHS_MAX = 16
+/** Dry-run restore plans show this many rows (counts stay honest). */
+export const SNAPSHOT_RESTORE_PLAN_PATHS = 50
+/** Changed-paths page default/max (server allows up to 1000). */
+export const SNAPSHOT_DIFF_PATHS_PAGE = 100
+/** Per-file version history page (server cap 100). */
+export const FILE_VERSIONS_PAGE = 20
+
+/** Bounded compile reads. */
+export const COMPILE_CONFIGS_MAX = 50
+export const COMPILE_OPERATIONS_PAGE = 20
+export const COMPILE_OUTPUTS_PAGE = 50
+/** Most `from` URIs one manual compile may name. */
+export const COMPILE_FROM_MAX = 8
+/** Manual compile `skill` name length bound (a skill URI path). */
+export const COMPILE_SKILL_MAX_CHARS = 128
+/** Manual compile instruction length bound. */
+export const COMPILE_INSTRUCTION_MAX_CHARS = 500
+
+/** How long one observability answer is reused; the view is never polled. */
+export const OBSERVABILITY_CACHE_TTL_MS = 30_000
+/** Range bound for the tokens / context-commit series (days). */
+export const OBSERVABILITY_MAX_DAYS = 7
+
+/** Exported task-evidence JSON bound (bytes). */
+export const TASK_EVIDENCE_MAX_BYTES = 524_288
+/** Correlation arrays are capped at this many rows each in the evidence. */
+export const TASK_EVIDENCE_CORRELATION_MAX = 20
+
+/* ========================================================================
+ * v0.8 PR #6 review round 1 — bounded fan-out / body deadlines and caps
+ * ===================================================================== */
+
+/** Display cap for a snapshot commit message (shared by prepare + rendering). */
+export const SNAPSHOT_MESSAGE_MAX_CHARS = 200
+/** A pack export body must make progress within this window or it is aborted. */
+export const PACK_BODY_INACTIVITY_TIMEOUT_MS = 30_000
+/** Overall deadline for one task-evidence server-request-log fan-out. */
+export const EVIDENCE_LOOKUP_DEADLINE_MS = 15_000

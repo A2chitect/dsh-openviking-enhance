@@ -68,6 +68,12 @@ export interface FeatureFlags {
   readonly nativeViews: boolean
   /** v0.7: the Plugins-page Setup card (the Overview card reads the same store). */
   readonly onboarding: boolean
+  /**
+   * v0.8: `enableOps` — the Operate group's controlled actions. Carried here for
+   * the buttons/tabs; the host reads the same value live, so the client switch
+   * can never authorize an action the host refuses. Reads stay available.
+   */
+  readonly ops: boolean
 }
 
 /**
@@ -77,7 +83,7 @@ export interface FeatureFlags {
  * mounts rather than mounting anything themselves (a hidden `scopeBanner` still
  * leaves the dialogs' scope block, by design).
  */
-export type MountedFeature = Exclude<keyof FeatureFlags, 'commands' | 'writes' | 'nativeViews'>
+export type MountedFeature = Exclude<keyof FeatureFlags, 'commands' | 'writes' | 'nativeViews' | 'ops'>
 
 /** The state before any settings answer, and the fallback when there is none. */
 export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
@@ -98,6 +104,9 @@ export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   // without the iframe); onboarding is shown until dismissed.
   nativeViews: true,
   onboarding: true,
+  // v0.8 operational actions are opt-in: before a settings answer arrives every
+  // Operate action button stays hidden (the host default is the same `false`).
+  ops: false,
 }
 
 /**
@@ -121,6 +130,7 @@ export const FEATURE_CONFIG_FIELDS = {
   writes: 'enableWrites',
   nativeViews: 'showNativeViews',
   onboarding: 'showOnboarding',
+  ops: 'enableOps',
 } as const satisfies Record<keyof FeatureFlags, string>
 
 /** The surfaces in the order they are mounted (and reverse order for disposal). */
@@ -173,6 +183,7 @@ export function featureFlagsFrom(value: unknown): FeatureFlags {
     writes: flagOf(config, FEATURE_CONFIG_FIELDS.writes, false),
     nativeViews: flagOf(config, FEATURE_CONFIG_FIELDS.nativeViews),
     onboarding: flagOf(config, FEATURE_CONFIG_FIELDS.onboarding),
+    ops: flagOf(config, FEATURE_CONFIG_FIELDS.ops, false),
   }
 }
 
@@ -191,7 +202,8 @@ export function sameFeatureFlags(left: FeatureFlags, right: FeatureFlags): boole
     left.scopeBanner === right.scopeBanner &&
     left.writes === right.writes &&
     left.nativeViews === right.nativeViews &&
-    left.onboarding === right.onboarding
+    left.onboarding === right.onboarding &&
+    left.ops === right.ops
   )
 }
 

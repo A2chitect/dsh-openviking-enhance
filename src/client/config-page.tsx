@@ -133,6 +133,11 @@ const FEATURE_TOGGLES: readonly ToggleSpec[] = [
     hint: 'config.enableWritesHint',
   },
   {
+    key: 'enableOps',
+    label: 'config.enableOps',
+    hint: 'config.enableOpsHint',
+  },
+  {
     key: 'enableActivity',
     label: 'config.enableActivity',
     hint: 'config.enableActivityHint',
