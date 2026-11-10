@@ -2,16 +2,18 @@
 
 English | [中文](README.zh.md)
 
-**v0.3.0** · [Changelog](CHANGELOG.md)
+**v0.3.0** · [Changelog](CHANGELOG.md) · [Roadmap](ROADMAP.md)
 
-> The v0.3 Explain feature set below is under `Unreleased`; the version line and
-> package stay at 0.2.3 until `pnpm run release 0.3.0` promotes and tags it.
+> The v0.4 Act features below are under `Unreleased`; the version line and
+> package stay at 0.3.0 until `pnpm run release 0.4.0` promotes and tags them.
 
 Brings your local [OpenViking](https://docs.openviking.ai) memory server into the
 DeepSeek Harness (DSH) Web GUI: a Studio panel in the left sidebar, a commit
 status pill and diff browser under the message box, a per-turn explanation of
-what the memory plugin retrieved, and a Memory health tab that answers "why is
-this memory session not working?".
+what the memory plugin retrieved, a Memory health tab that answers "why is this
+memory session not working?", and — new in v0.4 — a `viking://` preview, a
+read-only `/viking` command and an Explore page that searches the library and
+explains the rules that constrain it.
 
 Nothing needs to be patched in DSH or in the OpenViking plugin — it mounts as an
 ordinary DSH bundle.
@@ -107,12 +109,51 @@ The plugin's own page under **Plugins** also gets a compact health summary, so
 
 The Studio panel, the sidebar row that opens it, and the commit pill below the composer.
 
+![The viking:// preview tab](assets/v04-after-preview.png)
+
+**Open any `viking://` URI.** Every URI in the plugin's detail views is a link
+now — the loaded recall-row detail, the explanation card, the commit diff rows,
+and the Explore results. Clicking one opens the *Preview* tab in the right sidebar (or re-targets the preview that is
+already open) with the entry's metadata — name, file or directory, context and
+memory type, category, size, modified time, lock, tags — and the server's three
+read tiers: L0 abstract, L1 overview and L2 full text, each with its availability
+and truncation marker. L0/L1 are the directory-level sidecars OpenViking
+generates, so a file's tiers describe the directory it lives in (the panel says
+so); L2 is files-only and says that on a directory. Everything is plain text —
+a memory body never becomes markup. Copy the URI or open the entry in Studio from
+the panel, or paste a `viking://` path into its address bar.
+
+![The /viking command answering status](assets/v04-after-viking-status.png)
+
+**Ask from the composer.** `/viking status` prints the endpoint, health, server
+version, identity, the mounted memory plugin, the DSH version and the current
+session's commit state; `/viking doctor` prints the Doctor's checks; `/viking
+recall <query>` runs this session's retrieval and lists the scored hits; `/viking
+open <uri>` prints metadata and bounded L0/L1. The command is read-only — this
+version has no commit, remember, forget or pause verb — and `enableCommands`
+turns it off.
+
+![The Explore tab with unified search results](assets/v04-after-explore-search.png)
+
+**Explore the whole library.** The right sidebar's new *Explore* tab has four
+read-only segments. **Search** runs one query across memories, resources and
+skills (plus rules) and groups the hits with scores and abstracts; any row opens
+the preview. **Rules** lists the rules this OpenViking serves and carries a
+read-only tester that shows why a rule applies — its requirement, `applies_when`,
+exception, probability and body. **Skills** is the installed catalogue, each row
+opening its `SKILL.md`. **Experience** shows trajectories and the outcome
+distribution of the Agent Evolution experience files. Rules need OpenViking
+**0.5.3+** and are capability-probed, so an older server shows an explicit
+"not available" line instead of an error; Experience is normally empty rather
+than broken. Search is semantic-only: the live server rejects keyword-mode
+search, so there is no toggle.
+
 ## Requirements
 
 | | |
 | --- | --- |
 | DSH | 0.2.0-rc.2 or newer (desktop or web profile; verified on 0.2.0-rc.2, 0.2.1-rc.5 and 0.2.2-rc.1) |
-| OpenViking | A local server; 0.5.1.1–0.5.3 tested (0.5.3 with the context face). Studio is served at `/studio/` on the same port |
+| OpenViking | A local server; 0.5.1.1–0.5.3 tested (0.5.3 with the context face). Preview, search and skills work on 0.5.1.1+; the Experience routes are present in the same releases and verified on 0.5.3; **Rules need 0.5.3+**. Studio is served at `/studio/` on the same port |
 | Memory plugin | `@openviking/dsh-memory-plugin` recommended — it is what commits sessions. Without it the panel still works, but pending-token thresholds are unknown |
 
 ## Install
@@ -173,17 +214,24 @@ The same settings can still be written by hand in your profile's patch file
 | `showRecallPanel` | `true` | Interface switch: the Memory recall tab in the right sidebar |
 | `showRecallExplain` | `true` | Interface switch: the per-turn Memory sources entry in the conversation |
 | `showHealthPanel` | `true` | Interface switch: the Memory health tab and the Plugins-page health summary |
+| `showPreview` | `true` | Interface switch: the `viking://` preview tab in the right sidebar |
+| `showExplore` | `true` | Interface switch: the Explore tab (search, rules, skills, Experience) |
+| `enableCommands` | `true` | Host switch: the read-only `/viking` command |
 
-![The five interface switches in the plugin's Configure form](assets/v03-after-settings.png)
+![The interface switches in the plugin's Configure form](assets/v04-after-settings.png)
 
-The five **interface switches** control the five surfaces independently. They
+The **interface switches** control the surfaces independently. They
 take effect as soon as you save — the GUI mounts or unmounts the surface without
 a reload or a restart. The **Configure** form itself is never hidden, so a
 surface switched off can always be switched back on there. Hiding the sidebar
 entry also unmounts the Studio page (it loads fresh when shown again), and hiding
 the recall tab closes an open recall page as soon as the conversation is back
 on screen — a page that is open in a background pane has to be closed by hand,
-because the harness exposes no way to enumerate tabs.
+because the harness exposes no way to enumerate tabs. The two v0.4 tabs behave
+the same way; `enableCommands` is read by the host half, so it applies on the
+next plugin apply (a save that reloads the plugin, or a restart) and immediately
+where the Loader emits its volatile-config update, rather than by mounting
+anything. An older Loader without that event falls back to the next apply.
 
 ## Troubleshooting
 
@@ -193,10 +241,28 @@ First check the plugin's own switches (Plugins → this plugin → **Configure**
 Otherwise the client half is served as a file and picked up on page load. Reload
 the window (⌘R). If it is still missing, restart the app.
 
-**I hid the OpenViking row / pill / recall tab / explanation / health tab and want it back.**
+**I hid the OpenViking row / pill / recall tab / explanation / health tab / preview / Explore tab and want it back.**
 Open **Plugins** → *dsh-openviking-enhance* → **Configure** on its row and switch
-it back on, then save. That form is always available, even with all five
-surfaces hidden.
+it back on, then save. That form is always available, even with every
+surface hidden.
+
+**`/viking` is not recognised.**
+The command is registered by the host half and can be switched off with
+`enableCommands` in the plugin's **Configure** form. A saved change is applied on
+the next plugin apply (a save that reloads the plugin, or a restart), or
+immediately when the Loader emits its volatile-config update; an older Loader
+without that event falls back to the next apply. If the form already shows it on,
+restart DSH once — the host half is loaded at startup.
+
+**The Rules segment says the server has no rule list, or rule search fails.**
+Rules are an OpenViking **0.5.3+** feature. On 0.5.1.1/0.5.2 the segment says so
+explicitly. On 0.5.3 an empty rule library is normal (nothing has been compiled
+yet) and still shows the tester.
+
+**The preview shows "This tier has not been generated yet".**
+OpenViking writes L0/L1 sidecars lazily (per directory and during compile), so a
+fresh or never-compiled directory legitimately has placeholder text. L2 (the
+stored file body) never uses the sidecar mechanism.
 
 **The panel says it cannot reach OpenViking.**
 Start the server and check it directly: `curl http://127.0.0.1:1933/health`. The
@@ -237,12 +303,25 @@ half only after an app restart.
   this plugin's copy too; anything else falls back to English.
 - OpenViking cleans up its commit task records over time, so the failure list
   covers recent commits only. The archives themselves are permanent.
-- The plugin's internal routes answer loopback requests only, and only from the
-  DSH window's own origin.
-- The v0.3 screenshots in `assets/` were captured against the stand-in server in
-  `scripts/screenshot-fixture.mjs` and a mock model, with a light theme at a
-  1440×900 viewport. The `v03-before-*` images are the released v0.2.3 build in
-  the same DSH 0.2.2 web profile; no real memory data or account is involved.
+- The plugin's internal read routes answer loopback requests only; the fence
+  checks the socket, the `Host` header and same-origin headers, and an
+  `Origin`-less local `curl` is deliberately admitted. The only POST routes are
+  the read-only search and rule-tester queries, and they additionally require a
+  JSON body of at most 64 KiB.
+- **v0.4 is read-only.** No route or command writes to OpenViking: there is no
+  commit, remember, forget, curate or capture-control action. Those are planned
+  for v0.5 and will need an explicit confirmation, a dry run and an audit trail
+  before they ship.
+- `/viking` output is short English plain text: the host half has no access to
+  the app's locale, and the GUI renders command results without Markdown.
+- Rules are an OpenViking 0.5.3+ feature; on 0.5.1.1/0.5.2 the Rules segment
+  says so. Unified search is semantic-only because the live backend rejects
+  keyword mode.
+- The screenshots in `assets/` were captured against the stand-in server in
+  `scripts/screenshot-fixture.mjs` (which since v0.4 serves the new endpoints
+  too) and a mock model, with a light theme at a 1440×900 viewport. The
+  `v0*-before-*` images are the released previous build in the same DSH 0.2.2
+  web profile; no real memory data or account is involved.
 
 ## Development
 

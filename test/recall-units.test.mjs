@@ -313,6 +313,30 @@ test('recall does not cache a query that produced nothing', async () => {
   })
 })
 
+test('a cancelled recall is never cached as an empty answer', async () => {
+  // Aborting mid-retrieval still collects the query text with zero hits, so a
+  // cache write would serve "no memories" from the shared 15 s cache to the
+  // panel AND to `/viking recall` (both share one RecallService instance).
+  const stub = recallStub()
+  await withStub(stub.handler, async (endpoint) => {
+    const service = serviceFor(endpoint, { cacheTtlMs: 15000 })
+    const controller = new AbortController()
+    controller.abort()
+
+    const cancelled = await service.recall('abc', 'why did this recall', 8, { signal: controller.signal })
+    assert.equal(cancelled.query.text, 'why did this recall')
+    assert.equal(cancelled.total, 0, 'the aborted retrieval has no hits to show')
+
+    const callsBefore = stub.calls.search.length
+    const fresh = await service.recall('abc', 'why did this recall', 8)
+    assert.ok(fresh.total > 0, 'the uncancelled recall returns the real hits')
+    assert.ok(
+      stub.calls.search.length > callsBefore,
+      'the uncancelled recall queried again instead of reusing the cancelled result',
+    )
+  })
+})
+
 test("recall reads one entry's whole text and refuses anything that is not viking://", async () => {
   const stub = recallStub({ content: 'x'.repeat(30000) })
   await withStub(stub.handler, async (endpoint) => {

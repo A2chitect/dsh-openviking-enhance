@@ -587,3 +587,260 @@ export interface PluginNotice {
 
 /** Envelope every route returns; `ok: false` carries a message, never a throw. */
 export type ApiResult<T> = ({ ok: true } & T) | { ok: false; error: string }
+
+/* ========================================================================
+ * v0.4 "Act" — preview, unified search, rules/skills/experience, commands
+ *
+ * Everything below is read-only. The host serves these from the same
+ * OpenViking HTTP API the recall tab uses; no route here writes.
+ * ===================================================================== */
+
+/* ---- F5: the `viking://` preview ------------------------------------- */
+
+/**
+ * One read tier of an entry, as the preview shows it.
+ *
+ * L0 (`abstract`) and L1 (`overview`) are short server-generated summaries; L2
+ * (`read`) is the stored body. A directory has L0/L1 but no L2, and an older
+ * server may miss a tier entirely — `available` is the UI's answer, `error` is
+ * the server's own reason.
+ */
+export type PreviewTierId = 'l0' | 'l1' | 'l2'
+
+/** The tiers in reading order: abstract, overview, full text. */
+export const PREVIEW_TIERS: readonly PreviewTierId[] = ['l0', 'l1', 'l2']
+
+/** Cap per tier, so one preview cannot pull an unbounded document. */
+export const PREVIEW_MAX_CHARS = 20000
+
+export interface PreviewTier {
+  id: PreviewTierId
+  /** The text the server returned, already capped. Empty when unavailable. */
+  text: string
+  /** Whether `text` was cut at {@link PREVIEW_MAX_CHARS}. */
+  truncated: boolean
+  available: boolean
+  /**
+   * True when the server answered with its "not generated yet" placeholder
+   * (`[Directory abstract is not ready]`), which is a 200 and not content.
+   */
+  placeholder: boolean
+  /** The server's refusal, when this tier could not be read. */
+  error: string | null
+}
+
+/** `fs/stat` + `fs/attrs`, flattened for the metadata block. */
+export interface PreviewStat {
+  uri: string
+  name: string
+  size: number | null
+  mode: number | null
+  isDir: boolean | null
+  isLocked: boolean | null
+  modifiedAt: string | null
+  /** From `fs/attrs.context_type`, e.g. `memory` | `resource` | `skill`. */
+  contextType: string | null
+  /** `entities` | `events` | `preferences` | …, when the entry is a memory. */
+  memoryType: string | null
+  category: string | null
+  tags: string[]
+}
+
+/** One entry as the preview tab renders it: metadata + three read tiers. */
+export interface PreviewPayload {
+  uri: string
+  /** Null when `fs/stat` failed but the tiers still answered. */
+  stat: PreviewStat | null
+  tiers: PreviewTier[]
+  /** Ready-to-open Studio URL, so "open in Studio" needs no second route. */
+  studioUrl: string
+  observedAt: string
+  warnings: PluginNotice[]
+}
+
+/* ---- F7: unified search ---------------------------------------------- */
+
+/** The four groups the Explore "Search" segment shows. */
+export const SEARCH_BUCKETS = ['memories', 'resources', 'skills', 'rules'] as const
+export type SearchBucketId = (typeof SEARCH_BUCKETS)[number]
+
+export const SEARCH_DEFAULT_LIMIT = 8
+export const SEARCH_MAX_LIMIT = 25
+
+/** The server's own retrieval modes: vector similarity or literal keywords. */
+export type SearchType = 'semantic' | 'keywords'
+
+/** The rule facts the unified result row can show beside an abstract. */
+export interface SearchRuleBrief {
+  name: string
+  status: string | null
+  appliesWhen: string | null
+  exception: string | null
+  probability: number | null
+}
+
+/** One hit, normalized across the server's two retrieval dialects. */
+export interface SearchItem {
+  uri: string
+  /** 0…1; for a rule match, the server's probability. */
+  score: number
+  /** `memory` | `resource` | `skill` | `rule`. */
+  contextType: string
+  /** `entities` | `events` | … for memories; empty otherwise. */
+  memoryType: string
+  level: number | null
+  abstract: string
+  tags: string[]
+  /** Present only in the `rules` bucket. */
+  rule: SearchRuleBrief | null
+}
+
+export interface SearchBucket {
+  bucket: SearchBucketId
+  items: SearchItem[]
+}
+
+export interface SearchPayload {
+  query: string
+  searchType: SearchType
+  buckets: SearchBucket[]
+  /** Entries shown across every bucket, i.e. AFTER each bucket's cap. */
+  total: number
+  latencyMs: number
+  searchedAt: string
+  warnings: PluginNotice[]
+}
+
+/* ---- F8: rules, skills, experience ----------------------------------- */
+
+/** Longest task context the rule tester sends (the server accepts 64000). */
+export const RULE_TASK_CONTEXT_MAX = 4000
+
+/** One row of the rule list. */
+export interface RuleSummary {
+  /** The rule file's `atomic_id`. */
+  id: string
+  uri: string
+  name: string
+  /** `active` | `paused` | `archived` | `unknown`. */
+  status: string
+  scenario: string | null
+  description: string | null
+}
+
+export interface RuleScenarioGroup {
+  id: string
+  name: string
+  ruleCount: number
+}
+
+export interface RuleListPayload {
+  rules: RuleSummary[]
+  scenarios: RuleScenarioGroup[]
+  /** True when the rules tree exists but holds no rule files yet. */
+  empty: boolean
+  warnings: PluginNotice[]
+  observedAt: string
+}
+
+/**
+ * One matched rule, as the read-only tester shows it.
+ *
+ * The server's `rules[]` carries the complete stored Rule Markdown in
+ * `content`; the host parses its YAML frontmatter so the tester can show the
+ * requirement, `applies_when` and `exception` as separate fields.
+ */
+export interface RuleMatch {
+  id: string
+  uri: string
+  revision: number | null
+  scenario: string | null
+  /** The server's retrieval probability, 0…1. */
+  probability: number | null
+  name: string
+  /** The frontmatter `content` field: the requirement sentence. */
+  constraint: string
+  appliesWhen: string | null
+  exception: string | null
+  status: string | null
+  /** The Markdown body after the frontmatter. */
+  body: string
+}
+
+export interface RuleSearchPayload {
+  matches: RuleMatch[]
+  /** The server's own assembled block, for readers who want the whole protocol. */
+  rendered: string | null
+  warning: string | null
+  /** Whether the server considers the delivery complete. */
+  complete: boolean
+  latencyMs: number
+  searchedAt: string
+}
+
+/** One installed skill, from `GET /api/v1/skills`. */
+export interface SkillEntry {
+  name: string
+  uri: string
+  rootUri: string | null
+  /** The `SKILL.md` file: the row's preview target. */
+  skillMdUri: string | null
+  description: string
+  tags: string[]
+  allowedTools: string[]
+}
+
+export interface SkillCatalogue {
+  skills: SkillEntry[]
+  total: number
+  /** Every skills root the server reported (user scope, agent scope, …). */
+  roots: string[]
+  warnings: PluginNotice[]
+  observedAt: string
+}
+
+export type ExperienceKind = 'trajectories' | 'outcomes'
+
+/** The five outcome classes the server always reports. */
+export const EXPERIENCE_OUTCOMES = ['success', 'failure', 'partial', 'unknown', 'unfinished'] as const
+
+/** One Experience file the user can inspect. */
+export interface ExperienceEntry {
+  uri: string
+  name: string
+  description: string
+  modifiedAt: string | null
+}
+
+/** One trajectory produced by a commit that read an Experience. */
+export interface ExperienceTrajectory {
+  uri: string
+  name: string
+  description: string
+  createdAt: string | null
+  updatedAt: string | null
+}
+
+export interface ExperienceOutcome {
+  outcome: string
+  count: number
+}
+
+export interface ExperiencePayload {
+  kind: ExperienceKind
+  /** Experience files found on the server, for the picker. */
+  experiences: ExperienceEntry[]
+  /** The experience the items/outcomes belong to, when one was asked for. */
+  selected: string | null
+  items: ExperienceTrajectory[]
+  outcomes: ExperienceOutcome[]
+  /** True when the experiments directory exists but holds no Experience file. */
+  empty: boolean
+  /** A stable code the UI translates, e.g. `no-experiences`. */
+  note: string | null
+  warnings: PluginNotice[]
+  observedAt: string
+}
+
+export const EXPERIENCE_LIST_DEFAULT_LIMIT = 20
+export const EXPERIENCE_LIST_MAX_LIMIT = 100

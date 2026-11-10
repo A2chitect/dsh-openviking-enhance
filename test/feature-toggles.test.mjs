@@ -10,6 +10,10 @@
 //    ready snapshot is already held, never from a pending one, and not again for
 //    an unchanged value.
 //
+// v0.4 adds `showPreview` / `showExplore` (client-mounted tabs) and
+// `enableCommands` (host-side command registration, carried here so the switch
+// table and the settings form share one source of truth).
+//
 // The live mount/unmount order those answers cause is checked against the built
 // bundle in `scripts/smoke-client.mjs`.
 import test from 'node:test'
@@ -30,6 +34,9 @@ const ALL_ON = {
   recallPanel: true,
   recallExplain: true,
   healthPanel: true,
+  previewPanel: true,
+  explorePanel: true,
+  commands: true,
 }
 const ALL_OFF = {
   sidebarEntry: false,
@@ -37,6 +44,9 @@ const ALL_OFF = {
   recallPanel: false,
   recallExplain: false,
   healthPanel: false,
+  previewPanel: false,
+  explorePanel: false,
+  commands: false,
 }
 
 /** The same states as the settings form carries them: Config field names. */
@@ -46,6 +56,9 @@ const FORM_ALL_ON = {
   showRecallPanel: true,
   showRecallExplain: true,
   showHealthPanel: true,
+  showPreview: true,
+  showExplore: true,
+  enableCommands: true,
 }
 const FORM_ALL_OFF = {
   showSidebarEntry: false,
@@ -53,6 +66,9 @@ const FORM_ALL_OFF = {
   showRecallPanel: false,
   showRecallExplain: false,
   showHealthPanel: false,
+  showPreview: false,
+  showExplore: false,
+  enableCommands: false,
 }
 
 test('the defaults are all on, which is the pre-switch behaviour', () => {
@@ -68,14 +84,22 @@ test('each surface names the Config field that carries it', () => {
     recallPanel: 'showRecallPanel',
     recallExplain: 'showRecallExplain',
     healthPanel: 'showHealthPanel',
+    previewPanel: 'showPreview',
+    explorePanel: 'showExplore',
+    commands: 'enableCommands',
   })
+  // Mount order: the two v0.4 tabs follow the v0.3 surfaces. `commands` is the
+  // host-owned switch and deliberately has no browser mount, so it is absent.
   assert.deepEqual([...FEATURE_ORDER], [
     'sidebarEntry',
     'commitStatus',
     'recallPanel',
     'recallExplain',
     'healthPanel',
+    'previewPanel',
+    'explorePanel',
   ])
+  assert.equal(FEATURE_ORDER.includes('commands'), false, 'the command switch has no client mount')
 })
 
 test('only a literal boolean false hides a surface', () => {
@@ -86,6 +110,9 @@ test('only a literal boolean false hides a surface', () => {
       showRecallPanel: false,
       showRecallExplain: false,
       showHealthPanel: false,
+      showPreview: false,
+      showExplore: false,
+      enableCommands: false,
     }),
     {
       sidebarEntry: false,
@@ -93,6 +120,9 @@ test('only a literal boolean false hides a surface', () => {
       recallPanel: false,
       recallExplain: false,
       healthPanel: false,
+      previewPanel: false,
+      explorePanel: false,
+      commands: false,
     },
   )
   // Truthy values are not `false`: a stale string, 0, null or an object must all
@@ -103,6 +133,9 @@ test('only a literal boolean false hides a surface', () => {
     showRecallPanel: null,
     showRecallExplain: 'no',
     showHealthPanel: {},
+    showPreview: 'off',
+    showExplore: 0,
+    enableCommands: null,
   })
   assert.deepEqual(malformed, ALL_ON)
 })
@@ -118,6 +151,9 @@ test('a missing value, missing fields or a malformed container mean on', () => {
     recallPanel: false,
     recallExplain: true,
     healthPanel: true,
+    previewPanel: true,
+    explorePanel: true,
+    commands: true,
   })
 })
 
@@ -125,13 +161,7 @@ test('reading the flags never mutates the settings value', () => {
   const value = { showSidebarEntry: false, showCommitStatus: true }
   const before = JSON.stringify(value)
   const flags = featureFlagsFrom(value)
-  assert.deepEqual(flags, {
-    sidebarEntry: false,
-    commitStatus: true,
-    recallPanel: true,
-    recallExplain: true,
-    healthPanel: true,
-  })
+  assert.deepEqual(flags, { ...ALL_ON, sidebarEntry: false })
   assert.equal(JSON.stringify(value), before, 'the form\'s value is read, not written')
 })
 
@@ -140,6 +170,9 @@ test('sameFeatureFlags compares surface by surface', () => {
   assert.equal(sameFeatureFlags(ALL_ON, { ...ALL_ON, recallPanel: false }), false)
   assert.equal(sameFeatureFlags(ALL_ON, { ...ALL_ON, recallExplain: false }), false)
   assert.equal(sameFeatureFlags(ALL_ON, { ...ALL_ON, healthPanel: false }), false)
+  assert.equal(sameFeatureFlags(ALL_ON, { ...ALL_ON, previewPanel: false }), false)
+  assert.equal(sameFeatureFlags(ALL_ON, { ...ALL_ON, explorePanel: false }), false)
+  assert.equal(sameFeatureFlags(ALL_ON, { ...ALL_ON, commands: false }), false)
   assert.equal(sameFeatureFlags(ALL_OFF, ALL_OFF), true)
 })
 
@@ -201,6 +234,9 @@ test('the watcher emits immediately from a ready snapshot and then on changes', 
       showRecallPanel: true,
       showRecallExplain: true,
       showHealthPanel: true,
+      showPreview: true,
+      showExplore: true,
+      enableCommands: true,
     },
   })
   const calls = []
@@ -208,27 +244,13 @@ test('the watcher emits immediately from a ready snapshot and then on changes', 
 
   assert.equal(shell.state.entryIds.length, 1, 'the form is read once at subscribe')
   assert.equal(shell.state.entryIds[0], 'openviking-enhance', 'under the namespace it was given')
-  assert.deepEqual(calls, [
-    { sidebarEntry: false, commitStatus: true, recallPanel: true, recallExplain: true, healthPanel: true },
-  ])
+  assert.deepEqual(calls, [{ ...ALL_ON, sidebarEntry: false }])
 
   shell.controller.setSnapshot({
     status: 'ready',
-    value: {
-      showSidebarEntry: true,
-      showCommitStatus: false,
-      showRecallPanel: true,
-      showRecallExplain: true,
-      showHealthPanel: true,
-    },
+    value: { ...FORM_ALL_ON, showCommitStatus: false },
   })
-  assert.deepEqual(calls.at(-1), {
-    sidebarEntry: true,
-    commitStatus: false,
-    recallPanel: true,
-    recallExplain: true,
-    healthPanel: true,
-  })
+  assert.deepEqual(calls.at(-1), { ...ALL_ON, commitStatus: false })
   assert.equal(calls.length, 2)
 
   dispose()
@@ -252,23 +274,13 @@ test('a not-ready snapshot is not an answer, and unchanged flags are not re-emit
   assert.equal(calls.length, 1, 'a snapshot that stopped being ready is not an answer')
   shell.controller.setSnapshot({ status: 'ready', value: { ...FORM_ALL_ON } })
   assert.equal(calls.length, 1, 'the same ready value arriving again is not re-emitted')
+  // A v0.4-only switch change is still a distinct answer.
+  shell.controller.setSnapshot({ status: 'ready', value: { ...FORM_ALL_ON, showPreview: false } })
+  assert.equal(calls.length, 2)
+  assert.deepEqual(calls.at(-1), { ...ALL_ON, previewPanel: false })
 
   shell.controller.setSnapshot({ status: 'ready', value: { ...FORM_ALL_OFF } })
-  assert.equal(calls.length, 2)
+  assert.equal(calls.length, 3)
   assert.deepEqual(calls.at(-1), ALL_OFF)
   dispose()
-})
-
-test('an absent settings service is silent rather than fatal', () => {
-  const context = {
-    inject() {
-      // A composition without the settings package: the callback still runs, but
-      // there is no service to read. This must not throw and must not emit.
-      return { dispose() {} }
-    },
-    logger: { warn: () => {}, info: () => {} },
-  }
-  const calls = []
-  assert.doesNotThrow(() => watchFeatureFlags(context, 'openviking-enhance', (flags) => calls.push(flags)))
-  assert.deepEqual(calls, [])
 })

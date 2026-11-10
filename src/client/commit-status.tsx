@@ -57,6 +57,7 @@ import {
 import { lineDiff, type DiffRow } from '../shared/text-diff.ts'
 import { copyText } from './clipboard.ts'
 import { OpenVikingIcon } from './openviking-icon.tsx'
+import { VikingUriLink } from './viking-uri-link.tsx'
 
 export interface CommitStatusProps {
   sessionId?: string
@@ -487,7 +488,9 @@ export function DiffView({ diff }: { diff: MemoryDiff }) {
           {t('pill.export')}
         </button>
       </div>
-      <div className="ove-empty ove-diff-archive">{diff.archiveUri}</div>
+      <div className="ove-empty ove-diff-archive">
+        <VikingUriLink uri={diff.archiveUri} />
+      </div>
       {total === 0 ? (
         <div className="ove-empty">{t('pill.noMemoryChange')}</div>
       ) : (
@@ -588,7 +591,7 @@ export function DiffEntry({
       </div>
       {open ? (
         <div className="ove-diff-detail">
-          <div className="ove-diff-uri">{entry.uri}</div>
+          <VikingUriLink uri={entry.uri} className="ove-diff-uri" />
           {rows.length === 0 ? (
             <p className="ove-empty">{t('pill.diffNoText')}</p>
           ) : (

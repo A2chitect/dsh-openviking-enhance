@@ -39,6 +39,7 @@ import {
 } from '../shared/protocol.ts'
 import { fetchRecall, fetchRecallContent } from './host-api.ts'
 import { noticeText, t } from './locale.ts'
+import { VikingUriLink } from './viking-uri-link.tsx'
 
 /** Panel props: the session this tab was opened in. */
 export interface RecallPanelProps {
@@ -382,7 +383,7 @@ function Item({ item, open, body, onToggle }: ItemProps) {
       </button>
       {open && (
         <div className="ove-recall-detail">
-          <span className="ove-recall-uri">{item.uri}</span>
+          <VikingUriLink uri={item.uri} className="ove-recall-uri" />
           {body === undefined || (body as RecallContent).text === '' ? (
             <p className="ove-recall-hint">{t('recall.loadingEntry')}</p>
           ) : 'error' in body ? (

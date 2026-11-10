@@ -26,6 +26,13 @@ export interface OvResult<T> {
   status: number
   result: T | null
   error: string | null
+  /**
+   * The server's own error code, when its envelope carries one
+   * (`NOT_FOUND`, `INVALID_ARGUMENT`, …). It lets a capability gate tell
+   * "this feature does not exist on this server" from "this entry does not
+   * exist", which the human-readable message alone cannot.
+   */
+  errorCode?: string | null
 }
 
 export interface OvSessionMeta {
@@ -66,10 +73,16 @@ export interface OvFsEntry {
 /** A commit task as the server returns it; the shared shape is what we rely on. */
 export type OvCommitTask = CommitTask & { task_type?: string }
 
-interface RequestOptions {
+export interface RequestOptions {
   /** Actor peer for peer-scoped sessions. Omitted when the peer is unknown. */
   actorPeerId?: string | undefined
   timeoutMs?: number
+  /**
+   * Caller-owned cancellation. When it aborts, the in-flight fetch aborts with
+   * it, so a cancelled `/viking recall` stops burning requests instead of
+   * waiting for the 12–20 s server answer.
+   */
+  signal?: AbortSignal | undefined
 }
 
 const DEFAULT_TIMEOUT_MS = 8000
@@ -99,6 +112,14 @@ export class OpenVikingApi {
   ): Promise<OvResult<T>> {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_TIMEOUT_MS)
+    // Fold the caller's cancellation into the timeout controller: whichever
+    // fires first aborts the fetch, and the listener is always removed.
+    const external = options.signal
+    const cancel = (): void => controller.abort()
+    if (external !== undefined) {
+      if (external.aborted) controller.abort()
+      else external.addEventListener('abort', cancel, { once: true })
+    }
     try {
       const response = await fetch(`${this.connection.endpoint}${path}`, {
         method: init.method ?? 'GET',
@@ -108,14 +129,16 @@ export class OpenVikingApi {
       })
       const body: unknown = await response.json().catch(() => null)
       if (!response.ok) {
+        const failure = extractFailure(body)
         return {
           ok: false,
           status: response.status,
           result: null,
-          error: extractError(body) ?? `HTTP ${response.status}`,
+          error: failure?.message ?? `HTTP ${response.status}`,
+          errorCode: failure?.code ?? null,
         }
       }
-      return { ok: true, status: response.status, result: unwrap<T>(body), error: null }
+      return { ok: true, status: response.status, result: unwrap<T>(body), error: null, errorCode: null }
     } catch (error) {
       return {
         ok: false,
@@ -125,12 +148,15 @@ export class OpenVikingApi {
       }
     } finally {
       clearTimeout(timer)
+      external?.removeEventListener('abort', cancel)
     }
   }
 
   /** `/health` answers bare, without the `{status, result}` envelope. */
-  async health(): Promise<{ ok: boolean; version: string | null; authMode: string | null; error: string | null }> {
-    const response = await this.request<Record<string, unknown>>('/health', { timeoutMs: 4000 })
+  async health(
+    options: RequestOptions = {},
+  ): Promise<{ ok: boolean; version: string | null; authMode: string | null; error: string | null }> {
+    const response = await this.request<Record<string, unknown>>('/health', { timeoutMs: 4000, ...options })
     if (!response.ok) return { ok: false, version: null, authMode: null, error: response.error }
     const body = response.result
     return {
@@ -246,8 +272,15 @@ export class OpenVikingApi {
    * The Doctor only needs the count and a few names, not the whole catalog;
    * `node_limit=1` keeps the answer small even on a large library.
    */
-  async listSkills(options: RequestOptions = {}): Promise<OvResult<OvSkillList>> {
-    return this.request<OvSkillList>('/api/v1/skills?node_limit=1', { timeoutMs: 5000, ...options })
+  async listSkills(
+    options: RequestOptions & { nodeLimit?: number } = {},
+  ): Promise<OvResult<OvSkillList>> {
+    const { nodeLimit, ...request } = options
+    const limit = Math.min(Math.max(Math.trunc(nodeLimit ?? 1), 1), 1000)
+    return this.request<OvSkillList>(`/api/v1/skills?node_limit=${limit}`, {
+      timeoutMs: 5000,
+      ...request,
+    })
   }
 
   /** Retrieval quality metrics — query count and latency, no memory bodies. */
@@ -271,17 +304,95 @@ export class OpenVikingApi {
       ...options,
     })
   }
+
+  /**
+   * L0 (`abstract`) or L1 (`overview`) for one entry.
+   *
+   * Both accept a file or a directory URI. A file's L0/L1 describes its
+   * containing directory, which is the server's own model and what the preview
+   * shows verbatim.
+   */
+  async contentFace(
+    uri: string,
+    tier: 'abstract' | 'overview',
+    options: RequestOptions = {},
+  ): Promise<OvResult<string>> {
+    const response = await this.request<unknown>(
+      `/api/v1/content/${tier}?uri=${encodeURIComponent(uri)}`,
+      { timeoutMs: 8000, ...options },
+    )
+    if (!response.ok) return response as OvResult<string>
+    return { ...response, result: typeof response.result === 'string' ? response.result : null }
+  }
+
+  /** The entry's context face, tags and memory metadata (`fs/attrs`). */
+  async fsAttrs(uri: string, options: RequestOptions = {}): Promise<OvResult<OvFsAttrs>> {
+    return this.request<OvFsAttrs>(`/api/v1/fs/attrs?uri=${encodeURIComponent(uri)}`, {
+      timeoutMs: 5000,
+      ...options,
+    })
+  }
+
+  /** List one `viking://` directory. Takes either a full URI or a subtree. */
+  async listDirectory(uri: string, options: RequestOptions = {}): Promise<OvResult<OvFsListEntry[]>> {
+    const response = await this.request<OvFsListEntry[] | { items?: OvFsListEntry[] }>(
+      `/api/v1/fs/ls?uri=${encodeURIComponent(uri)}`,
+      { timeoutMs: 5000, ...options },
+    )
+    if (!response.ok) return response as OvResult<OvFsListEntry[]>
+    const raw = response.result
+    const items = Array.isArray(raw) ? raw : Array.isArray(raw?.items) ? raw.items : []
+    return { ...response, result: items }
+  }
+
+  /** Trajectories produced by commits that read one Experience file. */
+  async experienceTrajectories(
+    experienceUri: string,
+    options: RequestOptions & { limit?: number; offset?: number } = {},
+  ): Promise<OvResult<OvExperienceTrajectories>> {
+    const limit = Math.min(Math.max(Math.trunc(options.limit ?? 50), 1), 1000)
+    const offset = Math.max(Math.trunc(options.offset ?? 0), 0)
+    return this.request<OvExperienceTrajectories>(
+      `/api/v1/agent-evolution/experiences/trajectories?experience_uri=${encodeURIComponent(experienceUri)}` +
+        `&limit=${limit}&offset=${offset}`,
+      { timeoutMs: 8000, ...options },
+    )
+  }
+
+  /** Outcome distribution across the trajectories that read one Experience. */
+  async experienceOutcomes(
+    experienceUri: string,
+    options: RequestOptions = {},
+  ): Promise<OvResult<OvExperienceOutcomes>> {
+    return this.request<OvExperienceOutcomes>(
+      `/api/v1/agent-evolution/experiences/outcomes?experience_uri=${encodeURIComponent(experienceUri)}`,
+      { timeoutMs: 8000, ...options },
+    )
+  }
 }
 
 /** One retrieval request. Field names are the server's, snake_case included. */
 export interface OvSearchRequest {
   query: string
-  /** The `viking://` subtree to rank within. */
-  target_uri: string
+  /**
+   * The `viking://` subtree to rank within. The recall tab always names one; the
+   * Explore search leaves it out so the server ranks the whole readable library.
+   */
+  target_uri?: string | string[]
   limit: number
   /** 0 keeps weak matches visible instead of hiding them behind the default. */
   score_threshold?: number
   session_id?: string
+  /** `list` returns the three per-bucket lists; `context` one assembled block. */
+  mode?: 'list' | 'context'
+  /**
+   * `semantic` (the default) or `keywords`. Kept typed because the server accepts
+   * both; the Explore surface always asks for semantic, since the live 0.5.3
+   * backend rejects keywords with INVALID_ARGUMENT.
+   */
+  search_type?: 'semantic' | 'keywords'
+  /** Restrict to one or more context types. Rules are NOT a valid value. */
+  context_type?: string | string[]
 }
 
 /**
@@ -357,9 +468,21 @@ export interface OvSystemStatus {
   user?: string
 }
 
+export interface OvSkill {
+  type?: string
+  name?: string
+  uri?: string
+  root_uri?: string
+  skill_md_uri?: string
+  description?: string
+  tags?: string[]
+  allowed_tools?: string[]
+}
+
 export interface OvSkillList {
-  skills?: Array<{ name?: string; uri?: string }>
+  skills?: OvSkill[]
   root_uris?: string[]
+  total?: number
 }
 
 export interface OvObserverRetrieval {
@@ -372,16 +495,93 @@ export interface OvObserverRetrieval {
   }
 }
 
+/**
+ * One matched rule, exactly as the server returns it.
+ *
+ * `content` is the complete stored Rule Markdown (YAML frontmatter + body); the
+ * host parses the frontmatter, because the fields the tester shows
+ * (`applies_when`, `exception`, `status`, `name`) live there and not at the
+ * top level.
+ */
+export interface OvRuleMatch {
+  atomic_id?: string
+  revision?: number
+  scenario_id?: string
+  probability?: number
+  uri?: string
+  content?: string
+}
+
 export interface OvRuleSearch {
-  rules?: unknown[]
+  rules?: OvRuleMatch[]
+  scenarios?: string[]
+  rendered?: string
   delivery?: { complete?: boolean; rule_count?: number; rendered_chars?: number }
+  scenario_selection?: unknown
+  judge?: string
   warning?: string
 }
 
 export interface OvFsStat {
+  name?: string
   uri?: string
+  size?: number
+  mode?: number
+  modTime?: string
   isDir?: boolean
+  isLocked?: boolean
   count?: number
+  id?: string
+}
+
+/** `fs/attrs`: the entry's context face, tags and memory metadata. */
+export interface OvFsAttrs {
+  uri?: string
+  context_type?: string
+  attrs?: {
+    tags?: string[]
+    memory?: {
+      memory_type?: string
+      category?: string
+      name?: string
+      version?: number
+      peer_id?: string
+      [key: string]: unknown
+    }
+    [key: string]: unknown
+  }
+}
+
+/** One trajectory row from the Agent Evolution experience endpoints. */
+export interface OvExperienceItem {
+  uri?: string
+  name?: string
+  description?: string
+  created_at?: string
+  updated_at?: string
+}
+
+export interface OvExperienceTrajectories {
+  experience_uri?: string
+  items?: OvExperienceItem[]
+  total?: number
+  limit?: number
+  offset?: number
+  has_more?: boolean
+}
+
+export interface OvExperienceOutcomes {
+  experience_uri?: string
+  outcome_distribution?: Array<{ outcome?: string; count?: number }>
+}
+
+/** One entry of a `viking://` directory listing. */
+export interface OvFsListEntry {
+  uri: string
+  size?: number
+  isDir?: boolean
+  modTime?: string
+  abstract?: string
 }
 
 /** One retrieved entry, exactly as the server ranks it. */
@@ -430,14 +630,26 @@ function unwrap<T>(body: unknown): T | null {
   return record as T
 }
 
-function extractError(body: unknown): string | null {
+export interface OvFailure {
+  message: string
+  code: string | null
+}
+
+/** The server's error body, when it carries one. */
+export function extractFailure(body: unknown): OvFailure | null {
   if (body === null || typeof body !== 'object') return null
   const record = body as Record<string, unknown>
   const error = record.error
   if (error && typeof error === 'object') {
-    const message = (error as Record<string, unknown>).message
-    if (typeof message === 'string') return message
+    const recordError = error as Record<string, unknown>
+    const message = recordError.message
+    if (typeof message === 'string') {
+      return { message, code: typeof recordError.code === 'string' ? recordError.code : null }
+    }
   }
-  if (typeof error === 'string') return error
+  if (typeof error === 'string') return { message: error, code: null }
+  // FastAPI's own 404 for a route that does not exist on this version.
+  if (typeof record.detail === 'string') return { message: record.detail, code: null }
   return null
 }
+

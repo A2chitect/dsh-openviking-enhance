@@ -672,6 +672,200 @@ button.ove-pill-errored:hover, button.ove-pill-errored[aria-expanded="true"] {
 .ove-health-chip-state { color: var(--dsw-alias-label-tertiary); }
 .ove-plugin-health { margin-top: 12px; }
 .ove-config-button-sm { height: 24px; padding: 0 8px; font-size: 12px; }
+
+/* ---- v0.4: shared viking:// link --------------------------------------- */
+/* One component for every URI the plugin renders. It is a button (the
+   destination is the preview tab, not a URL) and inherits its placement's font
+   and colour, with the one affordance a link needs: an underline on hover. */
+.ove-uri-link {
+  display: inline; min-width: 0; max-width: 100%; padding: 0; border: 0;
+  background: 0 0; font: inherit; color: var(--dsw-alias-state-business-primary);
+  text-align: left; cursor: pointer; overflow-wrap: anywhere;
+}
+.ove-uri-link:hover { text-decoration: underline; }
+.ove-uri-link:focus-visible { outline: 1px solid var(--dsw-alias-state-business-primary); outline-offset: 1px; border-radius: 2px; }
+
+/* ---- v0.4: viking:// preview tab -------------------------------------- */
+.ove-preview {
+  display: flex; flex-direction: column; height: 100%; min-height: 0; overflow: hidden;
+  font-size: var(--dsh-content-font-size-secondary, 13px); line-height: 1.5;
+}
+/* The recall tab's shipped 38px search header, reused for placement parity. */
+.ove-preview-bar {
+  display: flex; align-items: center; gap: 6px; flex: none;
+  padding: 6px 10px; border-bottom: .5px solid var(--dsw-alias-border-l3);
+}
+.ove-preview-field {
+  display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; height: 30px;
+  padding: 0 8px; background: var(--dsw-alias-bg-l1); border: .5px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-md); color: var(--dsw-alias-label-tertiary);
+}
+.ove-preview-field:focus-within { border-color: var(--dsw-alias-state-business-primary); }
+.ove-preview-field-icon { display: flex; flex: none; }
+.ove-preview-field-icon svg { width: 14px; height: 14px; }
+.ove-preview-input {
+  flex: 1; min-width: 0; padding: 0; border: 0; outline: 0; background: transparent;
+  font: inherit; font-size: 12px; color: var(--dsw-alias-label-primary);
+}
+.ove-preview-input::placeholder { color: var(--dsw-alias-label-dimmed); }
+.ove-preview-button {
+  flex: none; height: 26px; padding: 0 8px; font: inherit; font-size: 12px;
+  color: var(--dsw-alias-label-secondary); background: 0 0; border: .5px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-sm); cursor: pointer; white-space: nowrap;
+}
+.ove-preview-button:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
+.ove-preview-button:disabled { opacity: .4; cursor: not-allowed; }
+.ove-preview-body { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 10px 12px; }
+.ove-preview-uri-row { margin-bottom: 6px; }
+.ove-preview-uri { display: block; color: var(--dsw-alias-label-tertiary); font-size: 11px; overflow-wrap: anywhere; }
+.ove-preview-status { margin: 6px 0; color: var(--dsw-alias-label-tertiary); }
+.ove-preview-hint { margin: 6px 0; color: var(--dsw-alias-label-tertiary); font-size: 12px; overflow-wrap: anywhere; }
+.ove-preview-error { margin: 6px 0; color: var(--dsw-alias-state-error-primary, #f85149); overflow-wrap: anywhere; }
+.ove-preview-meta { margin: 6px 0 10px; }
+.ove-preview-meta summary { color: var(--dsw-alias-label-secondary); font-weight: 500; cursor: pointer; }
+.ove-preview-meta dl { margin: 6px 0 0; }
+.ove-preview-meta-row {
+  display: grid; grid-template-columns: minmax(72px, auto) minmax(0, 1fr);
+  gap: 4px 12px; padding: 1px 0;
+}
+.ove-preview-meta-row dt { margin: 0; color: var(--dsw-alias-label-tertiary); }
+.ove-preview-meta-row dd { margin: 0; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }
+.ove-preview-tiers {
+  display: flex; gap: 4px; margin: 4px 0 8px; padding: 2px;
+  background: var(--dsw-alias-bg-l1); border-radius: var(--dsw-radius-md);
+}
+.ove-preview-tier {
+  flex: 1; min-width: 0; height: 24px; padding: 0 6px; border: 0; border-radius: var(--dsw-radius-sm);
+  background: 0 0; font: inherit; font-size: 12px; color: var(--dsw-alias-label-secondary);
+  cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ove-preview-tier:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
+.ove-preview-tier-active { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); font-weight: 500; }
+.ove-preview-tier:disabled { opacity: .4; cursor: not-allowed; }
+.ove-preview-text-wrap { margin-top: 2px; }
+.ove-preview-text {
+  margin: 0; padding: 8px; background: var(--dsw-alias-bg-l1); border-radius: var(--dsw-radius-sm);
+  font-family: var(--dsh-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere;
+  max-height: 60vh; overflow-y: auto;
+}
+.ove-preview-warnings { margin-top: 10px; color: var(--dsw-alias-label-tertiary); font-size: 12px; }
+.ove-preview-warnings > div { overflow-wrap: anywhere; }
+
+/* ---- v0.4: Explore tab ------------------------------------------------- */
+.ove-explore {
+  display: flex; flex-direction: column; height: 100%; min-height: 0; overflow: hidden;
+  font-size: var(--dsh-content-font-size-secondary, 13px); line-height: 1.5;
+}
+.ove-explore-nav {
+  display: flex; gap: 4px; flex: none; padding: 6px 10px;
+  border-bottom: .5px solid var(--dsw-alias-border-l3);
+}
+.ove-explore-seg {
+  flex: 1; min-width: 0; height: 26px; padding: 0 6px; border: 0; border-radius: var(--dsw-radius-sm);
+  background: 0 0; font: inherit; font-size: 12px; color: var(--dsw-alias-label-secondary);
+  cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ove-explore-seg:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.ove-explore-seg-active { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); font-weight: 500; }
+.ove-explore-body { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 10px 12px; }
+.ove-explore-bar { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.ove-explore-field {
+  display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; height: 30px;
+  padding: 0 8px; background: var(--dsw-alias-bg-l1); border: .5px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-md); color: var(--dsw-alias-label-tertiary);
+}
+.ove-explore-field:focus-within { border-color: var(--dsw-alias-state-business-primary); }
+.ove-explore-field-icon { display: flex; flex: none; }
+.ove-explore-field-icon svg { width: 14px; height: 14px; }
+.ove-explore-input {
+  flex: 1; min-width: 0; padding: 0; border: 0; outline: 0; background: transparent;
+  font: inherit; font-size: 12px; color: var(--dsw-alias-label-primary);
+}
+.ove-explore-input::placeholder { color: var(--dsw-alias-label-dimmed); }
+.ove-explore-button {
+  flex: none; height: 26px; padding: 0 8px; font: inherit; font-size: 12px;
+  color: var(--dsw-alias-label-secondary); background: 0 0; border: .5px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-sm); cursor: pointer; white-space: nowrap;
+}
+.ove-explore-button:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
+.ove-explore-button:disabled { opacity: .4; cursor: not-allowed; }
+.ove-explore-icon {
+  flex: none; display: flex; align-items: center; justify-content: center; width: 26px; height: 26px;
+  padding: 0; border: 0; border-radius: var(--dsw-radius-sm); background: 0 0;
+  color: var(--dsw-alias-label-tertiary); cursor: pointer;
+}
+.ove-explore-icon:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
+.ove-explore-icon:disabled { opacity: .4; cursor: not-allowed; }
+.ove-explore-icon svg { width: 15px; height: 15px; }
+.ove-explore-type { display: flex; gap: 4px; margin: 6px 0; }
+.ove-explore-type-btn {
+  height: 22px; padding: 0 8px; border: .5px solid var(--dsw-alias-border-l3);
+  border-radius: 999px; background: 0 0; font: inherit; font-size: 11px;
+  color: var(--dsw-alias-label-secondary); cursor: pointer;
+}
+.ove-explore-type-btn:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
+.ove-explore-type-active { border-color: var(--dsw-alias-state-business-primary); color: var(--dsw-alias-state-business-primary); }
+.ove-explore-type-btn:disabled { opacity: .4; cursor: not-allowed; }
+.ove-explore-group {
+  display: flex; align-items: baseline; gap: 8px; margin: 12px 0 4px;
+}
+.ove-explore-group-name { font-weight: 600; color: var(--dsw-alias-label-primary); }
+.ove-explore-group-count { flex: none; color: var(--dsw-alias-label-tertiary); font-variant-numeric: tabular-nums; }
+.ove-explore-meta {
+  display: flex; flex-wrap: wrap; gap: 6px 10px; margin: 2px 0 4px;
+  color: var(--dsw-alias-label-tertiary); font-variant-numeric: tabular-nums;
+}
+.ove-explore-hit { padding: 5px 8px; border-radius: var(--dsw-radius-sm); }
+.ove-explore-hit:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.ove-explore-hit-line { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 8px; min-width: 0; }
+.ove-explore-hit-name { flex: 1 1 auto; min-width: 0; font-weight: 500; }
+.ove-explore-score { flex: none; color: var(--dsw-alias-label-tertiary); font-variant-numeric: tabular-nums; }
+.ove-explore-hit-abstract { margin: 2px 0 0; color: var(--dsw-alias-label-tertiary); font-size: 12px; overflow-wrap: anywhere; }
+.ove-explore-hit-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+.ove-explore-tag {
+  display: inline-flex; align-items: baseline; padding: 0 6px; font-size: 11px; line-height: 18px;
+  border: .5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-sm);
+  color: var(--dsw-alias-label-tertiary); white-space: nowrap;
+}
+.ove-explore-status { margin: 6px 0; color: var(--dsw-alias-label-tertiary); }
+.ove-explore-hint { margin: 4px 0; color: var(--dsw-alias-label-tertiary); font-size: 12px; overflow-wrap: anywhere; }
+.ove-explore-error { margin: 6px 0; color: var(--dsw-alias-state-error-primary, #f85149); overflow-wrap: anywhere; }
+.ove-explore-tester { margin-bottom: 6px; }
+.ove-explore-textarea {
+  width: 100%; box-sizing: border-box; min-height: 60px; padding: 6px 8px; resize: vertical;
+  font: inherit; font-size: 12px; line-height: 1.5; color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-l1); border: .5px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-md);
+}
+.ove-explore-textarea:focus { outline: 0; border-color: var(--dsw-alias-state-business-primary); }
+.ove-explore-textarea::placeholder { color: var(--dsw-alias-label-dimmed); }
+.ove-explore-tester-actions { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.ove-explore-rule { margin: 8px 0; padding: 6px 8px; background: var(--dsw-alias-bg-l1); border-radius: var(--dsw-radius-sm); }
+.ove-explore-facts { margin: 6px 0 0; }
+.ove-explore-fact {
+  display: grid; grid-template-columns: minmax(72px, auto) minmax(0, 1fr);
+  gap: 4px 12px; padding: 1px 0;
+}
+.ove-explore-fact dt { margin: 0; color: var(--dsw-alias-label-tertiary); }
+.ove-explore-fact dd { margin: 0; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; white-space: pre-wrap; }
+.ove-explore-details { margin-top: 6px; }
+.ove-explore-details summary { color: var(--dsw-alias-label-secondary); font-size: 12px; cursor: pointer; }
+.ove-explore-details pre {
+  margin: 6px 0 0; padding: 8px; background: var(--dsw-alias-bg-l1); border-radius: var(--dsw-radius-sm);
+  font-family: var(--dsh-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere;
+  max-height: 40vh; overflow-y: auto;
+}
+.ove-explore-picker { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 8px; }
+.ove-explore-pick {
+  max-width: 100%; padding: 2px 8px; font: inherit; font-size: 12px;
+  color: var(--dsw-alias-label-secondary); background: 0 0;
+  border: .5px solid var(--dsw-alias-border-l3); border-radius: 999px; cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ove-explore-pick:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.ove-explore-pick-active { border-color: var(--dsw-alias-state-business-primary); color: var(--dsw-alias-state-business-primary); }
 `
 
 /** Install the stylesheet once per document. */

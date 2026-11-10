@@ -47,10 +47,19 @@ import type {
   OvContextStats,
   OvSearchItem,
   OvSearchResponse,
+  RequestOptions,
 } from './openviking-api.ts'
 import { resolveSessionUri } from './commit-service.ts'
 import type { CommitService } from './commit-service.ts'
 import { memoActive, readPluginMemo, type ContextFaceMemo, type LocalStateOptions } from './local-state.ts'
+
+/** The per-call request options: peer scoping plus optional caller cancellation. */
+function requestOptions(peer: string | null, signal: AbortSignal | undefined): RequestOptions {
+  return {
+    ...(peer === null ? {} : { actorPeerId: peer }),
+    ...(signal === undefined ? {} : { signal }),
+  }
+}
 
 /** Longest query taken from a session log; longer text is truncated, not sent whole. */
 const MAX_QUERY_CHARS = 2000
@@ -94,7 +103,7 @@ export class RecallService {
     sessionId: string,
     query?: string,
     limit = RECALL_DEFAULT_LIMIT,
-    options: { fresh?: boolean } = {},
+    options: { fresh?: boolean; signal?: AbortSignal } = {},
   ): Promise<RecallPayload> {
     const capped = Math.min(Math.max(Math.trunc(limit) || RECALL_DEFAULT_LIMIT, 1), RECALL_MAX_LIMIT)
     const explicit = (query ?? '').trim().slice(0, MAX_QUERY_CHARS)
@@ -102,10 +111,15 @@ export class RecallService {
     const cached = this.cache.get(cacheKey)
     if (!options.fresh && cached && this.now() - cached.at < this.cacheTtlMs) return cached.value
 
-    const value = await this.collect(sessionId, explicit, capped)
+    const value = await this.collect(sessionId, explicit, capped, options)
     // Only successful, non-empty answers are worth reusing: an error is cheap to
-    // retry and caching it would pin a dead server into the panel.
-    if (value.query.text.length > 0) this.cache.set(cacheKey, { at: this.now(), value })
+    // retry and caching it would pin a dead server into the panel. A CANCELLED
+    // answer is not a result at all: aborting mid-retrieval still collects the
+    // query text with zero hits, and caching that would serve "no memories" to
+    // the panel and to `/viking recall` for the rest of the TTL.
+    if (value.query.text.length > 0 && options.signal?.aborted !== true) {
+      this.cache.set(cacheKey, { at: this.now(), value })
+    }
     return value
   }
 
@@ -129,7 +143,7 @@ export class RecallService {
   async explain(
     sessionId: string,
     query?: string,
-    options: { fresh?: boolean; source?: RecallQuerySource } = {},
+    options: { fresh?: boolean; source?: RecallQuerySource; signal?: AbortSignal } = {},
   ): Promise<RecallExplanation> {
     const started = this.now()
     const warnings: PluginNotice[] = []
@@ -137,7 +151,7 @@ export class RecallService {
 
     const ovSessionId = commit.ovSessionId(sessionId)
     const peer = commit.actorPeer(sessionId) ?? null
-    const request = peer === null ? {} : { actorPeerId: peer }
+    const request = requestOptions(peer, options.signal)
     const config = commit.pluginConfig(sessionId)
     const effective = effectiveRecallSettings(config)
 
@@ -199,7 +213,7 @@ export class RecallService {
       contextError = reply.error ?? `HTTP ${reply.status}`
     }
 
-    const fallback = await this.collect(sessionId, queryText, RECALL_DEFAULT_LIMIT)
+    const fallback = await this.collect(sessionId, queryText, RECALL_DEFAULT_LIMIT, options)
     if (contextError !== null) {
       hints(warnings, 'contextUnavailable', { error: contextError })
     }
@@ -250,14 +264,19 @@ export class RecallService {
     }
   }
 
-  private async collect(sessionId: string, explicitQuery: string, limit: number): Promise<RecallPayload> {
+  private async collect(
+    sessionId: string,
+    explicitQuery: string,
+    limit: number,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<RecallPayload> {
     const started = this.now()
     const warnings: PluginNotice[] = []
     const { api, commit } = this.options
 
     const ovSessionId = commit.ovSessionId(sessionId)
     const peer = commit.actorPeer(sessionId) ?? null
-    const request = peer === null ? {} : { actorPeerId: peer }
+    const request = requestOptions(peer, options.signal)
 
     const meta = await api.getSession(ovSessionId, request)
     const sessionUri = meta.ok && meta.result ? resolveSessionUri(meta.result, ovSessionId, api.user) : null
@@ -362,7 +381,7 @@ export class RecallService {
   /** The session's most recent user prompt, from the plugin's own capture log. */
   private async sessionPrompt(
     sessionUri: string,
-    request: { actorPeerId?: string },
+    request: RequestOptions,
   ): Promise<string | null> {
     const log = await this.options.api.readText(`${sessionUri}/messages.jsonl`, request)
     if (!log.ok || log.result === null) return null

@@ -1,0 +1,439 @@
+{
+  "generated_by": "scripts/gen-rule-fixtures.py",
+  "purpose": "Frozen, invented Rule frontmatter serialized by the OpenViking server's own PyYAML options; the unit tests parse these documents and compare against the expected values PyYAML itself parsed back.",
+  "server_serializer": "openviking/service/rule_service.py::_render_markdown",
+  "pyyaml_version": "6.0.3",
+  "safe_dump_options": {
+    "allow_unicode": true,
+    "sort_keys": false,
+    "default_flow_style": false,
+    "width": 80
+  },
+  "options_note": "width is PyYAML's default; the server does not override it. allow_unicode is the server's actual option (not all_unicode).",
+  "seed": 20261110,
+  "content_policy": "All values are invented for parser tests; no real memory content.",
+  "documents": [
+    {
+      "name": "review-b1-wrapped-plain",
+      "frontmatter": "schema: openviking.rule/v1\natomic_id: project-license\nrevision: 2\nstatus: active\nscenario_id: repository-license\nsource_uris:\n- viking://user/default/resources/LICENSE.md\nevidence: []\nupdated_at: '2026-11-09T08:00:00+00:00'\nname: Run the test suite before reporting done\nconfidence: user\ndescription: A long description that certainly exceeds the eighty character default\n  width and therefore wraps onto a continuation line.\ncontent: Run the full test suite before reporting a change as complete, unless the\n  change is documentation-only.\napplies_when: The task modifies source code or configuration, and the change will\n  be reported to another person as complete.\nexception: ''",
+      "expected": {
+        "schema": "openviking.rule/v1",
+        "atomic_id": "project-license",
+        "revision": 2,
+        "status": "active",
+        "scenario_id": "repository-license",
+        "source_uris": [
+          "viking://user/default/resources/LICENSE.md"
+        ],
+        "evidence": [],
+        "updated_at": "2026-11-09T08:00:00+00:00",
+        "name": "Run the test suite before reporting done",
+        "confidence": "user",
+        "description": "A long description that certainly exceeds the eighty character default width and therefore wraps onto a continuation line.",
+        "content": "Run the full test suite before reporting a change as complete, unless the change is documentation-only.",
+        "applies_when": "The task modifies source code or configuration, and the change will be reported to another person as complete.",
+        "exception": ""
+      }
+    },
+    {
+      "name": "review-n1-apostrophe-fold",
+      "frontmatter": "content: 'Use the tool: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx dogs''\n  toys and more text that keeps going well past the eighty column limit here.'\nexception: ''\nname: Apostrophe at the fold",
+      "expected": {
+        "content": "Use the tool: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx dogs' toys and more text that keeps going well past the eighty column limit here.",
+        "exception": "",
+        "name": "Apostrophe at the fold"
+      }
+    },
+    {
+      "name": "review-n2-multi-paragraph-quoted",
+      "frontmatter": "content: 'First line of the rule.\n\n\n  Second line that is also quite long and will need folding somewhere well past the\n  eighty column limit.'\nname: Multi-paragraph quoted rule",
+      "expected": {
+        "content": "First line of the rule.\n\nSecond line that is also quite long and will need folding somewhere well past the eighty column limit.",
+        "name": "Multi-paragraph quoted rule"
+      }
+    },
+    {
+      "name": "n2-one-newline-quoted",
+      "frontmatter": "content: 'Constraint: First line of the rule.\n\n  Second line that is also quite long and will need folding somewhere well past the\n  eighty column limit.'\nname: One newline",
+      "expected": {
+        "content": "Constraint: First line of the rule.\nSecond line that is also quite long and will need folding somewhere well past the eighty column limit.",
+        "name": "One newline"
+      }
+    },
+    {
+      "name": "quoted-trailing-newline",
+      "frontmatter": "content: 'Constraint: A value that ends with a newline.\n\n  '\nname: Trailing newline",
+      "expected": {
+        "content": "Constraint: A value that ends with a newline.\n",
+        "name": "Trailing newline"
+      }
+    },
+    {
+      "name": "double-quoted-escaped-break",
+      "frontmatter": "content: \"Run\\tthe full test suite before reporting a change as complete, then report\\\n  \\ it.\"\nname: Double-quoted escaped break",
+      "expected": {
+        "content": "Run\tthe full test suite before reporting a change as complete, then report it.",
+        "name": "Double-quoted escaped break"
+      }
+    },
+    {
+      "name": "double-quoted-single-line-escapes",
+      "frontmatter": "content: 'He said: \"Run the full test suite before reporting a change as complete.\"'\nname: Double-quoted escapes on one line",
+      "expected": {
+        "content": "He said: \"Run the full test suite before reporting a change as complete.\"",
+        "name": "Double-quoted escapes on one line"
+      }
+    },
+    {
+      "name": "single-quoted-colon-hash",
+      "frontmatter": "content: 'Run the full test suite before reporting a change as complete: do not skip\n  #flaky tests.'\nname: Single-quoted colon and hash",
+      "expected": {
+        "content": "Run the full test suite before reporting a change as complete: do not skip #flaky tests.",
+        "name": "Single-quoted colon and hash"
+      }
+    },
+    {
+      "name": "block-literal-multiline",
+      "frontmatter": "content: '# Rule body\n\n\n  - first point\n\n  - second point\n\n\n  A closing paragraph.'\nname: Block literal",
+      "expected": {
+        "content": "# Rule body\n\n- first point\n- second point\n\nA closing paragraph.",
+        "name": "Block literal"
+      }
+    },
+    {
+      "name": "block-literal-long-lines",
+      "frontmatter": "content: \"Paragraph one.\\n\\nA long block line A long block line A long block line\\\n  \\ A long block line \\n\\nParagraph two.\"\nname: Block literal with long lines",
+      "expected": {
+        "content": "Paragraph one.\n\nA long block line A long block line A long block line A long block line \n\nParagraph two.",
+        "name": "Block literal with long lines"
+      }
+    },
+    {
+      "name": "unicode-wrapped",
+      "frontmatter": "content: 当规则涉及中英文混排时，PyYAML 仍然按宽度折叠较长的英文片段，so the fallback requirement must be folded\n  back into one logical sentence.\nname: 中英文混排 Unicode wrapped",
+      "expected": {
+        "content": "当规则涉及中英文混排时，PyYAML 仍然按宽度折叠较长的英文片段，so the fallback requirement must be folded back into one logical sentence.",
+        "name": "中英文混排 Unicode wrapped"
+      }
+    },
+    {
+      "name": "empty-values",
+      "frontmatter": "content: ''\ndescription: ''\napplies_when: ''\nexception: ''\nname: ''",
+      "expected": {
+        "content": "",
+        "description": "",
+        "applies_when": "",
+        "exception": "",
+        "name": ""
+      }
+    },
+    {
+      "name": "generated-001",
+      "frontmatter": "schema: openviking.rule/v1\natomic_id: rule-001-pipeline\nrevision: 3\nstatus: archived\nscenario_id: scenario-reply\nsource_uris:\n- viking://user/default/resources/experience.md\nevidence: []\nupdated_at: '2026-11-10T00:00:00+00:00'\nname: schema trajectory agent user security rule archived 中文规则：提交前运行完整测试。\nconfidence: high\ndescription: paused paused preview paused applies question question data skill high\n  scenario trajectory preview request\ncontent: The rule titled \"confidence tool evidence paused source exception question\n  constraint source\" applies.\napplies_when: The rule titled \"repository pipeline answer schema license change\" applies.\nexception: database review schema token rule change source paused budget catalog archive\n  change low boundary applies listener",
+      "expected": {
+        "schema": "openviking.rule/v1",
+        "atomic_id": "rule-001-pipeline",
+        "revision": 3,
+        "status": "archived",
+        "scenario_id": "scenario-reply",
+        "source_uris": [
+          "viking://user/default/resources/experience.md"
+        ],
+        "evidence": [],
+        "updated_at": "2026-11-10T00:00:00+00:00",
+        "name": "schema trajectory agent user security rule archived 中文规则：提交前运行完整测试。",
+        "confidence": "high",
+        "description": "paused paused preview paused applies question question data skill high scenario trajectory preview request",
+        "content": "The rule titled \"confidence tool evidence paused source exception question constraint source\" applies.",
+        "applies_when": "The rule titled \"repository pipeline answer schema license change\" applies.",
+        "exception": "database review schema token rule change source paused budget catalog archive change low boundary applies listener"
+      }
+    },
+    {
+      "name": "generated-002",
+      "frontmatter": "schema: openviking.rule/v1\natomic_id: rule-002-change\nrevision: 5\nstatus: paused\nscenario_id: scenario-exception\nsource_uris:\n- viking://user/default/resources/budget.md\nevidence: []\nupdated_at: '2026-11-10T00:00:00+00:00'\nname: The rule titled \"outcome listener evidence\" applies.\nconfidence: user\ndescription: license high token verify high test reply low security test\ncontent: 'measurement review measurement context catalog memory deadline constraint\n  handler skill: extra clause #tag'\napplies_when: run skill commit run listener verify security session rule reply active\n  database data license suite run catalog tool, unless the change is documentation-only.\nexception: ''",
+      "expected": {
+        "schema": "openviking.rule/v1",
+        "atomic_id": "rule-002-change",
+        "revision": 5,
+        "status": "paused",
+        "scenario_id": "scenario-exception",
+        "source_uris": [
+          "viking://user/default/resources/budget.md"
+        ],
+        "evidence": [],
+        "updated_at": "2026-11-10T00:00:00+00:00",
+        "name": "The rule titled \"outcome listener evidence\" applies.",
+        "confidence": "user",
+        "description": "license high token verify high test reply low security test",
+        "content": "measurement review measurement context catalog memory deadline constraint handler skill: extra clause #tag",
+        "applies_when": "run skill commit run listener verify security session rule reply active database data license suite run catalog tool, unless the change is documentation-only.",
+        "exception": ""
+      }
+    },
+    {
+      "name": "generated-003",
+      "frontmatter": "schema: openviking.rule/v1\natomic_id: rule-003-session\nrevision: 2\nstatus: archived\nscenario_id: scenario-test\nsource_uris:\n- viking://user/default/resources/review.md\nevidence: []\nupdated_at: '2026-11-10T00:00:00+00:00'\nname: high exception deadline confidence preview skill, unless the change is documentation-only.\nconfidence: low\ndescription: The rule titled \"skill code rule code access experience preview request\n  repository scenario change suite documentation archived preview handler tool measurement\n  agent code skill\" applies.\ncontent: The rule titled \"documentation change memory medium token tool policy archive\n  request high complete listener source handler\" applies.\napplies_when: answer listener outcome skill medium repository paused evidence confidence\n  token code rule archive reply budget license rule memory revision test code suite\n  paused user repository 中文规则：提交前运行完整测试。\nexception: 'archive question session database applies boundary preview merge token\n  active change code skill listener archived experience schema code merge suite license\n  pipeline: extra clause #tag'",
+      "expected": {
+        "schema": "openviking.rule/v1",
+        "atomic_id": "rule-003-session",
+        "revision": 2,
+        "status": "archived",
+        "scenario_id": "scenario-test",
+        "source_uris": [
+          "viking://user/default/resources/review.md"
+        ],
+        "evidence": [],
+        "updated_at": "2026-11-10T00:00:00+00:00",
+        "name": "high exception deadline confidence preview skill, unless the change is documentation-only.",
+        "confidence": "low",
+        "description": "The rule titled \"skill code rule code access experience preview request repository scenario change suite documentation archived preview handler tool measurement agent code skill\" applies.",
+        "content": "The rule titled \"documentation change memory medium token tool policy archive request high complete listener source handler\" applies.",
+        "applies_when": "answer listener outcome skill medium repository paused evidence confidence token code rule archive reply budget license rule memory revision test code suite paused user repository 中文规则：提交前运行完整测试。",
+        "exception": "archive question session database applies boundary preview merge token active change code skill listener archived experience schema code merge suite license pipeline: extra clause #tag"
+      }
+    },
+    {
+      "name": "generated-004",
+      "frontmatter": "schema: openviking.rule/v1\natomic_id: rule-004-token\nrevision: 3\nstatus: archived\nscenario_id: scenario-agent\nsource_uris:\n- viking://user/default/resources/verify.md\nevidence: []\nupdated_at: '2026-11-10T00:00:00+00:00'\nname: pipeline review change memory\nconfidence: low\ndescription: prompt outcome documentation preview low revision pipeline budget archived\n  catalog context repository test run evidence boundary token outcome token\ncontent: user prompt trajectory tool timeout license outcome token listener session\n  listener 中文规则：提交前运行完整测试。\napplies_when: The rule titled \"low confidence scenario code\" applies.\nexception: The rule titled \"handler documentation merge applies request timeout request\n  archive archive agent budget measurement listener constraint complete question high\n  review active medium step\" applies.",
+      "expected": {
+        "schema": "openviking.rule/v1",
+        "atomic_id": "rule-004-token",
+        "revision": 3,
+        "status": "archived",
+        "scenario_id": "scenario-agent",
+        "source_uris": [
+          "viking://user/default/resources/verify.md"
+        ],
+        "evidence": [],
+        "updated_at": "2026-11-10T00:00:00+00:00",
+        "name": "pipeline review change memory",
+        "confidence": "low",
+        "description": "prompt outcome documentation preview low revision pipeline budget archived catalog context repository test run evidence boundary token outcome token",
+        "content": "user prompt trajectory tool timeout license outcome token listener session listener 中文规则：提交前运行完整测试。",
+        "applies_when": "The rule titled \"low confidence scenario code\" applies.",
+        "exception": "The rule titled \"handler documentation merge applies request timeout request archive archive agent budget measurement listener constraint complete question high review active medium step\" applies."
+      }
+    },
+    {
+      "name": "generated-005",
+      "frontmatter": "schema: openviking.rule/v1\natomic_id: rule-005-workflow\nrevision: 7\nstatus: archived\nscenario_id: scenario-reply\nsource_uris:\n- viking://user/default/resources/preview.md\nevidence: []\nupdated_at: '2026-11-10T00:00:00+00:00'\nname: complete active token database\nconfidence: medium\ndescription: The rule titled \"license evidence tool request session trajectory verify\"\n  applies.\ncontent: policy database constraint listener\napplies_when: test change user catalog budget trajectory context code test archive\n  outcome step paused scenario workflow session security schema high active\nexception: ''",
+      "expected": {
+        "schema": "openviking.rule/v1",
+        "atomic_id": "rule-005-workflow",
+        "revision": 7,
+        "status": "archived",
+        "scenario_id": "scenario-reply",
+        "source_uris": [
+          "viking://user/default/resources/preview.md"
+        ],
+        "evidence": [],
+        "updated_at": "2026-11-10T00:00:00+00:00",
+        "name": "complete active token database",
+        "confidence": "medium",
+        "description": "The rule titled \"license evidence tool request session trajectory verify\" applies.",
+        "content": "policy database constraint listener",
+        "applies_when": "test change user catalog budget trajectory context code test archive outcome step paused scenario workflow session security schema high active",
+        "exception": ""
+      }
+    },
+    {
+      "name": "generated-006",
+      "frontmatter": "schema: openviking.rule/v1\natomic_id: rule-006-measurement\nrevision: 8\nstatus: archived\nscenario_id: scenario-complete\nsource_uris:\n- viking://user/default/resources/context.md\nevidence: []\nupdated_at: '2026-11-10T00:00:00+00:00'\nname: experience workflow confidence workflow context trajectory 中文规则：提交前运行完整测试。\nconfidence: high\ndescription: paused tool boundary applies confidence rule exception data medium rule\n  handler prompt access license documentation source archived\ncontent: 'user experience archived change documentation constraint listener archived\n  review deadline answer security verify skill data low evidence: extra clause #tag'\napplies_when: applies complete agent applies prompt\nexception: paused boundary listener preview question database pipeline evidence, unless\n  the change is documentation-only.",
+      "expected": {
+        "schema": "openviking.rule/v1",
+        "atomic_id": "rule-006-measurement",
+        "revision": 8,
+        "status": "archived",
+        "scenario_id": "scenario-complete",
+        "source_uris": [
+          "viking://user/default/resources/context.md"
+        ],
+        "evidence": [],
+        "updated_at": "2026-11-10T00:00:00+00:00",
+        "name": "experience workflow confidence workflow context trajectory 中文规则：提交前运行完整测试。",
+        "confidence": "high",
+        "description": "paused tool boundary applies confidence rule exception data medium rule handler prompt access license documentation source archived",
+        "content": "user experience archived change documentation constraint listener archived review deadline answer security verify skill data low evidence: extra clause #tag",
+        "applies_when": "applies complete agent applies prompt",
+        "exception": "paused boundary listener preview question database pipeline evidence, unless the change is documentation-only."
+      }
+    },
+    {
+      "name": "generated-007",
+      "frontmatter": "schema: openviking.rule/v1\natomic_id: rule-007-token\nrevision: 5\nstatus: paused\nscenario_id: scenario-session\nsource_uris:\n- viking://user/default/resources/scenario.md\nevidence: []\nupdated_at: '2026-11-10T00:00:00+00:00'\nname: commit prompt outcome review skill prompt memory\nconfidence: low\ndescription: evidence prompt deadline request run policy request high run high confidence\n  listener change\ncontent: experience exception repository prompt constraint session budget high listener,\n  unless the change is documentation-only.\napplies_when: test workflow applies data merge question agent access question revision\n  suite deadline handler commit medium access workflow archive constraint documentation\n  timeout test context\nexception: user source request outcome security database archive suite evidence documentation\n  high high preview security user archive exception question rule Dogs' toys stay\n  in the shared crate.",
+      "expected": {
+        "schema": "openviking.rule/v1",
+        "atomic_id": "rule-007-token",
+        "revision": 5,
+        "status": "paused",
+        "scenario_id": "scenario-session",
+        "source_uris": [
+          "viking://user/default/resources/scenario.md"
+        ],
+        "evidence": [],
+        "updated_at": "2026-11-10T00:00:00+00:00",
+        "name": "commit prompt outcome review skill prompt memory",
+        "confidence": "low",
+        "description": "evidence prompt deadline request run policy request high run high confidence listener change",
+        "content": "experience exception repository prompt constraint session budget high listener, unless the change is documentation-only.",
+        "applies_when": "test workflow applies data merge question agent access question revision suite deadline handler commit medium access workflow archive constraint documentation timeout test context",
+        "exception": "user source request outcome security database archive suite evidence documentation high high preview security user archive exception question rule Dogs' toys stay in the shared crate."
+      }
+    },
+    {
+      "name": "generated-008",
+      "frontmatter": "schema: openviking.rule/v1\natomic_id: rule-008-data\nrevision: 6\nstatus: paused\nscenario_id: scenario-evidence\nsource_uris:\n- viking://user/default/resources/evidence.md\nevidence: []\nupdated_at: '2026-11-10T00:00:00+00:00'\nname: timeout source exception request confidence\nconfidence: user\ndescription: paused data documentation active reply constraint handler documentation\n  repository token repository medium change, unless the change is documentation-only.\ncontent: repository token session evidence data review constraint medium merge token\n  code catalog complete license listener request outcome archive run user user\napplies_when: exception workflow reply database boundary merge agent source 中文规则：提交前运行完整测试。\nexception: review preview archive pipeline schema test Dogs' toys stay in the shared\n  crate.",
+      "expected": {
+        "schema": "openviking.rule/v1",
+        "atomic_id": "rule-008-data",
+        "revision": 6,
+        "status": "paused",
+        "scenario_id": "scenario-evidence",
+        "source_uris": [
+          "viking://user/default/resources/evidence.md"
+        ],
+        "evidence": [],
+        "updated_at": "2026-11-10T00:00:00+00:00",
+        "name": "timeout source exception request confidence",
+        "confidence": "user",
+        "description": "paused data documentation active reply constraint handler documentation repository token repository medium change, unless the change is documentation-only.",
+        "content": "repository token session evidence data review constraint medium merge token code catalog complete license listener request outcome archive run user user",
+        "applies_when": "exception workflow reply database boundary merge agent source 中文规则：提交前运行完整测试。",
+        "exception": "review preview archive pipeline schema test Dogs' toys stay in the shared crate."
+      }
+    },
+    {
+      "name": "generated-009",
+      "frontmatter": "schema: openviking.rule/v1\natomic_id: rule-009-source\nrevision: 8\nstatus: active\nscenario_id: scenario-request\nsource_uris:\n- viking://user/default/resources/user.md\nevidence: []\nupdated_at: '2026-11-10T00:00:00+00:00'\nname: measurement archived experience 中文规则：提交前运行完整测试。\nconfidence: user\ndescription: complete workflow license security boundary evidence repository archive\n  access deadline context step question change source handler constraint experience\n  step, unless the change is documentation-only.\ncontent: timeout test request preview catalog request\napplies_when: listener trajectory repository schema suite repository question paused\n  evidence access answer scenario exception active applies change evidence source\n  revision exception scenario token medium database evidence memory\nexception: medium policy verify user token prompt revision experience constraint database\n  security active policy scenario exception",
+      "expected": {
+        "schema": "openviking.rule/v1",
+        "atomic_id": "rule-009-source",
+        "revision": 8,
+        "status": "active",
+        "scenario_id": "scenario-request",
+        "source_uris": [
+          "viking://user/default/resources/user.md"
+        ],
+        "evidence": [],
+        "updated_at": "2026-11-10T00:00:00+00:00",
+        "name": "measurement archived experience 中文规则：提交前运行完整测试。",
+        "confidence": "user",
+        "description": "complete workflow license security boundary evidence repository archive access deadline context step question change source handler constraint experience step, unless the change is documentation-only.",
+        "content": "timeout test request preview catalog request",
+        "applies_when": "listener trajectory repository schema suite repository question paused evidence access answer scenario exception active applies change evidence source revision exception scenario token medium database evidence memory",
+        "exception": "medium policy verify user token prompt revision experience constraint database security active policy scenario exception"
+      }
+    },
+    {
+      "name": "generated-010",
+      "frontmatter": "schema: openviking.rule/v1\natomic_id: rule-010-boundary\nrevision: 9\nstatus: archived\nscenario_id: scenario-schema\nsource_uris:\n- viking://user/default/resources/complete.md\nevidence: []\nupdated_at: '2026-11-10T00:00:00+00:00'\nname: experience outcome change change revision token 中文规则：提交前运行完整测试。\nconfidence: user\ndescription: skill prompt medium user\ncontent: access agent agent repository database policy\napplies_when: The rule titled \"workflow step pipeline review budget access high verify\n  budget policy prompt data pipeline commit\" applies.\nexception: context repository agent verify archived evidence boundary preview",
+      "expected": {
+        "schema": "openviking.rule/v1",
+        "atomic_id": "rule-010-boundary",
+        "revision": 9,
+        "status": "archived",
+        "scenario_id": "scenario-schema",
+        "source_uris": [
+          "viking://user/default/resources/complete.md"
+        ],
+        "evidence": [],
+        "updated_at": "2026-11-10T00:00:00+00:00",
+        "name": "experience outcome change change revision token 中文规则：提交前运行完整测试。",
+        "confidence": "user",
+        "description": "skill prompt medium user",
+        "content": "access agent agent repository database policy",
+        "applies_when": "The rule titled \"workflow step pipeline review budget access high verify budget policy prompt data pipeline commit\" applies.",
+        "exception": "context repository agent verify archived evidence boundary preview"
+      }
+    },
+    {
+      "name": "generated-011",
+      "frontmatter": "schema: openviking.rule/v1\natomic_id: rule-011-budget\nrevision: 8\nstatus: active\nscenario_id: scenario-question\nsource_uris:\n- viking://user/default/resources/verify.md\nevidence: []\nupdated_at: '2026-11-10T00:00:00+00:00'\nname: The rule titled \"code token license question answer\" applies.\nconfidence: low\ndescription: data request answer test outcome run merge license low medium prompt\n  paused memory medium deadline outcome experience timeout archive answer pipeline\n  documentation, unless the change is documentation-only.\ncontent: The rule titled \"trajectory evidence deadline handler active high run scenario\n  complete tool test access review outcome timeout medium catalog confidence archived\n  answer scenario merge documentation scenario archived\" applies.\napplies_when: experience database outcome high complete pipeline documentation preview\n  workflow request boundary trajectory rule low answer constraint Dogs' toys stay\n  in the shared crate.\nexception: context outcome data rule step complete session confidence outcome agent\n  outcome skill outcome request reply source merge measurement change, unless the\n  change is documentation-only.",
+      "expected": {
+        "schema": "openviking.rule/v1",
+        "atomic_id": "rule-011-budget",
+        "revision": 8,
+        "status": "active",
+        "scenario_id": "scenario-question",
+        "source_uris": [
+          "viking://user/default/resources/verify.md"
+        ],
+        "evidence": [],
+        "updated_at": "2026-11-10T00:00:00+00:00",
+        "name": "The rule titled \"code token license question answer\" applies.",
+        "confidence": "low",
+        "description": "data request answer test outcome run merge license low medium prompt paused memory medium deadline outcome experience timeout archive answer pipeline documentation, unless the change is documentation-only.",
+        "content": "The rule titled \"trajectory evidence deadline handler active high run scenario complete tool test access review outcome timeout medium catalog confidence archived answer scenario merge documentation scenario archived\" applies.",
+        "applies_when": "experience database outcome high complete pipeline documentation preview workflow request boundary trajectory rule low answer constraint Dogs' toys stay in the shared crate.",
+        "exception": "context outcome data rule step complete session confidence outcome agent outcome skill outcome request reply source merge measurement change, unless the change is documentation-only."
+      }
+    },
+    {
+      "name": "generated-012",
+      "frontmatter": "schema: openviking.rule/v1\natomic_id: rule-012-applies\nrevision: 7\nstatus: active\nscenario_id: scenario-exception\nsource_uris:\n- viking://user/default/resources/low.md\nevidence: []\nupdated_at: '2026-11-10T00:00:00+00:00'\nname: measurement deadline\nconfidence: high\ndescription: user low exception security, unless the change is documentation-only.\ncontent: trajectory evidence rule low verify active policy security active preview\n  security source policy revision code medium outcome low request high change high\n  deadline catalog, unless the change is documentation-only.\napplies_when: token access answer agent\nexception: boundary trajectory repository commit commit policy outcome change session\n  confidence commit security handler review database preview archive prompt medium\n  boundary skill question handler",
+      "expected": {
+        "schema": "openviking.rule/v1",
+        "atomic_id": "rule-012-applies",
+        "revision": 7,
+        "status": "active",
+        "scenario_id": "scenario-exception",
+        "source_uris": [
+          "viking://user/default/resources/low.md"
+        ],
+        "evidence": [],
+        "updated_at": "2026-11-10T00:00:00+00:00",
+        "name": "measurement deadline",
+        "confidence": "high",
+        "description": "user low exception security, unless the change is documentation-only.",
+        "content": "trajectory evidence rule low verify active policy security active preview security source policy revision code medium outcome low request high change high deadline catalog, unless the change is documentation-only.",
+        "applies_when": "token access answer agent",
+        "exception": "boundary trajectory repository commit commit policy outcome change session confidence commit security handler review database preview archive prompt medium boundary skill question handler"
+      }
+    },
+    {
+      "name": "generated-013",
+      "frontmatter": "schema: openviking.rule/v1\natomic_id: rule-013-paused\nrevision: 4\nstatus: active\nscenario_id: scenario-catalog\nsource_uris:\n- viking://user/default/resources/catalog.md\nevidence: []\nupdated_at: '2026-11-10T00:00:00+00:00'\nname: 'complete verify memory: extra clause #tag'\nconfidence: medium\ndescription: handler rule timeout schema session review revision documentation skill\n  policy code license Dogs' toys stay in the shared crate.\ncontent: memory complete outcome active policy confidence low complete agent, unless\n  the change is documentation-only.\napplies_when: step scenario scenario scenario listener answer scenario documentation\n  repository handler user session prompt answer tool applies pipeline outcome reply\n  prompt constraint answer\nexception: agent deadline commit pipeline applies medium preview security low boundary\n  license budget",
+      "expected": {
+        "schema": "openviking.rule/v1",
+        "atomic_id": "rule-013-paused",
+        "revision": 4,
+        "status": "active",
+        "scenario_id": "scenario-catalog",
+        "source_uris": [
+          "viking://user/default/resources/catalog.md"
+        ],
+        "evidence": [],
+        "updated_at": "2026-11-10T00:00:00+00:00",
+        "name": "complete verify memory: extra clause #tag",
+        "confidence": "medium",
+        "description": "handler rule timeout schema session review revision documentation skill policy code license Dogs' toys stay in the shared crate.",
+        "content": "memory complete outcome active policy confidence low complete agent, unless the change is documentation-only.",
+        "applies_when": "step scenario scenario scenario listener answer scenario documentation repository handler user session prompt answer tool applies pipeline outcome reply prompt constraint answer",
+        "exception": "agent deadline commit pipeline applies medium preview security low boundary license budget"
+      }
+    },
+    {
+      "name": "generated-014",
+      "frontmatter": "schema: openviking.rule/v1\natomic_id: rule-014-agent\nrevision: 1\nstatus: paused\nscenario_id: scenario-archive\nsource_uris:\n- viking://user/default/resources/review.md\nevidence: []\nupdated_at: '2026-11-10T00:00:00+00:00'\nname: The rule titled \"token change catalog complete\" applies.\nconfidence: high\ndescription: 'code deadline revision session scenario source active memory suite question\n  workflow budget revision workflow archive security source run code suite exception\n  run answer database token low: extra clause #tag'\ncontent: The rule titled \"user context review access request suite merge active reply\n  code answer context outcome timeout\" applies.\napplies_when: timeout review budget verify paused complete scenario budget preview\n  policy token preview archive\nexception: policy pipeline license license database trajectory database reply listener\n  skill commit database request commit constraint workflow reply access high tool\n  evidence revision prompt, unless the change is documentation-only.",
+      "expected": {
+        "schema": "openviking.rule/v1",
+        "atomic_id": "rule-014-agent",
+        "revision": 1,
+        "status": "paused",
+        "scenario_id": "scenario-archive",
+        "source_uris": [
+          "viking://user/default/resources/review.md"
+        ],
+        "evidence": [],
+        "updated_at": "2026-11-10T00:00:00+00:00",
+        "name": "The rule titled \"token change catalog complete\" applies.",
+        "confidence": "high",
+        "description": "code deadline revision session scenario source active memory suite question workflow budget revision workflow archive security source run code suite exception run answer database token low: extra clause #tag",
+        "content": "The rule titled \"user context review access request suite merge active reply code answer context outcome timeout\" applies.",
+        "applies_when": "timeout review budget verify paused complete scenario budget preview policy token preview archive",
+        "exception": "policy pipeline license license database trajectory database reply listener skill commit database request commit constraint workflow reply access high tool evidence revision prompt, unless the change is documentation-only."
+      }
+    }
+  ]
+}

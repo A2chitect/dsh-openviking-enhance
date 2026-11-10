@@ -98,3 +98,104 @@ export function isTrustedLocalRequest(request: IncomingMessage): boolean {
     return false
   }
 }
+
+/**
+ * The one narrow widening of the fence: read-only JSON POST routes.
+ *
+ * v0.4's search, rule tester and (later) other query routes are POSTs because
+ * their input is a body, not a URL — and v0.3's fence rejects every non-GET
+ * method. The widening is deliberately per-property rather than a method
+ * allowlist:
+ *
+ *  - **still same-origin loopback**: `isTrustedLocalRequest` is unchanged, so a
+ *    cross-site page, a public `Host`, or an off-machine socket is refused
+ *    exactly as before;
+ *  - **JSON content type only**: a POST is still a CSRF-shaped request when it
+ *    comes from a form and carries `text/plain` or `application/x-www-form-
+ *    urlencoded`. Requiring `application/json` means the browser must have sent
+ *    a preflighted CORS request for a cross-origin caller, which a loopback
+ *    listener never authorises.
+ *  - **small body cap**: 64 KiB. A read-only route has no business accepting a
+ *    large upload, and the cap is enforced against the actual streamed bytes,
+ *    not only against a spoofable `Content-Length`.
+ *
+ * Nothing here decides *which* routes may be POST: that is the route table's
+ * job (`index.ts`), and every POST route must be one of the documented
+ * read-only ones. A write route cannot reuse these helpers without deliberately
+ * adding one — which is precisely the code change a review would see.
+ */
+export const READ_ONLY_JSON_BODY_MAX = 64 * 1024
+
+/** Whether a `Content-Type` header names JSON (parameters allowed). */
+export function isJsonContentType(value: string | string[] | undefined): boolean {
+  const raw = Array.isArray(value) ? value[0] : value
+  if (typeof raw !== 'string') return false
+  const [mediaType] = raw.split(';')
+  return (mediaType ?? '').trim().toLowerCase() === 'application/json'
+}
+
+export type JsonBodyError = 'content-type' | 'too-large' | 'invalid-json'
+
+/** The outcome of reading one read-only POST body. */
+export type JsonBodyResult =
+  | { ok: true; value: unknown }
+  | { ok: false; error: JsonBodyError }
+
+/** Whether a parsed JSON value is an object (not an array or a scalar). */
+export function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * Read and parse one bounded JSON request body.
+ *
+ * Resolves rather than throwing, including on a stream error: the route turns
+ * the result into a JSON error, and a broken client connection must not produce
+ * an unhandled rejection. The cap is checked twice — once against the
+ * `Content-Length` a well-behaved client declares (cheap early refusal) and
+ * once against the bytes actually received (the authoritative check).
+ */
+export async function readReadOnlyJsonBody(
+  request: AsyncIterable<Uint8Array | string> & {
+    headers?: Record<string, string | string[] | undefined>
+    resume?: () => void
+  },
+  cap = READ_ONLY_JSON_BODY_MAX,
+): Promise<JsonBodyResult> {
+  if (!isJsonContentType(request.headers?.['content-type'])) {
+    // Drain the refused body, exactly like the too-large branch below: a route
+    // that answers 415 without reading can look like a connection reset to a
+    // client still sending a large non-JSON payload.
+    request.resume?.()
+    return { ok: false, error: 'content-type' }
+  }
+  const declared = request.headers?.['content-length']
+  const declaredLength = typeof declared === 'string' ? Number(declared) : NaN
+  if (Number.isFinite(declaredLength) && declaredLength > cap) return { ok: false, error: 'too-large' }
+
+  const chunks: Uint8Array[] = []
+  let total = 0
+  try {
+    for await (const chunk of request) {
+      const bytes = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk
+      total += bytes.byteLength
+      if (total > cap) {
+        // Drain what is left so the response can be written, rather than
+        // resetting the socket mid-request.
+        request.resume?.()
+        return { ok: false, error: 'too-large' }
+      }
+      chunks.push(bytes)
+    }
+  } catch {
+    return { ok: false, error: 'invalid-json' }
+  }
+
+  const text = Buffer.concat(chunks).toString('utf8').trim()
+  if (text.length === 0) return { ok: false, error: 'invalid-json' }
+  try {
+    return { ok: true, value: JSON.parse(text) as unknown }
+  } catch {
+    return { ok: false, error: 'invalid-json' }
+  }
+}

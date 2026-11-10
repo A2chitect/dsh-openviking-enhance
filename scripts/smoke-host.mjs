@@ -102,8 +102,8 @@ if (sessionId) {
 
 server.close()
 
-/** One raw request, so the Host/Origin/method can be shaped exactly. */
-function rawStatus(base, path, { method = 'GET', headers = {} } = {}) {
+/** One raw request, so the Host/Origin/method/body can be shaped exactly. */
+function rawStatus(base, path, { method = 'GET', headers = {}, body } = {}) {
   const url = new URL(base)
   return new Promise((resolve) => {
     const request = http.request({ host: url.hostname, port: url.port, path, method, headers }, (response) => {
@@ -111,7 +111,41 @@ function rawStatus(base, path, { method = 'GET', headers = {} } = {}) {
       response.on('end', () => resolve(response.statusCode))
     })
     request.on('error', () => resolve(0))
-    request.end()
+    request.end(body)
+  })
+}
+
+/** A read-only JSON POST, the way the browser half calls the v0.4 routes. */
+function postJson(url, body) {
+  const target = new URL(url)
+  const payload = JSON.stringify(body)
+  return new Promise((resolve) => {
+    const request = http.request(
+      {
+        host: target.hostname,
+        port: target.port,
+        path: `${target.pathname}${target.search}`,
+        method: 'POST',
+        headers: {
+          host: target.host,
+          'content-type': 'application/json',
+          'content-length': Buffer.byteLength(payload),
+        },
+      },
+      (response) => {
+        const chunks = []
+        response.on('data', (chunk) => chunks.push(chunk))
+        response.on('end', () => {
+          try {
+            resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')))
+          } catch {
+            resolve(null)
+          }
+        })
+      },
+    )
+    request.on('error', () => resolve(null))
+    request.end(payload)
   })
 }
 
@@ -135,6 +169,10 @@ async function checkDegraded(base) {
     ['diff', `${prefix}/diff?sessionId=probe&archive=viking://x/history/archive_001`],
     ['probe', `${prefix}/probe?endpoint=${encodeURIComponent('http://127.0.0.1:9')}`],
     ['content', `${prefix}/recall/content?uri=${encodeURIComponent('viking://user/default/memories/x.md')}`],
+    ['preview', `${prefix}/preview?uri=${encodeURIComponent('viking://user/default/memories/x.md')}`],
+    ['rules', `${prefix}/rules`],
+    ['skills', `${prefix}/skills`],
+    ['experience', `${prefix}/experience?kind=trajectories`],
   ]
   for (const [label, path] of routes) {
     const body = await get(`${base}${path}`)
@@ -142,6 +180,18 @@ async function checkDegraded(base) {
     console.log(`[offline] ${answered ? 'ok  ' : 'FAIL'} ${label.padEnd(8)} answers JSON`)
     if (!answered) process.exitCode = 1
   }
+  // The v0.4 read-only POSTs: with no OpenViking behind them they must still
+  // answer a JSON envelope (never a throw or an empty response).
+  for (const [label, path, body] of [
+    ['search', `${prefix}/search`, { query: 'probe' }],
+    ['rules search', `${prefix}/rules/search`, { taskContext: 'probe' }],
+  ]) {
+    const answer = await postJson(`${base}${path}`, body)
+    const answered = answer !== null && typeof answer === 'object' && 'ok' in answer
+    console.log(`[offline] ${answered ? 'ok  ' : 'FAIL'} ${label.padEnd(12)} answers JSON over POST`)
+    if (!answered) process.exitCode = 1
+  }
+
   const config = await get(`${base}${prefix}/config`)
   const named = (config?.warnings ?? []).some((warning) => warning?.code === 'unreachable')
   console.log(`[offline] ${named ? 'ok  ' : 'FAIL'} config names the unreachable endpoint as a code`)
@@ -168,6 +218,51 @@ async function checkFence(base) {
   ]
   for (const [label, options, expected] of cases) {
     const actual = await rawStatus(base, path, options)
+    const ok = actual === expected
+    console.log(`[fence] ${ok ? 'ok  ' : 'FAIL'} ${label}: ${actual} (expected ${expected})`)
+    if (!ok) process.exitCode = 1
+  }
+
+  // v0.4 widens the fence for two read-only JSON POST routes, and only in the
+  // documented ways: same-origin loopback + JSON content type + a 64 KiB cap.
+  const searchPath = '/api/openviking-enhance/search'
+  const postCases = [
+    [
+      'same-origin JSON POST is admitted',
+      { method: 'POST', headers: { 'content-type': 'application/json', origin: new URL(base).origin }, body: '{"query":"probe"}' },
+      200,
+    ],
+    [
+      'cross-origin JSON POST is refused',
+      { method: 'POST', headers: { 'content-type': 'application/json', origin: 'http://evil.example.com' }, body: '{"query":"probe"}' },
+      403,
+    ],
+    [
+      'cross-site fetch marker on POST is refused',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'sec-fetch-site': 'cross-site' },
+        body: '{"query":"probe"}',
+      },
+      403,
+    ],
+    [
+      'a non-JSON POST is refused',
+      { method: 'POST', headers: { 'content-type': 'text/plain' }, body: '{"query":"probe"}' },
+      415,
+    ],
+    [
+      'an oversized POST is refused',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'content-length': String(64 * 1024 + 1) },
+        body: '',
+      },
+      413,
+    ],
+  ]
+  for (const [label, options, expected] of postCases) {
+    const actual = await rawStatus(base, searchPath, options)
     const ok = actual === expected
     console.log(`[fence] ${ok ? 'ok  ' : 'FAIL'} ${label}: ${actual} (expected ${expected})`)
     if (!ok) process.exitCode = 1
@@ -354,6 +449,94 @@ async function report(base, sessionId) {
     )
     if (leaked || actualLeak || !originOk) process.exitCode = 1
   }
+
+  // ---- v0.4 read-only surfaces ----------------------------------------
+  // The preview on a real recall hit: stat + three tiers + a Studio URL.
+  const firstHit = recall?.recall?.buckets?.flatMap((bucket) => bucket.items)[0]
+  if (firstHit) {
+    const preview = await get(`${base}/api/openviking-enhance/preview?uri=${encodeURIComponent(firstHit.uri)}`)
+    const payload = preview?.preview
+    const previewOk =
+      preview?.ok === true &&
+      Array.isArray(payload?.tiers) &&
+      payload.tiers.length === 3 &&
+      typeof payload.studioUrl === 'string' &&
+      firstHit.uri.startsWith('viking://')
+    const tiers = (payload?.tiers ?? []).map((tier) => `${tier.id}:${tier.available ? (tier.placeholder ? 'placeholder' : tier.text.length) : 'unavailable'}`)
+    console.log(`[smoke] preview     ${previewOk ? 'ok  ' : 'FAIL'} ${payload?.stat?.isDir === true ? 'dir' : 'file'} · ${tiers.join(' ')}`)
+    if (!previewOk) process.exitCode = 1
+  }
+
+  // Unified search: one call, four display buckets, rules merged in.
+  const search = await postJson(`${base}/api/openviking-enhance/search`, {
+    query: 'OpenViking plugin',
+    limit: 3,
+  })
+  const searchBuckets = search?.search?.buckets
+  const searchOk =
+    search?.ok === true &&
+    Array.isArray(searchBuckets) &&
+    searchBuckets.length === 4 &&
+    searchBuckets.map((bucket) => bucket.bucket).join(',') === 'memories,resources,skills,rules'
+  console.log(
+    `[smoke] search      ${searchOk ? 'ok  ' : 'FAIL'} ${
+      searchOk ? searchBuckets.map((bucket) => `${bucket.bucket}:${bucket.items.length}`).join(' ') : search?.error ?? 'no answer'
+    }`,
+  )
+  if (!searchOk) process.exitCode = 1
+  if (!(search?.search?.warnings ?? []).some((warning) => warning.code === 'keywordsUnavailable')) {
+    console.log('[smoke] search      ok   semantic path (no keyword fallback needed)')
+  }
+
+  // Rules: 0.5.3 answers the list (empty is normal); an older server answers
+  // `unsupported`, which is a documented degradation rather than a failure.
+  const rules = await get(`${base}/api/openviking-enhance/rules`)
+  const rulesOk =
+    rules?.ok === true
+      ? Array.isArray(rules.list?.rules) && typeof rules.list.empty === 'boolean'
+      : rules?.error === 'unsupported'
+  console.log(
+    `[smoke] rules       ${rulesOk ? 'ok  ' : 'FAIL'} ${
+      rules?.ok === true ? `${rules.list.rules.length} rule(s), ${rules.list.scenarios.length} scenario(s), empty=${rules.list.empty}` : rules?.error
+    }`,
+  )
+  if (!rulesOk) process.exitCode = 1
+  const ruleSearch = await postJson(`${base}/api/openviking-enhance/rules/search`, {
+    taskContext: 'Implement a preview tab in a DSH plugin and run the test suite.',
+  })
+  const ruleSearchOk =
+    (ruleSearch?.ok === true && Array.isArray(ruleSearch.rules?.matches)) || ruleSearch?.error === 'unsupported'
+  console.log(
+    `[smoke] rule tester ${ruleSearchOk ? 'ok  ' : 'FAIL'} ${
+      ruleSearch?.ok === true
+        ? `${ruleSearch.rules.matches.length} match(es), complete=${ruleSearch.rules.complete}`
+        : ruleSearch?.error
+    }`,
+  )
+  if (!ruleSearchOk) process.exitCode = 1
+
+  // Skills catalogue and Experience discovery (both empty states are normal).
+  const skills = await get(`${base}/api/openviking-enhance/skills`)
+  const skillsOk =
+    (skills?.ok === true && Array.isArray(skills.catalogue?.skills)) || skills?.error === 'unsupported'
+  console.log(
+    `[smoke] skills      ${skillsOk ? 'ok  ' : 'FAIL'} ${
+      skills?.ok === true ? `${skills.catalogue.skills.length} skill(s)` : skills?.error
+    }`,
+  )
+  if (!skillsOk) process.exitCode = 1
+  const experience = await get(`${base}/api/openviking-enhance/experience?kind=trajectories`)
+  const experienceOk =
+    (experience?.ok === true && Array.isArray(experience.experience?.experiences)) ||
+    experience?.error === 'unsupported'
+  console.log(
+    `[smoke] experience  ${experienceOk ? 'ok  ' : 'FAIL'} ${
+      experience?.ok === true
+        ? `${experience.experience.experiences.length} experience(s)${experience.experience.note ? ` (${experience.experience.note})` : ''}`
+        : experience?.error
+    }`,
+  )
+  if (!experienceOk) process.exitCode = 1
 
   const archive = commits?.status?.archives?.at(-1)
   if (!archive) {
