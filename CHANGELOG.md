@@ -10,6 +10,184 @@ promotes to a dated section — see [RELEASING.md](RELEASING.md).
 
 ## Unreleased
 
+### v1.0 — Native complete (this PR)
+
+Native — complete. The final roadmap version is a completion/polish/verification
+release, not a new interaction paradigm: the core explain/operate/trust flow runs
+inside DSH without the Studio iframe, the plugin's own widgets are
+accessibility-aligned, bilingual parity is enforced at render time, request
+budgets are test-enforced, degraded states share one localized copy layer, and
+the licence/API-stability decision plus the acceptance record are now tracked
+files. **No new write semantics**: every v0.3–v0.9 behaviour is additive and the
+write/ops gates are unchanged.
+
+#### Added
+
+- **F1–F14 native-completeness ledger + Studio-off core-flow walkthrough** in both
+  READMEs: every core task names its native surface, the version that shipped it,
+  and whether Studio is required (F10 capture pause/archive retry and the
+  Studio/CLI-only advanced operations stay documented non-goals with their
+  upstream dependency).
+- **Final compatibility/evidence matrix** with honest **L / CI / M / D / U**
+  labels (Windows, desktop write parity, OpenViking 0.5.2/0.5.4, non-`dev` auth
+  modes stay unverified; nothing upgraded to "verified" without evidence).
+- **Tracked decisions** — `DECISIONS.md`: MIT + independently implemented contract
+  (with the escalation trigger and the independence gate as the control) and the
+  API-stability classification (own semver surface, DSH pinned range, OpenViking
+  tested range + probes, official-plugin in-process state explicitly unstable),
+  plus the post-1.0 semver policy and the release-path/upgrade-pin decision.
+- **`ACCEPTANCE.md`** — verdict taxonomy, roadmap goal/exit-criterion mapping,
+  invariants, 12-item daily-check checklist marked **frequency-unmeasured**, the
+  5-real-users protocol marked **externally-unverified** (no fabricated study),
+  manual a11y/bilingual/degraded checklists, known limitations, and the human
+  sign-off block that gates the `v1.0.0` tag.
+- **Accessibility (WCAG 2.2 AA-aligned for the plugin's widgets)**: Browse is a real
+  ARIA tree (roving tabindex, Up/Down/Home/End, Right/Left expand-collapse-enter-
+  leave, Enter/Space select, `aria-level`/`aria-selected`/`aria-expanded`/`aria-busy`);
+  every tab strip (cockpit/Explore/Activity/Browse/Stats/Operate/Preview) is a
+  tablist/tab/tabpanel with `aria-labelledby` (no dangling `aria-controls`: only
+  the active panel is mounted), arrow/Home/End selection that skips unavailable
+  preview tiers, and roving tabindex; write/ops/undo dialogs trap Tab and restore focus
+  to the opener; toasts/host warnings are explicit live regions (assertive errors,
+  polite outcomes); the scope trigger announces `aria-haspopup`/`aria-expanded`,
+  Escape closes and restores focus; `:focus-visible` rings, reduced-motion CSS,
+  light/dark contrast fallbacks and 200% zoom resilience ship in the stylesheet.
+  New `test/v10-a11y.test.mjs` covers the pure keyboard models and the rendered
+  ARIA wiring (no new dependency, no browser CI; manual checklist in ACCEPTANCE).
+- **Bilingual render audit** (`test/v10-locale-audit.test.mjs`): major surfaces are
+  rendered in EN and ZH and fail on raw locale keys or hardcoded copy; `Intl`
+  date/count formatting helpers are used for user-facing timestamps. README/
+  README.zh ledger and matrix rows are mirrored and asserted. `/viking` command
+  output stays English and is documented as a limitation.
+- **Test-enforced performance/request budgets** (`test/v10-performance.test.mjs`):
+  one composed `/overview` request (single-flight, 5 s cache, per-part degradation),
+  no hidden polling (all recurring requests go through the shared schedulers; a
+  hidden document creates no timer at all, asserted with a fake clock), poll
+  backoff schedule, bounded fan-outs/caches, and the client's one-fetch overview
+  path.
+- **Unified degraded-state / error copy**: every host code that can reach a
+  surface now has EN+ZH `notice.*`/`wcode.*` copy, enforced by
+  `test/v10-degraded.test.mjs` scanning the host vocabulary; recovery actions are
+  localized buttons.
+- **Release prep**: `VERIFICATION.md` 1.0.0 row + v1.0 manual checklist,
+  `RELEASING.md` 1.0.0 path (primary per-version vs current single-tag fallback),
+  upgrade-pin rule and no-retag rollback policy; `DECISIONS.md` ships in the
+  package (CI tarball/check-package assertions) while `ACCEPTANCE.md` is
+  repository-only.
+
+#### Changed
+
+- The READMEs' requirements/matrix wording now reflects the final tested matrix
+  and the 1.0.0 release path; the top-of-file `Unreleased` note names v0.8–v1.0.
+- Activity detail polling and the health log polling now use one
+  visibility-gated interval helper instead of per-component timers.
+
+#### Fixed (PR #8 review round 1)
+
+- **N1 — hidden-tab polling self-loop.** Activity's list poll scheduled
+  `setTimeout(load, nextPollDelay({hidden:true}))` where the policy's `0` means
+  "do not schedule", so a hidden tab re-armed a zero-delay timer forever. Both the
+  Activity list and the commit-status poll now go through a single, testable
+  `startScheduledPoll` helper: a hidden document creates **no timer**, `delay <= 0`
+  stops the loop until an event resumes it, a resume loads immediately and then
+  recomputes the delay from the latest facts. Covered by fake-clock tests
+  (hidden → 0 timers; 0 → no schedule; running task → next delay 5 s) and a
+  structural guard that only `poll-policy.ts` may own a router timer.
+- **N2 — mount-time focus steal.** `ScopeChip`/`ScopeBanner` focused their trigger
+  in an effect whenever `open === false`, which ran on mount and stole focus from
+  the new roving-tabindex surfaces. Focus is now restored only on a true→false
+  transition (pure `shouldRestoreFocus(prev, open)` helper + tests); a mount is a
+  no-op.
+- **S1 — dangling `aria-controls`.** Only the active panel is rendered, so six of
+  seven `aria-controls` IDREFs pointed at nothing. The tabs now rely on
+  `aria-labelledby` (panel labelled by a real tab id; component test asserts every
+  IDREF resolves and tab ids are unique).
+- **S2 — frozen activity cadence.** The "a task is working" fact was captured in
+  the effect closure, so the 5 s active cadence never happened. The poll now
+  writes the fact to a ref after a successful load and the scheduler reads it when
+  scheduling; a fake-clock test proves the next delay switches from idle 30 s to
+  active 5 s after a load reports a running task.
+- **S3 — behavioural a11y tests.** The scope menu is now rendered with fake state
+  and asserted by roles/counts (`role="menu"`, one `menu` per group, one
+  `menuitem` per profile row, exactly one `aria-current`), instead of grepping the
+  source; the CSS assertions are labelled structural guards and the corresponding
+  contrast/zoom/reduced-motion acceptance rows are manual.
+- **S4 — menu keyboard reachability.** Opening the scope menu now focuses its
+  first enabled `menuitem` (or the dialog root when every row is disabled), so the
+  Arrow/Home/End handler on the menu container is reachable; pure
+  `firstEnabledIndex`/`nextMenuIndex` helpers are unit-tested.
+- **S5 — structural polling guard.** The old test only scanned `setInterval`;
+  it now scans both timer APIs with an explicit allow-list of one-shot timers,
+  asserts the two polling consumers own no timer, and the fake-clock tests cover
+  the recursive `setTimeout` pattern directly.
+- **S7/S8 — wording aligned with code.** "No guessing" now also covers the ACL
+  state machine (only the server's documented `inherit`/`restricted` modes are
+  echoed; a missing mode stays unknown; 401/5xx are distinguished — regression
+  tested in the v0.9 base). README/CHANGELOG claims about hidden polling and
+  `aria-controls` were corrected to the shipped behaviour.
+- **S9 — disclosure semantics.** Host warnings keep their native `<details>`
+  disclosure; the polite live region is the summary count instead of a
+  `role="status"` on the whole expandable group.
+- **Smaller review items**: Activity detail reads are aborted on unmount and never
+  overlap; `Intl` formatters are cached per locale; the browse shortcut row is a
+  labelled `treeitem` (`role="none"` wrapper); dialog focus falls back to the
+  panel container when the opener unmounted; the focus ring now also covers the
+  dock slots (scope chip/commit pill); `/viking` placeholders that shipped
+  hardcoded filter examples are localized.
+- **B0 — base review status.** The rebased v0.9 line (round-1 tip `845f7e6`, round-2 head `cfd7e71`) carries the fixes
+  for PR #7's five review blockers (B1 client switch chain, B2 peer/read-write
+  boundary, B3 session-scope write gating, B4 expired-token purge, B5 activity
+  cache reset) and the ACL S2 no-guess fix, with regression tests
+  (`test/v09-client-scope.test.mjs`, `test/v09-component.test.mjs`,
+  `test/v09-scope-routes.test.mjs` "Review round 1 regression tests",
+  `test/v09-scope-units.test.mjs`). `ACCEPTANCE.md`/`VERIFICATION.md` now state
+  that status instead of vouching for an unfixed base.
+
+#### Fixed (PR #8 review round 2)
+
+- **B1 — commit-diff filter buttons lost their click handler.** The round-1
+  refactor from a `tablist` to a `filter group` dropped `onClick={() =>
+  setFilter(candidate)}` while keeping `aria-pressed`, so All/Adds/Updates/Deletes
+  rendered a state that never changed. The handler is restored, the selection math
+  is now the pure `filterDiffGroups(groups, filter)` in `src/client/diff-filter.ts`
+  (unit-tested: `'deletes'` keeps only delete groups, `'all'` returns a copy, empty
+  buckets render the empty state), and a source guard pins the button wiring
+  because SSR cannot observe handlers.
+  **Interaction note:** the diff-type filter is now a `role="group"` of
+  `aria-pressed` filter buttons instead of a tablist — the only user-visible
+  interaction semantics changed by v1.0.
+- **P2 — base SHA corrected.** The acceptance documents named a pre-rebase commit
+  that is not in this branch history; they now name the actual fixed v0.9 base
+  `845f7e6`, and `test/v10-docs.test.mjs` asserts the content (B1–B5 + the named
+  `test/v09-*` regression files) rather than a SHA.
+- **P3 — N2 evidence wording.** Added a structural guard that both `scope-chip.tsx`
+  call sites invoke `shouldRestoreFocus` with the `wasOpen` ref (and that the old
+  mount-time `if (!open) triggerRef.current?.focus()` cannot return); ACCEPTANCE
+  §13 now states the automated contract and the manual remainder precisely.
+- **Smaller review items taken along:** the scheduler's `tick()` now catches a
+  throwing loader instead of leaving an unhandled rejection that silently stops
+  the loop; both polling consumers compute `hidden` through the shared
+  `pollHidden()` helper (so the policy's hidden branch is live, not just the
+  scheduler guard) and start with an immediate load (`{ immediate: true }`) so the
+  first fresh answer selects the 5 s/30 s cadence instead of always starting at
+  30 s and re-fetching once on focus; the scope-chip cooldown re-render derives
+  its delay from `SCOPE_SWITCH_COOLDOWN_MS`; the degraded-copy test now scans
+  every `err('…')` host code mechanically for `wcode.*` coverage.
+
+#### Verified
+
+- `pnpm test`: typecheck, build, packaging contract, independence gate, **587**
+  unit tests, client smoke and host smoke (live read-only path redacted) all
+  green; new v1.0 a11y/locale/degraded/performance suites included.
+- `pnpm run verify:install`: 27/27 clean-profile steps; also runs as a CI
+  `install-verify` job pinned to DSH 0.2.2-rc.1.
+- `test/v10-docs.test.mjs` enforces this ledger/matrix/decisions/acceptance
+  documentation and the package-vs-repo file split.
+- Limitations recorded, not hidden: user study **externally-unverified**,
+  daily-check frequency **unmeasured**, Windows and desktop-write parity **U**,
+  real-store writes **fixture-only**, browser/a11y automation absent (manual
+  checklist), `/viking` output English.
+
 ### v0.9 — Native II: multi-scope, identity overrides and the read-only ACL view (PR #7)
 
 The scope/isolation layer. A **scope** is the active v0.5 server profile plus an

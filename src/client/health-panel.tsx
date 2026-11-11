@@ -28,6 +28,7 @@ import { SessionScopeBanner } from './session-scope.tsx'
 import { ScopeChip } from './scope-chip.tsx'
 import { copyText } from './clipboard.ts'
 import { noticeText, t } from './locale.ts'
+import { startVisibleInterval } from './poll-policy.ts'
 import { canSelectPanel, openNative } from './native-store.ts'
 
 export interface HealthPanelProps {
@@ -110,8 +111,7 @@ export function HealthPanel({ sessionId }: HealthPanelProps) {
   // The log is the live part. Keep it fresh while the tab is on screen, and
   // stop paying for it when the document is hidden.
   useEffect(() => {
-    const timer = setInterval(() => {
-      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+    return startVisibleInterval(() => {
       if (busy.current) return
       const ticket = generation.current
       void fetchSessionLog(sessionId, { fresh: false }).then((answer) => {
@@ -120,7 +120,6 @@ export function HealthPanel({ sessionId }: HealthPanelProps) {
         setLogError(null)
       })
     }, 15_000)
-    return () => clearInterval(timer)
   }, [sessionId])
 
   const copy = useCallback(async (label: string, text: string) => {

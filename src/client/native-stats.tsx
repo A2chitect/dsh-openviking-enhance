@@ -14,6 +14,7 @@ import { useEffect, useState } from 'react'
 import type { MetricsPayload } from '../shared/protocol.ts'
 import { fetchMetrics } from './host-api.ts'
 import { t, writeErrorText } from './locale.ts'
+import { useA11yTabs } from './a11y.ts'
 import { CountTable, MemoriesCardContent, MetricCard, MetricsCards, QueueCardContent } from './metrics-view.tsx'
 import { NativeObservability } from './native-observability.tsx'
 import { useNative } from './native-store.ts'
@@ -31,33 +32,32 @@ export function NativeStats(props: NativeStatsProps) {
   const native = useNative()
   const requested = native.target.stats?.segment
   const [segment, setSegment] = useState<'metrics' | 'observability'>(requested === 'observability' ? 'observability' : 'metrics')
+  const tabs = useA11yTabs(['metrics', 'observability'] as const, segment, (id) => setSegment(id))
   useEffect(() => {
     if (requested !== undefined && requested !== segment) setSegment(requested)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requested])
   return (
     <div className="ove-nat-view ove-stats-segments">
-      <nav className="ove-ops-tabs" role="tablist" aria-label={t('native.view.stats')}>
+      <nav {...tabs.tabListProps} className="ove-ops-tabs" aria-label={t('native.view.stats')}>
         <button
           type="button"
-          role="tab"
-          aria-selected={segment === 'metrics'}
+          {...tabs.tabProps('metrics')}
           className={`ove-ops-tab${segment === 'metrics' ? ' ove-ops-tab-active' : ''}`}
-          onClick={() => setSegment('metrics')}
         >
           {t('native.stats.segment.metrics')}
         </button>
         <button
           type="button"
-          role="tab"
-          aria-selected={segment === 'observability'}
+          {...tabs.tabProps('observability')}
           className={`ove-ops-tab${segment === 'observability' ? ' ove-ops-tab-active' : ''}`}
-          onClick={() => setSegment('observability')}
         >
           {t('native.stats.segment.observability')}
         </button>
       </nav>
-      {segment === 'metrics' ? <MetricsSegment refreshKey={props.refreshKey} /> : <NativeObservability refreshKey={props.refreshKey} />}
+      <div {...tabs.panelProps(segment)}>
+        {segment === 'metrics' ? <MetricsSegment refreshKey={props.refreshKey} /> : <NativeObservability refreshKey={props.refreshKey} />}
+      </div>
     </div>
   )
 }

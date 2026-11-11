@@ -24,6 +24,7 @@ import type { OveError, UndoPlanPath, WritePreparePayload, WriteUndoPlan } from 
 import { lineDiff } from '../shared/text-diff.ts'
 import { applyUndo, executeWrite, prepareWrite } from './host-api.ts'
 import { t, writeErrorText } from './locale.ts'
+import { useModalFocus } from './a11y.ts'
 import {
   closeUndoPlan,
   closeWriteConfirm,
@@ -108,6 +109,10 @@ export function WriteDialog({ className = '' }: WriteDialogProps) {
 function ConfirmDialog({ prepare, className }: { prepare: WritePreparePayload; className: string }) {
   const busy = useWriteStore().busy
   const cancelRef = useRef<HTMLButtonElement | null>(null)
+  const dialogRef = useRef<HTMLDivElement | null>(null)
+  useModalFocus(dialogRef, {
+    fallbackFocus: () => document.querySelector<HTMLElement>('[data-dsh-plugin="openviking-enhance"]'),
+  })
   const [error, setError] = useState<OveError | null>(null)
   const [content, setContent] = useState(prepare.content ?? '')
   const [typed, setTyped] = useState('')
@@ -272,7 +277,7 @@ function ConfirmDialog({ prepare, className }: { prepare: WritePreparePayload; c
   return (
     <div className={`ove-overlay ove-write-overlay ${className}`}>
       <div className="ove-write-backdrop" onClick={close} />
-      <div className="ove-write-dialog" role="dialog" aria-modal="true" aria-label={title}>
+      <div ref={dialogRef} className="ove-write-dialog" role="dialog" aria-modal="true" aria-label={title}>
         <div className="ove-write-head">
           <span className="ove-write-title">{title}</span>
           <span className="ove-write-target" title={prepare.target}>
@@ -502,6 +507,10 @@ function planPaths(paths: UndoPlanPath[]): string {
 function UndoPlanDialog({ plan, className }: { plan: WriteUndoPlan; className: string }) {
   const busy = useWriteStore().busy
   const cancelRef = useRef<HTMLButtonElement | null>(null)
+  const dialogRef = useRef<HTMLDivElement | null>(null)
+  useModalFocus(dialogRef, {
+    fallbackFocus: () => document.querySelector<HTMLElement>('[data-dsh-plugin="openviking-enhance"]'),
+  })
   const [error, setError] = useState<OveError | null>(null)
 
   useEffect(() => {
@@ -538,7 +547,7 @@ function UndoPlanDialog({ plan, className }: { plan: WriteUndoPlan; className: s
   return (
     <div className={`ove-overlay ove-write-overlay ${className}`}>
       <div className="ove-write-backdrop" onClick={close} />
-      <div className="ove-write-dialog" role="dialog" aria-modal="true" aria-label={t('write.planTitle')}>
+      <div ref={dialogRef} className="ove-write-dialog" role="dialog" aria-modal="true" aria-label={t('write.planTitle')}>
         <div className="ove-write-head">
           <span className="ove-write-title">{t('write.planTitle')}</span>
           <span className="ove-write-target" title={plan.target}>

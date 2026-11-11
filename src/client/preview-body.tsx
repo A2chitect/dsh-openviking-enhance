@@ -25,6 +25,7 @@ import {
 import { copyText } from './clipboard.ts'
 import { fetchPreview } from './host-api.ts'
 import { errorText, noticeText, t } from './locale.ts'
+import { useA11yTabs } from './a11y.ts'
 
 const TIER_LABELS: Record<PreviewTierId, string> = {
   l0: 'preview.tier.l0',
@@ -120,6 +121,13 @@ export function PreviewBody(props: PreviewBodyProps) {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [tierId, setTierId] = useState<PreviewTierId>('l0')
+  /** v1.0 a11y: tier switching by keyboard; unavailable tiers stay unselectable. */
+  const tabs = useA11yTabs(
+    PREVIEW_TIERS,
+    tierId,
+    (id) => setTierId(id),
+    { isDisabled: (id) => payload?.tiers.find((entry) => entry.id === id)?.available !== true },
+  )
   const [copied, setCopied] = useState(false)
   const [pageError, setPageError] = useState<string | null>(null)
   const [pageLoading, setPageLoading] = useState(false)
@@ -274,7 +282,7 @@ export function PreviewBody(props: PreviewBodyProps) {
             <p className="ove-preview-hint">{t('preview.sidecarNote')}</p>
           )}
 
-          <div className="ove-preview-tiers" role="tablist" aria-label={t('preview.metadata')}>
+          <div {...tabs.tabListProps} className="ove-preview-tiers" aria-label={t('preview.metadata')}>
             {PREVIEW_TIERS.map((id) => {
               const candidate = payload.tiers.find((entry) => entry.id === id)
               const available = candidate?.available === true
@@ -282,12 +290,10 @@ export function PreviewBody(props: PreviewBodyProps) {
                 <button
                   key={id}
                   type="button"
-                  role="tab"
-                  aria-selected={tierId === id}
+                  {...tabs.tabProps(id)}
                   className={`ove-preview-tier${tierId === id ? ' ove-preview-tier-active' : ''}`}
                   title={available ? t(TIER_LABELS[id]) : t('preview.tierUnavailable', { error: candidate?.error ?? '—' })}
                   disabled={!available}
-                  onClick={() => setTierId(id)}
                 >
                   {t(TIER_LABELS[id])}
                 </button>
@@ -298,7 +304,7 @@ export function PreviewBody(props: PreviewBodyProps) {
           {pageError !== null && <p className="ove-preview-error">{pageError}</p>}
 
           {tier !== undefined && (
-            <div className="ove-preview-text-wrap">
+            <div {...tabs.panelProps(tierId)} className="ove-preview-text-wrap">
               {!tier.available ? (
                 tier.id === 'l2' && payload.stat?.isDir === true ? (
                   <p className="ove-preview-hint">{t('preview.directoryBody')}</p>

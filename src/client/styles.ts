@@ -1546,7 +1546,96 @@ button.ove-pill-errored:hover, button.ove-pill-errored[aria-expanded="true"] {
 .ove-acl th { text-align: left; color: var(--dsw-alias-label-tertiary); font-weight: 600; padding: 2px 4px; border-bottom: .5px solid var(--dsw-alias-border-l3); }
 .ove-acl td { padding: 2px 4px; color: var(--dsw-alias-label-secondary); word-break: break-word; }
 .ove-acl-sharing { margin: 0; font-size: 11px; border: .5px dashed var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-sm); padding: 4px 6px; color: var(--dsw-alias-label-secondary); }
+/* ======================================================================
+ * v1.0 accessibility layer
+ *
+ * The plugin inherits the DSH shell's theme tokens; these rules make the
+ * plugin's own widgets predictable for keyboard and low-vision users without
+ * overriding the shell:
+ *   - a visible focus ring on every plugin control (never removed);
+ *   - reduced motion honoured globally for plugin transitions;
+ *   - toolbars/dialogs survive 200% zoom (wrap / scroll instead of clipping);
+ *   - status text keeps AA contrast against the shell tokens, with accessible
+ *     fallbacks for both colour schemes when a token is absent.
+ * ====================================================================== */
 
+.ove-panel button:focus-visible,
+.ove-panel a:focus-visible,
+.ove-panel input:focus-visible,
+.ove-panel select:focus-visible,
+.ove-panel textarea:focus-visible,
+.ove-panel summary:focus-visible,
+.ove-panel [tabindex]:focus-visible,
+.ove-overlay button:focus-visible,
+.ove-overlay a:focus-visible,
+.ove-overlay input:focus-visible,
+.ove-overlay textarea:focus-visible,
+.ove-overlay select:focus-visible,
+.ove-scope button:focus-visible,
+.ove-scope a:focus-visible,
+.ove-pill button:focus-visible,
+.ove-pill a:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary, #4c8dff);
+  outline-offset: 1px;
+}
+
+.ove-native-toolbar,
+.ove-toolbar,
+.ove-write-actions,
+.ove-explore-bar,
+.ove-browse-toolbar {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+.ove-write-dialog {
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+}
+
+.ove-browse-tree {
+  overflow-x: auto;
+}
+
+/* Status dots are decorative; the adjacent text/icon always carries the state. */
+.ove-dot,
+.ove-scope-dot,
+.ove-health-dot,
+.ove-tl-dot {
+  flex: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ove-panel *,
+  .ove-overlay * {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Fallbacks only matter outside the DSH shell; keep them AA-readable per scheme. */
+@media (prefers-color-scheme: light) {
+  .ove-health-state-warn,
+  .ove-pill-errored,
+  .ove-recall-score-mid,
+  .ove-diff-kind[data-kind="updates"] {
+    color: var(--dsw-alias-state-warn-primary, #9a6700);
+  }
+  .ove-health-state-ok,
+  .ove-health-state-good,
+  .ove-recall-score-high,
+  .ove-diff-kind[data-kind="adds"] {
+    color: var(--dsw-alias-state-success-primary, #1a7f37);
+  }
+  .ove-health-state-bad,
+  .ove-error,
+  .ove-recall-score-low,
+  .ove-diff-kind[data-kind="deletes"] {
+    color: var(--dsw-alias-state-error-primary, #cf222e);
+  }
+}
 `
 
 /** Install the stylesheet once per document. */

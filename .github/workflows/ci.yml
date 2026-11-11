@@ -47,7 +47,7 @@ jobs:
         run: |
           pnpm pack --pack-destination /tmp
           tarball=$(ls /tmp/dsh-openviking-enhance-*.tgz)
-          for entry in package/lib/index.js package/lib/client.js package/cordis.patch.yml package/LICENSE package/package.json package/THIRD_PARTY_NOTICES package/PROVENANCE.md package/CONTRACT.md; do
+          for entry in package/lib/index.js package/lib/client.js package/cordis.patch.yml package/LICENSE package/package.json package/THIRD_PARTY_NOTICES package/PROVENANCE.md package/CONTRACT.md package/DECISIONS.md; do
             tar tzf "$tarball" | grep -qx "$entry" || { echo "missing from the tarball: $entry"; exit 1; }
           done
           echo "tarball carries the bundle, the patch, the licence and the manifest"

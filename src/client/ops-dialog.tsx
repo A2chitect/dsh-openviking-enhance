@@ -39,6 +39,7 @@ import {
 } from './host-api.ts'
 import { t, writeErrorText } from './locale.ts'
 import { shortTarget } from './write-dialog.tsx'
+import { useModalFocus } from './a11y.ts'
 
 /** What the caller wants confirmed; the dialog prepares it on mount. */
 export type OpsDialogRequest =
@@ -67,6 +68,10 @@ export function ConfirmShell(props: {
   footnote?: string | null
 }) {
   const cancelRef = useRef<HTMLButtonElement | null>(null)
+  const dialogRef = useRef<HTMLDivElement | null>(null)
+  useModalFocus(dialogRef, {
+    fallbackFocus: () => document.querySelector<HTMLElement>('[data-dsh-plugin="openviking-enhance"]'),
+  })
   useEffect(() => {
     // Cancel-first focus: the safe action is the default one.
     cancelRef.current?.focus()
@@ -75,6 +80,7 @@ export function ConfirmShell(props: {
   return (
     <div className="ove-overlay ove-write-backdrop" role="presentation" onClick={props.busy ? undefined : props.onCancel}>
       <div
+        ref={dialogRef}
         className="ove-write-dialog"
         role="dialog"
         aria-modal="true"
@@ -90,7 +96,11 @@ export function ConfirmShell(props: {
           )}
         </div>
         <div className="ove-ops-body">{props.children}</div>
-        {props.error !== null && <p className="ove-write-error">{props.error}</p>}
+        {props.error !== null && (
+          <p className="ove-write-error" role="alert">
+            {props.error}
+          </p>
+        )}
         {props.footnote !== null && props.footnote !== undefined && <p className="ove-write-footnote">{props.footnote}</p>}
         <div className="ove-write-actions">
           <button ref={cancelRef} type="button" className="ove-write-button" disabled={props.busy} onClick={props.onCancel}>

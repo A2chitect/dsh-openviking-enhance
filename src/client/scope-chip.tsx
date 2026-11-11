@@ -26,7 +26,10 @@
  * The `showScopeSwitcher` switch hides only this menu; the banner keeps showing
  * the active scope.
  */
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { firstEnabledIndex, nextMenuIndex, shouldRestoreFocus } from './a11y.ts'
+import { SCOPE_SWITCH_COOLDOWN_MS } from '../shared/limits.ts'
 import type { ScopeIdentityRequest, ScopeListEntry, ScopesPayload } from '../shared/protocol.ts'
 import { fetchScopes, testProfileEndpoint } from './host-api.ts'
 import { t } from './locale.ts'
@@ -209,6 +212,8 @@ function ScopeRow({ row, onSwitch, busy }: { row: ScopeListEntry; onSwitch: (row
   return (
     <button
       type="button"
+      role="menuitem"
+      aria-current={row.isActive ? 'true' : undefined}
       className={`ove-scope-profile${row.isActive ? ' ove-scope-profile-active' : ''}`}
       disabled={row.isActive || busy}
       title={row.isActive ? t('scope.currentProfile') : t('scope.switchHint', { label: row.label })}
@@ -269,6 +274,18 @@ export function ScopeMenu({ onClose }: ScopeMenuProps) {
   // Review (smaller items): the blocked reason is recomputed on render, and the
   // cooldown clears itself with a short timer instead of needing a new event.
   const [, setTick] = useState(0)
+  // Escape closes the scope menu; the opener restores focus when it re-renders
+  // closed (see the triggers below), so keyboard users never lose their place.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        onClose()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
   const scopes = state.scopes
   const blocked = scopeSwitchBlockedReason()
   useEffect(() => {
@@ -276,7 +293,9 @@ export function ScopeMenu({ onClose }: ScopeMenuProps) {
   }, [])
   useEffect(() => {
     if (blocked !== 'scope.switchCooldown') return
-    const timer = setTimeout(() => setTick((value) => value + 1), 1_100)
+    // Recompute the relative cooldown label just after the cooldown expires; the
+    // margin must move with the constant or the label sticks at "cooling down".
+    const timer = setTimeout(() => setTick((value) => value + 1), SCOPE_SWITCH_COOLDOWN_MS + 100)
     return () => clearTimeout(timer)
   }, [blocked])
   const activeScope = state.scope
@@ -324,8 +343,36 @@ export function ScopeMenu({ onClose }: ScopeMenuProps) {
   }
   const official = scopes?.officialPlugin ?? null
   const notices = scopes?.warnings ?? []
+  /**
+   * v1.0 a11y: the scope choices are a `menu` of `menuitem` rows. Arrow/Home/End
+   * move focus between them; Escape closes and returns focus to the trigger.
+   */
+  const onMenuKeyDown = (event: ReactKeyboardEvent<HTMLElement>): void => {
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+    const items = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]:not([disabled])'))
+    if (items.length === 0) return
+    event.preventDefault()
+    const current = items.indexOf(document.activeElement as HTMLElement)
+    const target = nextMenuIndex(current, items.length, event.key)
+    if (target !== null) items[target]?.focus()
+  }
+
+  const menuRef = useRef<HTMLDivElement | null>(null)
+  // S4: opening the menu moves focus to its first selectable scope row, otherwise
+  // the arrow handler on the container is unreachable (focus stays on the
+  // trigger, outside the container).
+  useEffect(() => {
+    const menu = menuRef.current
+    if (menu === null) return
+    if (firstEnabledIndex([...menu.querySelectorAll('[role="menuitem"]')].map((item) => (item as HTMLButtonElement).disabled)) < 0) {
+      menu.focus()
+      return
+    }
+    menu.querySelector<HTMLElement>('[role="menuitem"]:not([disabled])')?.focus()
+  }, [])
+
   return (
-    <div className="ove-scope-menu" role="dialog" aria-label={t('scope.menuTitle')}>
+    <div className="ove-scope-menu" role="dialog" aria-label={t('scope.menuTitle')} ref={menuRef} tabIndex={-1}>
       <div className="ove-scope-detail-head">
         <span className="ove-scope-detail-title">{t('scope.menuTitle')}</span>
         <span className="ove-spacer" />
@@ -368,7 +415,12 @@ export function ScopeMenu({ onClose }: ScopeMenuProps) {
         <p className="ove-scope-hint">{state.scopesError ?? t('scope.menu.loading')}</p>
       ) : (
         <>
-          <div className="ove-scope-groups">
+          <div
+            className="ove-scope-groups"
+            role="menu"
+            aria-label={t('scope.menu.servers')}
+            onKeyDown={onMenuKeyDown}
+          >
             {groups.map((group) => (
               <div className="ove-scope-group" key={group.endpoint}>
                 <div className="ove-scope-group-title" title={group.endpoint}>
@@ -411,6 +463,14 @@ function noticeKeyText(code: string, params: Record<string, string | number> | u
 export function ScopeBanner(props: { className?: string; showMenu?: boolean }) {
   const state = useScope()
   const [open, setOpen] = useState(false)
+  const triggerRef = useRef<HTMLButtonElement | null>(null)
+  const wasOpen = useRef(false)
+  useEffect(() => {
+    // N2: restore focus only when the menu actually closes; on mount this is a
+    // no-op (the banner remounts on view changes and must not steal focus).
+    if (shouldRestoreFocus(wasOpen.current, open)) triggerRef.current?.focus()
+    wasOpen.current = open
+  }, [open])
   useEffect(() => {
     void ensureScope()
     // Review S9: do not probe every configured server just because a banner
@@ -479,7 +539,14 @@ export function ScopeBanner(props: { className?: string; showMenu?: boolean }) {
       )}
       {scopeNotices.length > 0 && <span className="ove-scope-warn ove-scope-banner-warn">{scopeNotices[0]}</span>}
       {props.showMenu !== false && isScopeSwitcherEnabled() && (
-        <button type="button" className="ove-scope-menu-button" onClick={() => setOpen((current) => !current)}>
+        <button
+          ref={triggerRef}
+          type="button"
+          className="ove-scope-menu-button"
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          onClick={() => setOpen((current) => !current)}
+        >
           {t('scope.menu.open')}
         </button>
       )}
@@ -581,6 +648,13 @@ export interface ScopeChipProps {
 export function ScopeChip({ compact = false }: ScopeChipProps) {
   const state = useScope()
   const [open, setOpen] = useState(false)
+  const triggerRef = useRef<HTMLButtonElement | null>(null)
+  const wasOpen = useRef(false)
+  useEffect(() => {
+    // N2: no mount-time focus grab; restore only on a true → false transition.
+    if (shouldRestoreFocus(wasOpen.current, open)) triggerRef.current?.focus()
+    wasOpen.current = open
+  }, [open])
   useEffect(() => {
     void ensureScope()
   }, [])
@@ -605,8 +679,10 @@ export function ScopeChip({ compact = false }: ScopeChipProps) {
   return (
     <div className={`ove-scope${compact ? ' ove-scope-compact' : ''}`}>
       <button
+        ref={triggerRef}
         type="button"
         className="ove-scope-chip"
+        aria-haspopup="dialog"
         aria-expanded={open}
         title={t('scope.chipHint')}
         onClick={() => setOpen((current) => !current)}

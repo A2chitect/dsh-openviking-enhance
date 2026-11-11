@@ -44,7 +44,7 @@ import {
 } from '../shared/protocol.ts'
 import { fetchCommits, fetchDiff, fetchSessionControl, prepareWrite, type CommitsPayload } from './host-api.ts'
 import { t } from './locale.ts'
-import { nextPollDelay } from './poll-policy.ts'
+import { nextPollDelay, pollHidden, startScheduledPoll } from './poll-policy.ts'
 import {
   deriveClientPhase,
   describeFailure,
@@ -55,6 +55,7 @@ import {
   taskTime,
 } from '../shared/commit-state.ts'
 import { lineDiff, type DiffRow } from '../shared/text-diff.ts'
+import { filterDiffGroups, type DiffFilter, type DiffGroup } from './diff-filter.ts'
 import { copyText } from './clipboard.ts'
 import { OpenVikingIcon } from './openviking-icon.tsx'
 import { VikingUriLink } from './viking-uri-link.tsx'
@@ -128,22 +129,13 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
     if (!sessionId) return
     const id = sessionId
     let cancelled = false
-    let timer: ReturnType<typeof setTimeout> | undefined
-    let errorCount = 0
     let inFlight = false
+    let lastErrorCount = 0
+    let lastWorking = false
     const controller = new AbortController()
-
-    function schedule(delay: number): void {
-      if (cancelled || delay <= 0) return
-      timer = setTimeout(() => void run(false), delay)
-    }
 
     async function run(fresh: boolean): Promise<void> {
       if (cancelled || inFlight) return
-      if (timer !== undefined) {
-        clearTimeout(timer)
-        timer = undefined
-      }
       inFlight = true
       const result = await fetchCommits(id, summaryLimit, { fresh, signal: controller.signal })
       inFlight = false
@@ -155,46 +147,30 @@ export function CommitStatusPill({ sessionId }: CommitStatusProps) {
         setTasks(result.tasks)
         setSummaries(result.summaries)
         setError(null)
-        errorCount = 0
+        lastErrorCount = 0
         working = result.tasks.some(isActiveTask)
       } else {
         setError(result.error)
-        errorCount += 1
+        lastErrorCount += 1
       }
-      const hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden'
-      schedule(nextPollDelay({ working, hidden, errorCount }))
+      lastWorking = working
     }
-
+    // The scheduler owns visibility and the "do not schedule" contract, so a
+    // hidden document owns no timer and the active cadence follows the latest
+    // successful answer (review S2 pattern, shared with Activity). The first
+    // load is immediate and fresh.
+    const dispose = startScheduledPoll(
+      () => run(false),
+      () => nextPollDelay({ working: lastWorking, hidden: pollHidden(), errorCount: lastErrorCount }),
+      undefined,
+      { immediate: true },
+    )
     refreshRef.current = () => void run(true)
-
-    const onVisibility = (): void => {
-      if (cancelled) return
-      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
-        // Stop paying for polls while the tab is in the background. The next
-        // visibility event refreshes immediately.
-        if (timer !== undefined) {
-          clearTimeout(timer)
-          timer = undefined
-        }
-        return
-      }
-      refreshRef.current?.()
-    }
-    const onFocus = (): void => {
-      refreshRef.current?.()
-    }
-
-    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisibility)
-    if (typeof window !== 'undefined') window.addEventListener('focus', onFocus)
-    void run(true)
-
     return () => {
       cancelled = true
-      if (timer !== undefined) clearTimeout(timer)
       controller.abort()
       refreshRef.current = null
-      if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisibility)
-      if (typeof window !== 'undefined') window.removeEventListener('focus', onFocus)
+      dispose()
     }
   }, [sessionId, summaryLimit])
 
@@ -555,15 +531,6 @@ function FailureDetail({ failure, task }: { failure: ArchiveFailure | null; task
   )
 }
 
-/** The three change kinds, in the order the diff browser shows them. */
-type DiffFilter = 'all' | 'adds' | 'updates' | 'deletes'
-
-interface DiffGroup {
-  key: Exclude<DiffFilter, 'all'>
-  title: string
-  entries: MemoryDiffEntry[]
-}
-
 /**
  * One commit's memory changes, with the part the old popover never showed: the
  * text before and after.
@@ -574,6 +541,11 @@ interface DiffGroup {
 export function DiffView({ diff }: { diff: MemoryDiff }) {
   const { summary } = diff
   const [filter, setFilter] = useState<DiffFilter>('all')
+  // The diff-type filter is a filter group, not a tab strip: with a diff shown it
+  // replaces the list rather than swapping a persistent panel (only the empty
+  // state is a panel). `aria-pressed` states the selection without pretending a
+  // tabpanel exists for every button (review S1).
+
   const [openKey, setOpenKey] = useState<string | null>(null)
   const groups: DiffGroup[] = [
     { key: 'adds', title: t('pill.group.adds'), entries: diff.adds },
@@ -581,7 +553,7 @@ export function DiffView({ diff }: { diff: MemoryDiff }) {
     { key: 'deletes', title: t('pill.group.deletes'), entries: diff.deletes },
   ]
   const total = summary.totalAdds + summary.totalUpdates + summary.totalDeletes
-  const visible = filter === 'all' ? groups : groups.filter((group) => group.key === filter)
+  const visible = filterDiffGroups(groups, filter)
   const shown = visible.reduce((count, group) => count + group.entries.length, 0)
   return (
     <div className="ove-section">
@@ -600,7 +572,7 @@ export function DiffView({ diff }: { diff: MemoryDiff }) {
         <div className="ove-empty">{t('pill.noMemoryChange')}</div>
       ) : (
         <>
-          <div className="ove-diff-filters" role="tablist" aria-label={t('pill.filter.label')}>
+          <div className="ove-diff-filters" role="group" aria-label={t('pill.filter.label')}>
             {(['all', 'adds', 'updates', 'deletes'] as const).map((candidate) => {
               const count =
                 candidate === 'all'
@@ -614,10 +586,9 @@ export function DiffView({ diff }: { diff: MemoryDiff }) {
                 <button
                   key={candidate}
                   type="button"
-                  role="tab"
-                  aria-selected={filter === candidate}
-                  className={`ove-diff-filter${filter === candidate ? ' ove-diff-filter-active' : ''}`}
+                  aria-pressed={filter === candidate}
                   onClick={() => setFilter(candidate)}
+                  className={`ove-diff-filter${filter === candidate ? ' ove-diff-filter-active' : ''}`}
                 >
                   {t(`pill.filter.${candidate}`)}
                   <span className="ove-diff-filter-count">{count}</span>

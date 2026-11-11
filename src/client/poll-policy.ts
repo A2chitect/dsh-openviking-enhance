@@ -46,3 +46,170 @@ export function nextPollDelay(input: PollDecision): number {
   }
   return input.working ? POLL_ACTIVE_MS : POLL_IDLE_MS
 }
+
+/**
+ * A visibility-gated interval: the only recurring-request timer the client uses.
+ *
+ * The timer does not exist while the document is hidden, and it refreshes once
+ * immediately when the tab becomes visible again (the answer may be stale after
+ * any amount of hidden time). Components therefore cannot accidentally keep
+ * spending requests on a hidden panel by adding a bare `setInterval`.
+ *
+ * No-op in a server render / very old harness (no `document`/`window`); the
+ * returned disposer can always be called.
+ */
+export function startVisibleInterval(callback: () => void, intervalMs: number): () => void {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return () => {}
+  let timer: ReturnType<typeof setInterval> | null = null
+  const stop = (): void => {
+    if (timer !== null) {
+      clearInterval(timer)
+      timer = null
+    }
+  }
+  const start = (): void => {
+    if (timer === null && document.visibilityState !== 'hidden') timer = setInterval(callback, intervalMs)
+  }
+  const onVisibility = (): void => {
+    if (document.visibilityState === 'hidden') {
+      stop()
+      return
+    }
+    callback()
+    start()
+  }
+  start()
+  document.addEventListener('visibilitychange', onVisibility)
+  return () => {
+    stop()
+    document.removeEventListener('visibilitychange', onVisibility)
+  }
+}
+
+/** The timer/visibility surface the poll scheduler needs (injectable for tests). */
+export interface PollScheduler {
+  setTimeout(callback: () => void, delayMs: number): unknown
+  clearTimeout(handle: unknown): void
+  isHidden(): boolean
+  /** Subscribe to visibility changes; returns an unsubscribe function. */
+  onVisibilityChange(listener: () => void): () => void
+}
+
+/** The current visibility fact for callers that compute a policy delay. */
+export function pollHidden(): boolean {
+  return defaultPollScheduler()?.isHidden() ?? false
+}
+
+/** The browser scheduler; null in a server render / older harness (no DOM). */
+export function defaultPollScheduler(): PollScheduler | null {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return null
+  return {
+    setTimeout: (callback, delayMs) => window.setTimeout(callback, delayMs),
+    clearTimeout: (handle) => {
+      if (handle !== undefined && handle !== null) window.clearTimeout(handle as number)
+    },
+    isHidden: () => document.visibilityState === 'hidden',
+    onVisibilityChange: (listener) => {
+      document.addEventListener('visibilitychange', listener)
+      return () => document.removeEventListener('visibilitychange', listener)
+    },
+  }
+}
+
+/**
+ * A visibility-gated, self-scheduling poll loop — the only polling primitive.
+ *
+ * Why a helper instead of an effect-local `setTimeout` chain: the review of this
+ * release caught a zero-delay self-loop where `nextPollDelay()` returned 0
+ * ("do not schedule") but the consumer scheduled anyway. Here that contract is
+ * enforced in one place and can be tested with a fake clock:
+ *
+ *  - while the document is hidden the loop schedules **nothing** (no timer is
+ *    created at all) and resumes with an immediate load on visibility;
+ *  - `nextDelay() <= 0` stops the loop until an event resumes it;
+ *  - a load that is still running is never overlapped (a visibility resume waits
+ *    for it, then runs);
+ *  - the delay is recomputed after every load from live facts (the caller's
+ *    refs), so a task that starts/finishes mid-session changes the cadence.
+ *
+ * @param load the read to perform; awaited before the next delay is computed
+ * @param nextDelay the policy delay for the current state (see `nextPollDelay`)
+ * @param scheduler injectable timer/visibility surface (default: the browser)
+ * @returns a disposer; safe to call more than once
+ */
+export function startScheduledPoll(
+  load: () => Promise<void> | void,
+  nextDelay: () => number,
+  scheduler: PollScheduler | null = defaultPollScheduler(),
+  options: { immediate?: boolean } = {},
+): () => void {
+  if (scheduler === null) return () => {}
+  let closed = false
+  let timer: unknown = null
+  let loading = false
+  let resumeOnIdle = false
+
+  const clear = (): void => {
+    if (timer !== null) {
+      scheduler.clearTimeout(timer)
+      timer = null
+    }
+  }
+  const schedule = (delay: number): void => {
+    clear()
+    // The documented contract: 0/negative means "wait for an event", and a
+    // hidden document must not own a timer either.
+    if (closed || delay <= 0 || scheduler.isHidden()) return
+    timer = scheduler.setTimeout(() => {
+      timer = null
+      void tick()
+    }, delay)
+  }
+  const tick = async (): Promise<void> => {
+    if (closed || loading) return
+    if (scheduler.isHidden()) return
+    loading = true
+    try {
+      await load()
+    } catch {
+      // A throwing loader must not kill the single polling primitive: the loop
+      // keeps its backoff decision (callers count failures themselves), and the
+      // rejection is swallowed after logging the state transition. Unhandled
+      // rejections would otherwise stop the loop silently.
+    } finally {
+      loading = false
+    }
+    if (closed) return
+    if (resumeOnIdle) {
+      resumeOnIdle = false
+      void tick()
+      return
+    }
+    schedule(nextDelay())
+  }
+  const onVisibility = (): void => {
+    if (closed) return
+    if (scheduler.isHidden()) {
+      clear()
+      return
+    }
+    if (loading) {
+      resumeOnIdle = true
+      return
+    }
+    void tick()
+  }
+  const unsubscribe = scheduler.onVisibilityChange(onVisibility)
+  // Initial scheduling respects the hidden state (no timer), so mounting a
+  // hidden tab never starts a loop. `immediate` performs the first load now and
+  // then schedules from the *fresh* facts (activity: first response decides
+  // whether the cadence is 5 s or 30 s, instead of always starting at 30 s).
+  if (options.immediate === true && !scheduler.isHidden()) void tick()
+  else schedule(nextDelay())
+  return () => {
+    if (closed) return
+    closed = true
+    clear()
+    unsubscribe()
+  }
+}

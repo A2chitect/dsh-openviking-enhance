@@ -4,8 +4,9 @@
 
 **v0.3.0** · [更新记录](CHANGELOG.md) · [路线图](ROADMAP.md)
 
-> 下面的 v0.4 Act、v0.5 Collaborate、v0.6 Trust and verify 与 v0.7 Native 变更
-> 位于 `Unreleased`；版本行与包版本保持 0.3.0，直到发布脚本按版本逐个提升并打标签。
+> 下面的 v0.4 Act、v0.5 Collaborate、v0.6 Trust and verify、v0.7 Native、v0.8
+> Operate、v0.9 Multi-scope 与 v1.0 Native-complete 变更位于 `Unreleased`；
+> 版本行与包版本保持 0.3.0，直到发布脚本提升并打标签（见「1.0.0 发布路径」）。
 
 把本地 [OpenViking](https://docs.openviking.ai) 记忆服务接进 DeepSeek Harness
 （DSH）的 Web 界面：左侧边栏的 OpenViking Studio 面板、输入框下方的 commit 状态
@@ -622,6 +623,150 @@ dsh plugin --profile web remove dsh-openviking-enhance
   URL 路由。
 - 本插件由社区维护，**不是 OpenViking 官方项目**。
 
+## 原生完整度（v1.0）
+
+v1.0 是收尾版本：核心记忆流程现在**完全在 DSH 内完成，不需要打开 Studio iframe**。
+Studio 仍作为一个显式视图保留——它是服务端自己的完整 UI，承载高级操作，是文档化的
+兜底入口，而不是必经步骤。下面的清单就是审计表；每个结论对应的证据与仍然未验证的
+部分记录在 [`ACCEPTANCE.md`](ACCEPTANCE.md)。
+
+### F1–F14 清单
+
+| # | 核心任务 | 原生界面 | 交付版本 | 需要 Studio？ |
+| --- | --- | --- | --- | --- |
+| F1 | 这条为什么被（或没被）召回 | 每轮回复下的「记忆来源」+ 记忆召回 tab（查询、命中、分数、上下文统计、计划、预算、去重）+ `/viking recall` | v0.3 | 否 |
+| F2 | 这次提交改了什么 | 提交胶囊、时间线、单次提交的记忆差异、抽取失败详情、会话/提交视图 | v0.3–v0.7 | 否 |
+| F3 | 会话是否被捕获；失败原因 | 记忆健康 tab + 会话日志路由 + Sessions 详情（五种状态、下一步动作） | v0.3、v0.7 | 否 |
+| F4 | 注入/工具/连接为何异常；版本；可复制 JSON | 记忆健康 tab + Plugins 页摘要：Doctor（配置来源健康、构建/UA/traceId、作用域兼容性） | v0.3–v0.9 | 否 |
+| F5 | 这个 `viking://` 里是什么 | 预览 tab（L0/L1/L2、分页）+ 原生 Browse 预览面板 + 由任意 URI 触发的深链接 | v0.4、v0.6、v0.7 | 否 |
+| F6 | `/viking` 命令 | `ctx.commands` + 命令卡片；读取命令及带确认的写入命令 | v0.3–v0.5 | 否 |
+| F7 | 搜索全部内容 | 探索页统一搜索（记忆/资源/技能），点击进入；规则桶为显式开启 | v0.4、v0.6 | 否 |
+| F8 | 规则/技能/Experience 中心 | 探索页：带截止时间的规则列表、规则测试器、技能目录、Experience 浏览；Browse 快捷入口 | v0.4、v0.6、v0.7、v1.0 | 否 |
+| F9 | 带确认与撤销的记忆策展 | 预览操作栏 + 对话框 + `/viking` 写入命令；`enableWrites` 默认关闭、令牌绑定身份、审计 | v0.5 | 否 |
+| F10 | 捕获/提交控制 | 强制提交、捕获状态、失败归档诊断已原生；**暂停/恢复与归档重试未交付**（上游无 API） | v0.5、v0.6 | 非目标 |
+| F11 | 任务、失败、用量 | 活动 tab（任务/取消/导出 + 指标）、Stats、驾驶舱内的 Tasks/Observability | v0.5、v0.7、v0.8 | 否 |
+| F12 | 多身份/作用域/共享 | 命名配置档、作用域胶囊、带守卫的作用域切换器、只读 ACL/可见性视图；无管理员枚举或共享 UI | v0.5、v0.9 | 否 |
+| F13 | 编译/快照/OVPack | Operate 组：快照读取/创建/恢复（预演、逐字确认、撤销）、编译读取/触发/监控、包导出、任务/证据视图。**备份/导入/还原、编译配置、规则编译与 watcher 未交付** | v0.8 | 已交付范围否；其余 Studio/CLI |
+| F14 | 首次运行引导与原生 UI | 引导卡片 + 设置区；默认原生驾驶舱，Studio 作为内部兜底视图 | v0.7 | 否 |
+
+### 仍只在 Studio/CLI 提供的能力（及原因）
+
+| 仅 Studio/CLI | 为什么不原生 | 上游依赖 |
+| --- | --- | --- |
+| 对话转写浏览 | 隐私/体积：`messages.jsonl` 无界且含对话正文 | 分页、经同意的转写 API |
+| OVPack 备份/导入/还原 | ROOT/ADMIN、跨账户、非原子临时上传流程 | 管理员/作用域安全的备份设计 |
+| 编译配置/目标编辑、调度 | 服务端配置写入语义 | 编译注册表 API + 安全设计 |
+| 规则编译/暂停、`content/reindex`、编译嵌入 | 管理员/高级操作 | 产品决策 / 未来版本 |
+| Watches（资源监控控制） | 独立子系统，不是任务重试 | 服务端/CLI 工具 |
+| ACL 编辑、账户/用户/组管理、共享/邀请 | 管理员 API；实测版本无共享 API；按设计不做枚举 | 上游管理员/共享 API |
+| 资源上传/编辑、快照 ignore 编辑、管理员/隐私配置 | 高级 Studio/管理员操作 | 服务端契约 + 安全设计 |
+| 捕获暂停/恢复、归档重试 | 实测版本**上游 API 不存在** | 官方插件运行时 API / 服务端重试路由 |
+
+### 不打开 Studio 的核心流程走查
+
+可复现的只读脚本（也是 `VERIFICATION.md` 与 `ACCEPTANCE.md` 的证据集）：干净 DSH
+profile、OpenViking 可达、`showNativeViews` 开启、全程不打开 Studio。
+
+1. 点击 OpenViking 行 → **Overview** 载入（1 次点击）。
+2. 点击一条已完成回复的**记忆来源**行 → 对话内打开召回解释（距消息 2 次点击）。
+3. 输入框下方**提交胶囊** → 时间线 → 最近一次提交 → 记忆差异（2 次点击）。
+4. 记忆健康 tab → 会话状态、下一步动作与 **Doctor**（2 次点击）。
+5. 点击召回/差异中任意 `viking://` URI → **预览** tab 打开 L0/L1/L2（1 次点击）；大正文用「显示更多」分页。
+6. 在输入框执行 `/viking status`、`doctor`、`recall`、`open <uri>`（各 1 个动作）。
+7. 探索 → **搜索** 输入词（1 次点击 + 输入）；勾选「包含规则（服务端开销）」加入规则桶。
+8. 探索 → **规则**：列表 + 运行规则测试器（2 次点击）；技能与 Experience 是相邻分段。
+9. Browse：展开目录、选中文件、阅读预览（2 次点击）。
+10. 活动：任务、详情/事件、导出 JSON；取消运行中的任务（2 次点击）。
+11. 作用域胶囊 → 作用域菜单：切换配置档/身份，观察横幅与各视图重新标注（2 次点击）；Access 视图只读展示 ACL 状态。
+12. 在一次性配置档上开启 `enableWrites`/`enableOps`：编辑并撤销一条记忆、强制提交、查看快照历史并导出包（每一步都有确认对话框）。
+
+验收：**没有一步打开 Studio**；任何不可用步骤显示本地化的降级状态与恢复动作；即使
+Studio 帧探测报告 `blocked`，走查仍然通过（这正是兜底路径）。
+
+### 最终兼容性与证据矩阵
+
+状态图例：**L** = 本项目实测在线；**CI** = CI 验证；**M** = 维护者手工证据；
+**D** = 代码/文档已探测但非本地实测；**U** = 未验证（从不声称）。
+
+| 领域 | 支持 / 实测 | 状态 |
+| --- | --- | --- |
+| DSH 读取 | `>=0.2.0-rc.2 <1.0.0-0`（按预发布线；`engines.dsh` = peer 范围） | CI 在 0.2.2-rc.1 上类型检查/构建；M：0.2.0-rc.2、0.2.1-rc.3/rc.5、0.2.2-rc.1 |
+| DSH 写入/操作 | 0.2.2-rc.1+（`ctx.connection.fetch`） | CI install-verify 固定 0.2.2-rc.1；旧版本只读并显示原因 |
+| DSH 深链接（`ctx.layout.selectPanel`） | 0.2.2-rc.1 | M；旧版本回退到预览 tab |
+| DSH 身份覆写 | 0.2.2-rc.1+ 传输；配置档切换在旧版本也可用 | D/测试；旧版本带原因禁用 |
+| Node | `^22.19.0 || >=24` | CI Node 22；本地 v22.22.3 |
+| 操作系统 | Linux CI；macOS 15 M；**Windows U** | 无 Windows runner 或声明 |
+| Desktop 载体 | DSH Desktop 应用、Plugins 页安装 | M 视觉/只读；**桌面写入一致性 U** |
+| OpenViking | **实测 0.5.1.1 – 0.5.3**；0.5.2 U；0.5.4 U | 核心读取/会话/提交/任务/统计 0.5.1.1+；规则、编译注册表、快照版本/diff-paths 0.5.3+；包导出 0.5.1.1+ |
+| OpenViking 鉴权模式 | `dev` L；`trusted`/`api_key` D；oidc/ldap U | 头/密钥规则已实现并文档化；本地仅实测 dev |
+| 官方记忆插件 | `@openviking/dsh-memory-plugin@0.5.32` M | 其进程内状态只作防御性读取，从不当稳定契约 |
+| React peer | `^18.2.0`，由 shell 提供 | D |
+| 运行时依赖 | 无一方依赖；打包 MIT `schemastery`/`cosmokit`；MIT DSH 样式值 | CI tarball + 独立性门禁 + `THIRD_PARTY_NOTICES` |
+| Studio（iframe） | 服务端 `/studio/`，帧头探测 + 新标签页兜底 | L：0.5.3 未发送 X-Frame-Options/CSP（2026-11-10）；上游可能变化，兜底已文档化 |
+
+### 可访问性（WCAG 2.2 AA 对齐，插件自绘组件）
+
+v1.0 让插件自己的交互面（不是 DSH shell 的界面）对齐 WCAG 2.2 AA 的预期，验证方式是
+DOM/组件断言 + 手工键盘/VoiceOver/缩放/对比度清单（无浏览器自动化；该证据局限记录在
+`ACCEPTANCE.md`，不做自动化合规声称）。
+
+- **树**：Browse 行是真正的 ARIA tree——roving tabindex、上/下/Home/End、右/左展开-折叠-进入-离开、Enter/Space 选择、`aria-level`、`aria-selected`、`aria-expanded`、`aria-busy`。
+- **Tabs**：驾驶舱/Explore/Activity/Browse/Stats/Operate/Preview 的 tab 条都是 `tablist`/`tab`/`tabpanel`，用 `aria-labelledby` 关联（只有活动面板会挂载，因此故意没有悬空的 `aria-controls`），方向键/Home/End 会跳过不可用的预览层，并保持 roving tabindex。
+- **对话框**：写入/操作/撤销对话框把 Tab 限制在模态内，关闭后焦点回到打开者；默认聚焦取消；`role="dialog"` + `aria-modal`。
+- **实时区域**：toast 使用 `aria-live`（错误 assertive、结果 polite），宿主警告保留原生 `<details>` 展开语义、仅礼貌播报计数，错误为 `role="alert"`。
+- **作用域菜单**：触发按钮声明 `aria-haspopup`/`aria-expanded`；作用域选项是带标签的 `menu`，行为 `menuitem`，支持方向键/Home/End 移动；Escape 关闭并恢复焦点。外层仍是 dialog，因为其中还包含身份编辑表单字段。
+- **可见性与动效**：每个插件控件都有 `:focus-visible` 焦点环；`prefers-reduced-motion` 关闭过渡/动画；200% 缩放下工具栏换行、对话框可滚动。
+- **不靠颜色表达状态**：状态始终有文字/图标 + 颜色；状态点是装饰性的。
+- **局限**：NVDA/Windows 与 macOS VoiceOver 是手工清单（Windows U）；自动化只覆盖结构与键盘策略，不覆盖真实焦点移动。
+
+### 双语一致性
+
+EN/ZH 字典由 `test/locale.test.mjs` 保证逐键相等；v1.0 增加渲染级审计
+（`test/v10-locale-audit.test.mjs`）：用两种语言渲染主要界面，出现原始 key 或硬编码
+英文即失败。日期与计数用当前语言的 `Intl`（如任务时间戳）；字节大小保持确定性。
+README/README.zh 的章节、F1–F14 清单与兼容矩阵逐行镜像，并由
+`test/v10-docs.test.mjs` 断言。**已知局限**：`/viking` 命令输出为英文——宿主端拿不到
+应用语言，且 DSH 以纯文本渲染命令结果。这是文档化的限制，不冒充双语；中文走查属于
+手工验收清单。
+
+### 请求与性能预算
+
+| 预算 | 数值 | 执行方式 |
+| --- | --- | --- |
+| 驾驶舱首屏 | 一次组合 `/overview` 宿主请求，缓存 5 s、单飞；首屏无轮询 | `test/v10-performance.test.mjs`（计数各部件、TTL、并发） |
+| Browse | 每个展开页 1 次请求（50 行）；摘要/提示有上限；子树是显式动作（≤2 层/100 节点） | browse 常量 + 路由测试 |
+| 最近提交 | ≤8 个会话、4 并发、10 s 截止、30 s 缓存；从不轮询 | 提交常量 + 路由测试 |
+| 轮询 | 仅已挂载且可见的界面；文档隐藏时**完全不创建计时器**（用假时钟断言，而不只是读策略）；打开的运行中任务 2 s，健康日志可见时 15 s；打开/重新聚焦提交胶囊会立即做一次新鲜读取 | `poll-policy.ts` 的 `startScheduledPoll` + `test/v10-performance.test.mjs` |
+| 取消 | 切换视图/作用域/刷新/卸载中止在途读取；过期答案按 generation/作用域键丢弃 | v0.7/v0.9 测试 |
+| 载荷上限 | 预览每页 400 行（最多 1 000 行、显示 20 000 字符）、证据 512 KiB、包 64 MiB、任务事件 64×32 KiB | limits + 路由测试 |
+| 首屏耗时 | **未插桩**（无基准/浏览器依赖）——仅手工观察，作为局限记录 | `ACCEPTANCE.md` 局限 |
+
+### 降级状态与错误文案
+
+所有可能到达界面的宿主 code 现在都有 EN+ZH 文案：统一模式（状态 + 原因 + 恢复动作），
+以 `notice.<code>` / `wcode.<code>` 字典为唯一载体，并有测试扫描宿主源码、缺翻译即失败。
+文档化的失败矩阵覆盖：服务端不可达、旧服务端缺少路由、部分数据（规则/提交截止）、
+能力不支持、开关关闭、身份/作用域问题、配置来源健康与空数据。只有在没有已知 code 时
+才回退到服务端英文详情（原样展示而不隐藏）。
+
+### 决策与版本策略
+
+[`DECISIONS.md`](DECISIONS.md) 记录两个最终决策：**MIT 许可 + 所有上游耦合行为都是
+独立实现的契约**（无 AGPL 表达；CI 独立性门禁持续保证；上游许可歧义已记录，必要时升级
+为改写/重许可），以及 **API 稳定性 = 实测范围 + 运行时能力探测 + 优雅降级**，而不是
+上游稳定承诺。插件包对自身配置/路由/命令/行为遵守 semver；上游兼容范围是随契约更新
+移动的实测矩阵。[`ACCEPTANCE.md`](ACCEPTANCE.md) 保存目标→证据映射、结论分类与人工签署。
+
+### 1.0.0 发布路径
+
+v0.4–v0.9 的 PR 仍堆叠且**未发布**（`package.json` 仍为 0.3.0）。如果它们在没有任何
+版本标签的情况下合并，则适用文档化的回退路径：整个 `## Unreleased`（v0.4–v1.0）被
+提升为**一个 `1.0.0` 段落**，README 版本行移到 `v1.0.0`，标签 CI 的升级腿本次仍保留
+`--upgrade-from 0.3.0`（下一次发布才移到 `1.0.0`）。主路径（逐版本发布）与此回退路径
+都记录在 [`RELEASING.md`](RELEASING.md)；发布脚本本身不变，且在本机打标签后停止
+（npm 发布是人类 2FA 步骤）。热修/回滚：绝不移动或重打 `v1.0.0` 标签；回归用 `1.0.1`
+并记录事件。
+
 ## 配置
 
 默认值适配标准本地环境，**开箱无需配置**。要改的话，打开侧边栏的 **Plugins** 页，找到本插件，
@@ -796,7 +941,8 @@ pnpm run watch      # 改动后自动重建
 冒烟脚本不需要开界面就能打印提交时间线；OpenViking 没在跑时它会跳过实时数据部分
 （`SMOKE_REQUIRE_SERVER=1` 可让跳过变成失败）。独立召回契约所依据的文档摘录记录在
 [CONTRACT.md](CONTRACT.md)，独立性声明的行为清单在 [PROVENANCE.md](PROVENANCE.md)，
-各部分的实现细节见源码注释。
+许可/API 稳定性决策在 [DECISIONS.md](DECISIONS.md)，v1.0 目标→证据映射与人工签署在
+[ACCEPTANCE.md](ACCEPTANCE.md)；各部分的实现细节见源码注释。
 
 版本号写在 `package.json`，每次发布在 git 里打 `vX.Y.Z` 标签；`0.x` 期间内部实现
 仍可能调整。每个版本包含什么见 [CHANGELOG.md](CHANGELOG.md)，发版步骤和必须在界面里

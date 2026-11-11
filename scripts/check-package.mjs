@@ -56,6 +56,12 @@ check(pkg.files?.includes('PROVENANCE.md'), 'files includes PROVENANCE.md')
 // must travel with the package the independence claim is made about.
 check(existsSync(join(root, 'CONTRACT.md')), 'CONTRACT.md exists (tracked contract excerpts)')
 check(pkg.files?.includes('CONTRACT.md'), 'files includes CONTRACT.md')
+// The decisions record ships with the package it governs; the acceptance record
+// is repository-only (it contains human sign-off, not package content).
+check(existsSync(join(root, 'DECISIONS.md')), 'DECISIONS.md exists (licence/API-stability record)')
+check(pkg.files?.includes('DECISIONS.md'), 'files includes DECISIONS.md')
+check(existsSync(join(root, 'ACCEPTANCE.md')), 'ACCEPTANCE.md exists (release acceptance record)')
+check(!pkg.files?.includes('ACCEPTANCE.md'), 'ACCEPTANCE.md is intentionally not shipped in the package')
 check(typeof pkg.description === 'string' && pkg.description.length > 20, 'a one-line description is set')
 check(Array.isArray(pkg.keywords) && pkg.keywords.length > 0, 'keywords are set')
 // The marketplace links an npm package to its repository through this field, and

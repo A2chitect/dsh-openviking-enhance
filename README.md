@@ -4,9 +4,10 @@ English | [中文](README.zh.md)
 
 **v0.3.0** · [Changelog](CHANGELOG.md) · [Roadmap](ROADMAP.md)
 
-> The v0.4 Act, v0.5 Collaborate, v0.6 Trust-and-verify and v0.7 Native changes
-> below are under `Unreleased`; the version line and package stay at 0.3.0 until
-> the release script promotes them.
+> The v0.4 Act, v0.5 Collaborate, v0.6 Trust-and-verify, v0.7 Native, v0.8
+> Operate, v0.9 Multi-scope and v1.0 Native-complete changes below are under
+> `Unreleased`; the version line and package stay at 0.3.0 until the release
+> script promotes them (see “Release path for 1.0.0”).
 
 Brings your local [OpenViking](https://docs.openviking.ai) memory server into the
 DeepSeek Harness (DSH) Web GUI: a Studio panel in the left sidebar, a commit
@@ -818,6 +819,197 @@ root and another identity's tree, and the UI says to delete the file when done.
   in-memory by design; DSH exposes no URL routing for main-panel selection.
 - This plugin is **community-maintained, not an official OpenViking project**.
 
+## Native completeness (v1.0)
+
+v1.0 is the completion release: the core memory flow now runs **entirely inside
+DSH without opening the Studio iframe**. Studio stays registered as one explicit
+view because it is the server's own full UI and hosts advanced operations — it is
+the documented fallback, not a required step. The ledger below is the audit;
+[`ACCEPTANCE.md`](ACCEPTANCE.md) maps every claim to evidence and records what is
+still unverified.
+
+### F1–F14 ledger
+
+| # | Core task | Native surface | Shipped in | Studio needed? |
+| --- | --- | --- | --- | --- |
+| F1 | Why was this recalled / not recalled | Per-turn "memory sources" row + Memory recall tab (query, hits, scores, context stats, plan, budget, dedup) + `/viking recall` | v0.3 | no |
+| F2 | What did this commit change | Commit pill, timeline, per-commit memory diff, failed-extraction detail, session/commits views | v0.3–v0.7 | no |
+| F3 | Is this session captured; why did it fail | Memory health tab + session-log route and Sessions detail (five states, next action) | v0.3, v0.7 | no |
+| F4 | Why no injection/tools/connection; versions; copyable JSON | Memory health tab + Plugins-page summary: Doctor with config-source health, build/UA/traceId, scope compatibility | v0.3–v0.9 | no |
+| F5 | What is inside this `viking://` URI | Preview tab (L0/L1/L2, paging) + native Browse preview pane + deep links from every rendered URI | v0.4, v0.6, v0.7 | no |
+| F6 | `/viking` commands | `ctx.commands` + command card; read commands plus confirmed write verbs | v0.3–v0.5 | no |
+| F7 | Search everything | Explore tab: unified search over memories/resources/skills with click-through, rules an explicit opt-in | v0.4, v0.6 | no |
+| F8 | Rules / skills / Experience centre | Explore tab: deadline-safe rules list, rule tester, skills catalogue, Experience browse; Browse shortcut rows | v0.4, v0.6, v0.7, v1.0 links | no |
+| F9 | Curate memory with confirmation and undo | Preview action bar + dialogs + `/viking` write verbs; `enableWrites` default off, identity-bound tokens, audit | v0.5 | no |
+| F10 | Capture/commit control | Force commit, capture state, failed-archive diagnosis are native; **pause/resume and archive retry are not shipped** (no upstream API) | v0.5, v0.6 | no (non-goal) |
+| F11 | Tasks, failures, usage | Activity tab (tasks/cancel/export + metrics), Stats, Tasks/Observability in the cockpit | v0.5, v0.7, v0.8 | no |
+| F12 | Multi-identity / scope / sharing | Named profiles, scope chip, first-class scope switcher with guards, read-only ACL/visibility view; no admin enumeration or sharing UI | v0.5, v0.9 | no |
+| F13 | Compile / snapshot / OVPack | Operate group: snapshot read/create/restore (dry-run, typed confirmation, undo), compile read/trigger/monitor, pack export, task/evidence views. **Backup/import/restore, compile config, rules compile and watchers are not shipped** (documented upstream reasons) | v0.8 | no for shipped scope; Studio/CLI for deferred ops |
+| F14 | First-run onboarding and native UI | Onboarding card + setup section; native cockpit by default with Studio as an internal fallback view | v0.7 | no |
+
+### What remains Studio/CLI-only (and why)
+
+| Studio/CLI-only | Why it is not native | Upstream dependency |
+| --- | --- | --- |
+| Conversation transcript reading | privacy/size: raw `messages.jsonl` is unbounded and contains conversation bodies | paginated, consent-aware transcript API |
+| OVPack backup / import / restore | ROOT/ADMIN, account-wide, non-atomic temp-upload flow | admin/scope-safe backup design |
+| Compile config/target editing, schedules | server-config write semantics | compile registry API + safety design |
+| Rules compile/pause, `content/reindex`, compile embeddings | admin/advanced operations | product decision / future release |
+| Watches (resource-watch controls) | unrelated subsystem; not task retry | server/CLI tooling |
+| ACL edits, account/user/group management, sharing/invite | admin APIs; no sharing API in the tested builds; no enumeration by design | upstream admin/sharing APIs |
+| Resource upload/edit, snapshot ignore edits, admin/privacy config | advanced Studio/admin operations | server contracts + safety design |
+| Capture pause/resume, archive retry | **upstream APIs absent** in the tested builds | official-plugin runtime API / server retry route |
+
+### Studio-off core-flow walkthrough
+
+Reproducible read-only script (also the evidence set in `VERIFICATION.md` and
+`ACCEPTANCE.md`): clean DSH profile, OpenViking reachable, `showNativeViews` on,
+Studio never opened.
+
+1. Open the OpenViking row → **Overview** loads (1 click).
+2. Hover/click a completed turn's **memory sources** row → recall explanation
+   opens in the transcript (2 clicks from the message).
+3. Composer **commit pill** → timeline → pick the latest commit → memory diff
+   (2 clicks).
+4. Memory health tab → session state, next action and the **Doctor** (2 clicks).
+5. Click any `viking://` URI in the recall/diff → **preview** tab opens with
+   L0/L1/L2 (1 click); "Show more" pages a large body.
+6. `/viking status`, `/viking doctor`, `/viking recall`, `/viking open <uri>`
+   from the composer (1 action each).
+7. Explore → **Search** a term (1 click + typing); tick "include rules (server
+   cost)" to add the rules bucket.
+8. Explore → **Rules**: list, then Run the rule tester (2 clicks); Skills and
+   Experience are adjacent segments.
+9. Browse: expand a directory, select a file, read the preview (2 clicks).
+10. Activity: tasks, detail/events, export JSON; cancel a running task (2 clicks).
+11. Scope chip → scope menu: switch profile/identity, watch the banner and each
+    view relabel (2 clicks); the Access view shows the ACL state read-only.
+12. On a disposable profile with `enableWrites`/`enableOps` on: edit + undo a
+    memory, force a commit, view snapshot history and export a pack (confirm
+    dialogs on every step).
+
+Acceptance: **no step opens Studio**; every unavailable step shows its localized
+degraded state and recovery action; if the Studio frameability probe reports
+`blocked`, the walkthrough still passes (that is the fallback case).
+
+### Final compatibility and evidence matrix
+
+Status legend: **L** = verified live in this project; **CI** = verified in CI;
+**M** = manual maintainer evidence; **D** = documented/probed in code, not
+live-verified here; **U** = unverified (never claimed).
+
+| Area | Supported / tested | Status |
+| --- | --- | --- |
+| DSH reads | `>=0.2.0-rc.2 <1.0.0-0` per pre-release line (`engines.dsh` = peer range) | CI typecheck/build on 0.2.2-rc.1; M on 0.2.0-rc.2, 0.2.1-rc.3/rc.5, 0.2.2-rc.1 |
+| DSH writes / ops | 0.2.2-rc.1+ (`ctx.connection.fetch`) | CI install-verify on 0.2.2-rc.1; older generations read-only with a stated reason |
+| DSH deep links (`ctx.layout.selectPanel`) | 0.2.2-rc.1 | M; older generations fall back to the preview tab |
+| DSH identity overrides | 0.2.2-rc.1+ transport; profile switches also work on older generations | D/test; disabled with a stated reason on older generations |
+| Node | `^22.19.0 || >=24` | CI Node 22; local v22.22.3 |
+| OS | Linux CI; macOS 15 M; **Windows U** | no Windows runner or claim |
+| Desktop carrier | DSH Desktop app, Plugins-page install | M visual/read-only; **desktop write parity U** |
+| OpenViking | **0.5.1.1 – 0.5.3 tested**; 0.5.2 U; 0.5.4 U | core reads/sessions/commits/tasks/stats 0.5.1.1+; Rules, compile registry, snapshot versions/diff-paths 0.5.3+; pack export 0.5.1.1+ |
+| OpenViking auth modes | `dev` L; `trusted`/`api_key` D; oidc/ldap U | headers/key rules are implemented and documented; only dev is live-verified here |
+| Official memory plugin | `@openviking/dsh-memory-plugin@0.5.32` M | its in-process state is read defensively, never a stable contract |
+| React peer | `^18.2.0` provided by the shell | D |
+| Runtime dependencies | none first-party; bundled MIT `schemastery`/`cosmokit`; MIT DSH styling values | CI tarball + independence gate + `THIRD_PARTY_NOTICES` |
+| Studio (iframe) | server's own `/studio/`, framing header probe + new-tab fallback | L: 0.5.3 sends no X-Frame-Options/CSP (2026-11-10); may change upstream — fallback documented |
+
+### Accessibility (WCAG 2.2 AA-aligned, plugin widgets)
+
+v1.0 aligns the plugin's own interaction surfaces — not the DSH shell chrome —
+with WCAG 2.2 AA expectations, verified by DOM/component assertions plus a manual
+keyboard/VoiceOver/zoom/contrast checklist (no browser automation; that evidence
+limitation is recorded in `ACCEPTANCE.md` and no automated conformance claim is
+made).
+
+- **Trees**: Browse rows are a real ARIA tree — roving tabindex, Up/Down/Home/End
+  movement, Right/Left expand-collapse-enter-leave, Enter/Space select,
+  `aria-level`, `aria-selected`, `aria-expanded`, `aria-busy`.
+- **Tabs**: cockpit/Explore/Activity/Browse/Stats/Operate/Preview tab strips are
+  `tablist`/`tab`/`tabpanel` with `aria-labelledby` (only the active panel is
+  mounted, so the tabs intentionally carry no dangling `aria-controls`),
+  Arrow/Home/End selection that skips unavailable preview tiers, and roving
+  tabindex.
+- **Dialogs**: write/ops/undo dialogs trap Tab inside the modal and restore focus
+  to the opener; cancel-first default focus; `role="dialog"` + `aria-modal`.
+- **Live regions**: toasts use `aria-live` (assertive for errors, polite for
+  outcomes), host warnings keep their native `<details>` disclosure with a polite
+  count announcement, errors are `role="alert"`.
+- **Scope menu**: the trigger announces `aria-haspopup`/`aria-expanded`; the scope
+  choices are a labelled `menu` of `menuitem` rows with Arrow/Home/End traversal;
+  Escape closes and restores focus. The surrounding panel stays a dialog because
+  it also contains the identity-editor form fields.
+- **Visibility and motion**: `:focus-visible` ring on every plugin control,
+  `prefers-reduced-motion` disables transitions/animations, toolbars wrap and
+  dialogs scroll at 200% zoom.
+- **Status without colour**: state is always text/icon plus colour; status dots
+  are decorative.
+- **Limitations**: NVDA/Windows and macOS VoiceOver are manual checklists
+  (Windows U); the automated suite covers structure and keyboard policy, not
+  rendered focus movement.
+
+### Bilingual parity
+
+EN and ZH dictionaries are kept key-for-key equal by `test/locale.test.mjs`; v1.0
+adds a render-level audit (`test/v10-locale-audit.test.mjs`) that renders the
+major surfaces in both languages and fails on a raw locale key or hardcoded
+English copy. Dates and counts use `Intl` for the active language (e.g. task
+timestamps); byte sizes stay deterministic. README/README.zh chapters, the F1–F14
+ledger and the compatibility matrix are mirrored row for row, and both are
+asserted by `test/v10-docs.test.mjs`. **Known limitation:** `/viking` command
+output is English — the host half has no access to the app locale and DSH renders
+command results as plain text. This is documented, not claimed as bilingual; a
+zh-CN walkthrough is part of the manual acceptance checklist.
+
+### Request and performance budgets
+
+| Budget | Value | Enforced by |
+| --- | --- | --- |
+| Initial cockpit paint | one composed `/overview` host request, cached 5 s, single-flight; no polling on paint | `test/v10-performance.test.mjs` (counting parts, TTL, concurrency) |
+| Browse | 1 request per expanded page (50 rows); prompt/abstract caps; explicit subtree action ≤2 levels/100 nodes | browse limits + route tests |
+| Recent commits | ≤8 sessions, 4 in flight, 10 s deadline, 30 s cache; never polled | commits constants + route tests |
+| Polling | only a mounted, visible surface; a hidden document creates **no timer at all** (asserted with a fake clock, not just by reading the policy); an open running task polls at 2 s, the health log at 15 s while visible; opening/refocusing the commit pill refreshes immediately with a fresh read | `startScheduledPoll` in `poll-policy.ts` + `test/v10-performance.test.mjs` |
+| Cancellation | view/scope/refresh/unmount aborts in-flight reads; stale answers are dropped by generation/scope key | v0.7/v0.9 tests |
+| Payload bounds | preview 400 lines/page (1 000 max, 20 000 chars display), evidence 512 KiB, pack 64 MiB, task events 64×32 KiB | limits + route tests |
+| First-paint timing | **not instrumented** (no benchmark/browser dependency) — manual observation only, recorded as a limitation | `ACCEPTANCE.md` limitations |
+
+### Degraded states and error copy
+
+Every host code that can reach a surface now has localized copy in both
+languages: one wording pattern (state + reason + recovery action), with the
+`notice.<code>` / `wcode.<code>` dictionaries as the single carrier and a test
+that scans the host sources and fails when a code has no translation. The
+documented failure matrix covers server unreachable, older server missing a
+route, partial data (rules/commits deadlines), unsupported capabilities,
+disabled switches, identity/scope problems, config-source health and empty
+data. Server-provided English detail text is the final fallback only when no
+code is known — shown verbatim rather than hidden.
+
+### Decisions and version policy
+
+[`DECISIONS.md`](DECISIONS.md) records the two final decisions: **the package is
+MIT and every upstream-coupled behaviour is an independently implemented
+contract** (no AGPL expression; the CI independence gate keeps it true; the
+upstream licence ambiguity is documented, with re-write/relicense escalation if
+ever needed), and **API stability = tested range + runtime capability probes +
+graceful degradation**, not an upstream stability promise. The plugin package
+follows semver for its own config/routes/commands/behaviour; the upstream
+compatibility range is a tested matrix that moves by deliberate contract updates.
+[`ACCEPTANCE.md`](ACCEPTANCE.md) holds the goal→evidence map, verdict taxonomy and
+human sign-off.
+
+### Release path for 1.0.0
+
+The v0.4–v0.9 PRs are stacked and **unreleased** (`package.json` still says
+0.3.0). If they merge without per-version tags, the documented fallback applies:
+the whole `## Unreleased` block (v0.4–v1.0) is promoted into **one `1.0.0`
+section**, the README version lines move to `v1.0.0`, and the tag-CI upgrade leg
+keeps `--upgrade-from 0.3.0` for this tag (then moves to `1.0.0` for the next
+release). Both the primary per-version path and this fallback are documented in
+[`RELEASING.md`](RELEASING.md); the release script itself is unchanged and stops
+at the local tag (publishing is a human 2FA step). Hotfix/rollback: never move or
+retag `v1.0.0`; cut `1.0.1` for regressions and record the incident.
+
 ## Configuration
 
 Everything has a sensible default — a standard local setup needs no configuration
@@ -1037,8 +1229,10 @@ when OpenViking is not running (`SMOKE_REQUIRE_SERVER=1` makes that a failure
 instead). `pnpm run verify:install` runs the clean-profile install/boot/reinstall/
 uninstall check; the excerpts the independent recall contract is written from are
 tracked in [CONTRACT.md](CONTRACT.md), the behaviour inventory behind the
-independence claim is in [PROVENANCE.md](PROVENANCE.md), and the code comments
-explain how the pieces fit together.
+independence claim is in [PROVENANCE.md](PROVENANCE.md), the licence/API-stability
+decision is [DECISIONS.md](DECISIONS.md), the v1.0 goal→evidence map and human
+sign-off are [ACCEPTANCE.md](ACCEPTANCE.md), and the code comments explain how the
+pieces fit together.
 
 The version lives in `package.json` and is tagged `vX.Y.Z` in git; while it is `0.x`
 the internals may still change. See [CHANGELOG.md](CHANGELOG.md) for what each
